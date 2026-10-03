@@ -1,0 +1,5 @@
+# Everything in requirements.txt, plus tools for local development and testing.
+-r requirements.txt
+pytest==9.1.1
+# HTTP client used by FastAPI's TestClient in the tests.
+httpx2==2.13.1
