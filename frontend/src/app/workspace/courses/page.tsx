@@ -1,7 +1,10 @@
-import { BookOpen } from "lucide-react";
+import { BookOpen, Plus } from "lucide-react";
 import type { Metadata } from "next";
 
+import { CourseFormDialog } from "@/components/courses/course-form-dialog";
+import { CourseList } from "@/components/courses/course-list";
 import { PageHeader } from "@/components/layout/page-header";
+import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyDescription,
@@ -10,27 +13,40 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
+import { getCourses } from "@/lib/courses/queries";
 
 export const metadata: Metadata = { title: "Courses" };
 
 export default async function CoursesPage() {
-  // Every workspace page checks the session itself, even when it shows no data yet.
   await getCurrentProfessor();
+  const courses = await getCourses();
 
   return (
     <div className="flex flex-col gap-10">
-      <PageHeader title="Courses" description="The courses you teach, in one place." />
-      <Empty className="border border-dashed py-14">
-        <EmptyHeader>
-          <EmptyMedia variant="icon">
-            <BookOpen />
-          </EmptyMedia>
-          <EmptyTitle>Course management is coming soon</EmptyTitle>
-          <EmptyDescription>
-            You&apos;ll be able to add and organize the courses you teach here.
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+      <PageHeader title="Courses" description="The courses you teach. Each assessment is created for one of them.">
+        <CourseFormDialog
+          trigger={
+            <Button>
+              <Plus />
+              Add course
+            </Button>
+          }
+        />
+      </PageHeader>
+
+      {courses.length > 0 ? (
+        <CourseList courses={courses} />
+      ) : (
+        <Empty className="border border-dashed py-14">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <BookOpen />
+            </EmptyMedia>
+            <EmptyTitle>No courses yet</EmptyTitle>
+            <EmptyDescription>Add the courses you teach to start creating assessments for them.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
     </div>
   );
 }

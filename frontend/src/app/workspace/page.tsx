@@ -16,7 +16,7 @@ export default async function WorkspaceHomePage() {
       title={professor.fullName ? `Welcome, ${professor.fullName}` : "Welcome"}
       description="ProfPilot AI is your academic workspace. Specialized AI assistants for teaching, research, and communication will appear here as they become available."
     >
-      <Link href="/workspace/assessments" className={buttonVariants({ size: "lg" })}>
+      <Link href="/workspace/assessments/new" className={buttonVariants({ size: "lg" })}>
         <Plus />
         Create assessment
       </Link>
