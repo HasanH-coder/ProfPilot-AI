@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 
-import { SiteFooter } from "@/components/layout/site-footer";
-import { SiteHeader } from "@/components/layout/site-header";
 import { ThemeProvider } from "@/components/theme-provider";
 import { cn } from "@/lib/utils";
 
@@ -11,7 +9,8 @@ import "./globals.css";
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "ProfPilot AI",
+  // Pages set their own title, shown as e.g. "Log in · ProfPilot AI".
+  title: { default: "ProfPilot AI", template: "%s · ProfPilot AI" },
   description:
     "One intelligent workspace for teaching, research, communication, and academic work.",
 };
@@ -25,13 +24,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
     >
       <body>
-        <ThemeProvider>
-          <div className="flex min-h-svh flex-col">
-            <SiteHeader />
-            <main className="flex flex-1 flex-col">{children}</main>
-            <SiteFooter />
-          </div>
-        </ThemeProvider>
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );

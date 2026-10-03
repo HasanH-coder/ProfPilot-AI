@@ -4,19 +4,22 @@ ProfPilot AI is a personalized, multi-agent AI workspace for university professo
 
 The planned system brings together specialized agents for assessment generation, lecture and slide creation, course knowledge, email, planning, literature review, and research writing. A central orchestrator will coordinate them, with long-term memory that adapts to each professor.
 
-> **Status:** early foundation. No AI features exist yet. See [Current status](#current-status).
+> **Status:** professors can sign up, log in, and reach a protected workspace. No AI features exist yet. See [Current status](#current-status).
 
 ## Architecture
 
-The repository is a monorepo with two independent apps:
+The repository is a monorepo with two independent apps and a Supabase project:
 
 ```text
 ProfPilot-AI/
 ├── frontend/                 Next.js web app (the professor's workspace)
 │   └── src/
-│       ├── app/              Pages, root layout, global styles
-│       ├── components/       Layout, theme, and shadcn/ui components
-│       └── lib/              Shared helpers
+│       ├── proxy.ts          Refreshes the login session and redirects on every request
+│       ├── app/              Pages: landing, /login, /signup, /workspace, /auth/confirm
+│       ├── components/       Auth forms, layout (header, sidebar), shadcn/ui components
+│       └── lib/
+│           ├── supabase/     Supabase clients for the browser, the server and the proxy
+│           └── auth/         Login/signup/logout actions and the signed-in professor
 ├── backend/                  FastAPI service (will host the AI agents)
 │   ├── app/
 │   │   ├── main.py           Creates the app, configures CORS, registers routes
@@ -27,17 +30,18 @@ ProfPilot-AI/
 │   │   ├── services/         Business logic (empty for now)
 │   │   └── agents/           AI agents (empty for now)
 │   └── tests/                API tests (pytest)
-├── supabase/migrations/      Database migrations (empty for now)
+├── supabase/migrations/      Database schema as versioned SQL migrations
 └── docs/                     Project documentation
 ```
 
-The browser loads the Next.js frontend, which will call the FastAPI backend over HTTP. The backend already accepts browser requests from `http://localhost:3000` (CORS). Supabase and AI providers are planned but not connected yet.
+The browser talks to the Next.js frontend, which uses **Supabase Auth** for accounts and reads data from **Supabase PostgreSQL**. Every table has Row Level Security, so each professor can only ever reach their own rows. The FastAPI backend is not connected yet; it will handle AI work later. See [docs/authentication.md](docs/authentication.md) for how sign-up, login and data isolation work.
 
 ## Frontend stack
 
 - Next.js 16 (App Router) with React 19 and TypeScript
 - Tailwind CSS 4
 - shadcn/ui components, built on Base UI, with Lucide icons
+- Supabase (`@supabase/supabase-js`, `@supabase/ssr`) for authentication and data
 - next-themes for light and dark mode
 - ESLint
 
@@ -48,11 +52,22 @@ The browser loads the Next.js frontend, which will call the FastAPI backend over
 - Pydantic for data models, pydantic-settings for configuration
 - pytest for tests
 
-Planned: Supabase (PostgreSQL, Auth, Storage, Realtime, pgvector) and the OpenAI API, with room to swap in other AI providers.
+Planned: Supabase Storage, Realtime and pgvector, and the OpenAI API, with room to swap in other AI providers.
+
+## Setting up Supabase
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. Apply the database schema in `supabase/migrations/`. Either paste the migration file into the dashboard's **SQL Editor** and run it, or use the Supabase CLI: `npx supabase login`, `npx supabase init`, `npx supabase link --project-ref <your-project-ref>`, then `npx supabase db push`.
+3. In **Authentication > URL Configuration**, set the Site URL to `http://localhost:3000` and add `http://localhost:3000/**` to the Redirect URLs.
+4. Optional but recommended: in the **Authentication** email templates, change the "Confirm signup" link to `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`. With this template, confirmation links work in any browser, not only the one used to sign up.
+5. Copy `frontend/.env.example` to `frontend/.env.local` and fill in the project URL and **publishable** key (dashboard: **Connect**, or **Settings > API Keys**). Never put a secret key or the `service_role` key in the frontend.
+
+After changing the database schema, regenerate the TypeScript types:
+`npx supabase gen types typescript --project-id <your-project-ref> > frontend/src/lib/supabase/database.types.ts`
 
 ## Running the frontend
 
-Requires Node.js 20.9 or newer.
+Requires Node.js 20.9 or newer, and the Supabase setup above.
 
 ```bash
 cd frontend
@@ -93,11 +108,17 @@ The defaults work for local development. To change settings, copy `backend/.env.
 **In place**
 
 - Monorepo structure for the frontend, backend, database migrations, and docs
-- Frontend shell with branding, responsive layout, light and dark mode, and a placeholder for the Professor Workspace
+- Email and password sign-up (with email confirmation), login, and logout using Supabase Auth
+- Database schema for professor profiles, courses, and exam projects, with Row Level Security on every table
+- A profile created automatically for every new professor
+- Protected Professor Workspace with a sidebar (Home, Courses, Assessments), showing the professor's name, email and institution
+- Landing page, light and dark mode, and a responsive layout
 - Backend API with `GET /` and `GET /health`, CORS for the local frontend, environment-based configuration, and tests
 
 **Not started**
 
-- Frontend-to-backend communication
-- Supabase database, authentication, and storage
+- Managing courses and creating assessments (the pages exist as placeholders)
+- Password reset and profile editing
+- Frontend-to-backend communication, and verifying Supabase tokens in FastAPI
+- File uploads (Supabase Storage) and course knowledge search (pgvector)
 - AI agents, the orchestrator, and professor personalization
