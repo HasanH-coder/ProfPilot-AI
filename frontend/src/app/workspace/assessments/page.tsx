@@ -8,6 +8,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { buttonVariants } from "@/components/ui/button";
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -20,26 +21,26 @@ export const metadata: Metadata = { title: "Assessments" };
 
 export default async function AssessmentsPage({ searchParams }: PageProps<"/workspace/assessments">) {
   await getCurrentProfessor();
-  // Set after saving a draft on the Create assessment page.
-  const { saved } = await searchParams;
+  // Set after an assessment is deleted.
+  const { deleted } = await searchParams;
   const assessments = await getAssessments();
 
   return (
     <div className="flex flex-col gap-10">
       <PageHeader title="Assessments" description="Exams and other assessments for your courses.">
-        <Link href="/workspace/assessments/new" className={buttonVariants()}>
-          <Plus />
-          Create assessment
-        </Link>
+        {assessments.length > 0 && (
+          <Link href="/workspace/assessments/new" className={buttonVariants()}>
+            <Plus />
+            Create assessment
+          </Link>
+        )}
       </PageHeader>
 
-      {saved === "1" && (
+      {deleted === "1" && (
         <Alert>
           <CircleCheck />
-          <AlertTitle>Draft saved</AlertTitle>
-          <AlertDescription>
-            Your assessment settings are saved. Generating the exam isn&apos;t available yet.
-          </AlertDescription>
+          <AlertTitle>Assessment deleted</AlertTitle>
+          <AlertDescription>The assessment and its uploaded files were permanently deleted.</AlertDescription>
         </Alert>
       )}
 
@@ -53,9 +54,15 @@ export default async function AssessmentsPage({ searchParams }: PageProps<"/work
             </EmptyMedia>
             <EmptyTitle>No assessments yet</EmptyTitle>
             <EmptyDescription>
-              Create an assessment to choose its course, format, and instructions.
+              Create an assessment to choose its course, format, files, and instructions.
             </EmptyDescription>
           </EmptyHeader>
+          <EmptyContent>
+            <Link href="/workspace/assessments/new" className={buttonVariants()}>
+              <Plus />
+              Create assessment
+            </Link>
+          </EmptyContent>
         </Empty>
       )}
     </div>

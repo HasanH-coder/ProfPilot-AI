@@ -1,5 +1,7 @@
 "use server";
 
+import { refresh } from "next/cache";
+
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import {
   ASSESSMENT_FILES_BUCKET,
@@ -86,6 +88,8 @@ export async function recordUploadedDocument(
     return { error: "The file couldn't be saved. Please try again." };
   }
 
+  // Pages that list the assessment's files, including ones in the browser's history, show it.
+  refresh();
   return { documentId: document.id };
 }
 
@@ -120,5 +124,6 @@ export async function removeDocument(documentId: string): Promise<{ error?: stri
     return { error: "The file couldn't be removed. Please try again." };
   }
 
+  refresh();
   return {};
 }

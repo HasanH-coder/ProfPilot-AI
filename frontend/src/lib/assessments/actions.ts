@@ -1,6 +1,7 @@
 "use server";
 
 import type { PostgrestError } from "@supabase/supabase-js";
+import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 
 import {
@@ -11,7 +12,17 @@ import {
   type AssessmentDraftErrors,
 } from "@/lib/assessments/draft";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
+import { ASSESSMENT_FILES_BUCKET, DOCUMENT_CATEGORIES } from "@/lib/documents/files";
 import { createClient } from "@/lib/supabase/server";
+
+/** Where a draft lives: its exam project, and its folder in Storage. */
+export type DraftLocation = {
+  examProjectId: string;
+  /** {professor_id}/{exam_project_id} */
+  folder: string;
+};
+
+export type CreateDraftResult = { draft?: DraftLocation; error?: string };
 
 export type SaveDraftResult = {
   /** A problem with the whole form, such as the database being unreachable. */
@@ -20,104 +31,147 @@ export type SaveDraftResult = {
   fieldErrors?: AssessmentDraftErrors;
 };
 
-/** The draft that uploaded files belong to. */
-export type UploadDraft = {
-  examProjectId: string;
-  /** The draft's folder in Storage: {professor_id}/{exam_project_id}. */
-  folder: string;
-};
+// Every action checks the session itself: Server Actions can be called
+// directly, not only from our pages. Row Level Security then makes sure a
+// professor can only ever read, change or delete their own assessments.
 
 /**
- * Creates the draft exam project that uploaded files are attached to. The form
- * calls this when the first file is added and reuses the draft afterwards.
+ * Creates the draft for a new assessment, with just its course and name. The
+ * form calls this once, on the first upload or the first save. Everything
+ * after that updates this draft, so one assessment never becomes two.
  */
-export async function createDraftForUploads(input: {
+export async function createAssessmentDraft(input: {
   courseId: string | null;
   examName: string;
-}): Promise<{ draft?: UploadDraft; error?: string }> {
+}): Promise<CreateDraftResult> {
   const professor = await getCurrentProfessor();
   const courseId = typeof input?.courseId === "string" ? input.courseId : null;
   const examName = typeof input?.examName === "string" ? input.examName.trim() : "";
   if (!courseId || !examName || examName.length > LIMITS.examName) {
-    return { error: "Choose a course and enter the assessment name before adding files." };
+    return { error: "Choose a course and enter the assessment name first." };
   }
 
   const supabase = await createClient();
+  // professor_id defaults to the signed-in professor and status to 'draft'.
   const { data, error } = await supabase
     .from("exam_projects")
     .insert({ course_id: courseId, exam_name: examName })
     .select("id")
     .single();
   if (error) {
-    if (isCourseError(error)) return { error: "Choose one of your courses before adding files." };
-    console.error("Could not create a draft for uploads:", error);
-    return { error: "Your files couldn't be added. Please try again." };
+    if (isCourseError(error)) return { error: "Choose one of your courses." };
+    console.error("Could not create assessment draft:", error);
+    return { error: "Your assessment couldn't be saved. Please try again." };
   }
 
+  // Other pages, such as the Assessments list, now include the new draft.
+  refresh();
   return { draft: { examProjectId: data.id, folder: `${professor.id}/${data.id}` } };
 }
 
-/**
- * Saves the Create assessment form as a draft, then opens the Assessments page.
- * When files were uploaded, the draft already exists, so it is updated instead.
- */
+/** Saves the form to the professor's draft. An empty result means it was saved. */
 export async function saveAssessmentDraft(
+  examProjectId: string,
   draft: AssessmentDraft,
-  examProjectId: string | null,
 ): Promise<SaveDraftResult> {
   await getCurrentProfessor();
 
   // The browser can send anything, so check the shape and the rules again here.
-  if (!isAssessmentDraft(draft) || !(examProjectId === null || typeof examProjectId === "string")) {
+  if (typeof examProjectId !== "string" || !isAssessmentDraft(draft)) {
     return { error: "Something went wrong. Please reload the page and try again." };
   }
   const fieldErrors = validateAssessmentDraft(draft);
   if (Object.keys(fieldErrors).length > 0) return { fieldErrors };
 
-  const values = {
-    course_id: draft.courseId,
-    exam_name: draft.examName.trim(),
-    duration_minutes: draft.durationMinutes,
-    mcq_percentage: draft.mcqPercentage,
-    subjective_percentage: draft.subjectivePercentage,
-    number_of_versions: draft.numberOfVersions,
-    difficulty: draft.difficulty,
-    additional_notes: textOrNull(draft.additionalNotes),
-    professor_prompt: textOrNull(draft.professorPrompt),
-  };
-
   const supabase = await createClient();
-  if (examProjectId) {
-    // Row Level Security only lets the professor update their own draft.
-    const { data, error } = await supabase
-      .from("exam_projects")
-      .update(values)
-      .eq("id", examProjectId)
-      .eq("status", "draft")
-      .select("id")
-      .maybeSingle();
-    if (error) return saveFailure(error);
-    if (!data) return { error: "This draft no longer exists. Please reload the page." };
+  // Row Level Security only lets the professor update their own drafts.
+  const { data, error } = await supabase
+    .from("exam_projects")
+    .update({
+      course_id: draft.courseId,
+      exam_name: draft.examName.trim(),
+      duration_minutes: draft.durationMinutes,
+      mcq_percentage: draft.mcqPercentage,
+      subjective_percentage: draft.subjectivePercentage,
+      number_of_versions: draft.numberOfVersions,
+      difficulty: draft.difficulty,
+      additional_notes: textOrNull(draft.additionalNotes),
+      professor_prompt: textOrNull(draft.professorPrompt),
+    })
+    .eq("id", examProjectId)
+    .eq("status", "draft")
+    .select("id")
+    .maybeSingle();
+  if (error) return saveFailure(error);
+  if (!data) return { error: "This draft no longer exists. It may have been deleted." };
 
-    // Keep the uploaded files linked to the draft's course, in case it changed.
-    const { error: documentsError } = await supabase
-      .from("documents")
-      .update({ course_id: values.course_id })
-      .eq("exam_project_id", examProjectId);
-    if (documentsError) return saveFailure(documentsError);
-  } else {
-    // professor_id defaults to the signed-in professor and status to 'draft'.
-    const { error } = await supabase.from("exam_projects").insert(values);
-    if (error) return saveFailure(error);
+  // Keep the uploaded files linked to the draft's course, in case it changed.
+  const { error: documentsError } = await supabase
+    .from("documents")
+    .update({ course_id: draft.courseId })
+    .eq("exam_project_id", examProjectId);
+  if (documentsError) return saveFailure(documentsError);
+
+  // Pages that show this draft, including ones in the browser's history, show the change.
+  refresh();
+  return {};
+}
+
+/**
+ * Deletes a draft and all its files, then opens the Assessments page. The
+ * files in Storage go first, so a failure never leaves files without their
+ * assessment. Deleting the exam project then deletes its documents rows too
+ * (on delete cascade).
+ */
+export async function deleteAssessment(examProjectId: string): Promise<{ error?: string }> {
+  const professor = await getCurrentProfessor();
+  const supabase = await createClient();
+
+  // Row Level Security only finds the professor's own drafts.
+  const { data: assessment, error: findError } = await supabase
+    .from("exam_projects")
+    .select("id, documents(storage_path)")
+    .eq("id", examProjectId)
+    .eq("status", "draft")
+    .maybeSingle();
+  if (findError) return deleteFailure(findError);
+  if (!assessment) return { error: "This assessment no longer exists." };
+
+  // Every recorded file, plus anything an interrupted upload left in the draft's folder.
+  const storage = supabase.storage.from(ASSESSMENT_FILES_BUCKET);
+  const paths = new Set(assessment.documents.map((document) => document.storage_path));
+  for (const category of DOCUMENT_CATEGORIES) {
+    const folder = `${professor.id}/${assessment.id}/${category}`;
+    const { data: files } = await storage.list(folder, { limit: 1000 });
+    for (const file of files ?? []) paths.add(`${folder}/${file.name}`);
+  }
+  if (paths.size > 0) {
+    const { error } = await storage.remove([...paths]);
+    if (error) return deleteFailure(error);
   }
 
-  redirect("/workspace/assessments?saved=1");
+  const { data: deleted, error } = await supabase
+    .from("exam_projects")
+    .delete()
+    .eq("id", assessment.id)
+    .select("id");
+  if (error) return deleteFailure(error);
+  if (deleted.length === 0) return { error: "This assessment no longer exists." };
+
+  // Make sure no page, including ones in the browser's history, still shows it.
+  refresh();
+  redirect("/workspace/assessments?deleted=1");
 }
 
 function saveFailure(error: PostgrestError): SaveDraftResult {
   if (isCourseError(error)) return { fieldErrors: { courseId: "Choose one of your courses." } };
   console.error("Could not save assessment draft:", error);
   return { error: "Your draft couldn't be saved. Please try again." };
+}
+
+function deleteFailure(error: { message: string }) {
+  console.error("Could not delete assessment:", error);
+  return { error: "The assessment couldn't be deleted. Please try again." };
 }
 
 // Row Level Security (42501) or the foreign key (23503) rejects a course that

@@ -27,6 +27,14 @@ export function versionCount({ choice, customCount }: VersionValue): number {
   return Number(choice);
 }
 
+/** The reverse, for a saved draft: a preset when one matches, otherwise Custom. */
+export function versionValue(count: number): VersionValue {
+  const preset = VERSION_PRESETS.find((presetCount) => presetCount === count);
+  return preset
+    ? { choice: `${preset}`, customCount: "" }
+    : { choice: "custom", customCount: `${count}` };
+}
+
 type VersionSelectorProps = {
   value: VersionValue;
   onChange: (value: VersionValue) => void;

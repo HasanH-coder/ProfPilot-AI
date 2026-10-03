@@ -32,6 +32,15 @@ export function durationInMinutes({ choice, customMinutes }: DurationValue): num
   return Number(choice);
 }
 
+/** The reverse, for a saved draft: a preset when one matches, otherwise Custom. */
+export function durationValue(minutes: number | null): DurationValue {
+  if (minutes === null) return { choice: "none", customMinutes: "" };
+  const preset = DURATION_PRESETS.find((presetMinutes) => presetMinutes === minutes);
+  return preset
+    ? { choice: `${preset}`, customMinutes: "" }
+    : { choice: "custom", customMinutes: `${minutes}` };
+}
+
 type ExamDurationProps = {
   value: DurationValue;
   onChange: (value: DurationValue) => void;

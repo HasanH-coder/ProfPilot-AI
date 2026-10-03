@@ -3,7 +3,7 @@
 import { useId, type ReactNode } from "react";
 
 import type { UploadItem } from "@/components/assessment/use-document-uploads";
-import { DIFFICULTY_LABELS, type AssessmentDraft } from "@/lib/assessments/draft";
+import { describeSettings, type AssessmentDraft } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
 import type { DocumentCategory } from "@/lib/documents/files";
 import { cn } from "@/lib/utils";
@@ -27,7 +27,7 @@ export function AssessmentSummary({
   children,
 }: AssessmentSummaryProps) {
   const titleId = useId();
-  const { durationMinutes, mcqPercentage, subjectivePercentage, numberOfVersions } = draft;
+  const settings = describeSettings(draft);
 
   function fileCount(category: DocumentCategory) {
     const count = files.filter((file) => file.category === category && file.documentId).length;
@@ -39,24 +39,10 @@ export function AssessmentSummary({
     { term: "Assessment", value: draft.examName.trim() },
     { term: "Course material", value: fileCount("course_material"), empty: "None" },
     { term: "Previous assessments", value: fileCount("previous_exam"), empty: "None" },
-    {
-      term: "Duration",
-      value: isPositiveWholeNumber(durationMinutes)
-        ? `${durationMinutes} ${durationMinutes === 1 ? "minute" : "minutes"}`
-        : undefined,
-    },
-    {
-      term: "Format",
-      value:
-        mcqPercentage !== null && subjectivePercentage !== null
-          ? `${mcqPercentage}% MCQ / ${subjectivePercentage}% Subjective`
-          : undefined,
-    },
-    {
-      term: "Versions",
-      value: isPositiveWholeNumber(numberOfVersions) ? `${numberOfVersions}` : undefined,
-    },
-    { term: "Difficulty", value: draft.difficulty ? DIFFICULTY_LABELS[draft.difficulty] : undefined },
+    { term: "Duration", value: settings.duration },
+    { term: "Format", value: settings.distribution },
+    { term: "Versions", value: settings.versions },
+    { term: "Difficulty", value: settings.difficulty },
     { term: "Attachments", value: fileCount("additional_attachment"), empty: "None" },
   ];
 
@@ -87,8 +73,4 @@ export function AssessmentSummary({
       <div className="mt-5 flex flex-col gap-3">{children}</div>
     </aside>
   );
-}
-
-function isPositiveWholeNumber(value: number | null): value is number {
-  return value !== null && Number.isInteger(value) && value > 0;
 }

@@ -14,6 +14,7 @@ export default async function NewAssessmentPage() {
   return (
     <div className="flex flex-col gap-10">
       <PageHeader
+        back={{ href: "/workspace/assessments", label: "Assessments" }}
         title="Create assessment"
         description="Provide as much or as little guidance as you want. ProfPilot will use your course material, previous assessments, preferences, and instructions to prepare the exam."
       />

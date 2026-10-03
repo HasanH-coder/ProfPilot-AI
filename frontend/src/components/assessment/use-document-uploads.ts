@@ -1,9 +1,9 @@
 "use client";
 
 import { StorageApiError } from "@supabase/supabase-js";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
-import { createDraftForUploads } from "@/lib/assessments/actions";
+import type { CreateDraftResult } from "@/lib/assessments/actions";
 import { recordUploadedDocument, removeDocument } from "@/lib/documents/actions";
 import {
   ASSESSMENT_FILES_BUCKET,
@@ -11,6 +11,7 @@ import {
   safeFileName,
   SUPPORTED_TYPES_TEXT,
   type DocumentCategory,
+  type DocumentFile,
 } from "@/lib/documents/files";
 import { createClient } from "@/lib/supabase/client";
 
@@ -23,17 +24,21 @@ import { createClient } from "@/lib/supabase/client";
  */
 export type UploadStatus = "rejected" | "uploading" | "uploaded" | "failed" | "removing";
 
-/** A file the professor added on this page. */
+/** A file in one of the form's upload sections. */
 export type UploadItem = {
   /** Tells items apart on this page. Not stored anywhere. */
   key: string;
   category: DocumentCategory;
-  file: File;
+  name: string;
+  /** In bytes; null if unknown. */
+  size: number | null;
   status: UploadStatus;
   /** The file's row in the documents table, once Supabase confirms the upload. */
   documentId?: string;
   /** Why the file wasn't added, didn't upload, or couldn't be removed. */
   error?: string;
+  /** The file chosen on this page, kept so a failed upload can be retried. */
+  file?: File;
 };
 
 export type DocumentUploads = ReturnType<typeof useDocumentUploads>;
@@ -42,27 +47,25 @@ const UPLOAD_FAILED = "The upload failed. Check your connection and try again.";
 const REMOVE_FAILED = "The file couldn't be removed. Please try again.";
 
 /**
- * Uploads the professor's files from the browser straight to Supabase Storage,
- * then has the server record each one. Files belong to an assessment draft,
- * which is created from draftDetails when the first file is added.
+ * Lists the draft's files and uploads new ones from the browser straight to
+ * Supabase Storage, then has the server record each one. savedFiles are the
+ * files the draft already has. getDraft gives the draft new files belong to,
+ * creating it if this is a new assessment.
  */
-export function useDocumentUploads(draftDetails: { courseId: string | null; examName: string }) {
-  const [items, setItems] = useState<UploadItem[]>([]);
-  // Every upload, and saving the form, reuses the one draft this request creates.
-  const draftRequest = useRef<ReturnType<typeof createDraftForUploads> | null>(null);
-
-  async function getDraft() {
-    draftRequest.current ??= createDraftForUploads(draftDetails);
-    try {
-      const result = await draftRequest.current;
-      // If the draft couldn't be created, the next upload tries again.
-      if (!result.draft) draftRequest.current = null;
-      return result;
-    } catch (error) {
-      draftRequest.current = null;
-      throw error;
-    }
-  }
+export function useDocumentUploads(
+  savedFiles: DocumentFile[],
+  getDraft: () => Promise<CreateDraftResult>,
+) {
+  const [items, setItems] = useState<UploadItem[]>(() =>
+    savedFiles.map((file) => ({
+      key: file.id,
+      category: file.category,
+      name: file.name,
+      size: file.size,
+      status: "uploaded",
+      documentId: file.id,
+    })),
+  );
 
   function updateItem(key: string, changes: Partial<UploadItem>) {
     setItems((current) =>
@@ -93,19 +96,21 @@ export function useDocumentUploads(draftDetails: { courseId: string | null; exam
       return {
         key: crypto.randomUUID(),
         category,
-        file,
+        name: file.name,
+        size: file.size,
         status: error ? "rejected" : "uploading",
         error,
+        file,
       };
     });
     setItems((current) => [...current, ...added]);
     for (const item of added) {
-      if (item.status === "uploading") void upload(item.key, category, item.file);
+      if (item.status === "uploading" && item.file) void upload(item.key, category, item.file);
     }
   }
 
   function retry(item: UploadItem) {
-    void upload(item.key, item.category, item.file);
+    if (item.file) void upload(item.key, item.category, item.file);
   }
 
   /** Deletes an uploaded file, or clears a file that was never saved. */
@@ -127,12 +132,6 @@ export function useDocumentUploads(draftDetails: { courseId: string | null; exam
     else forgetItem(item.key);
   }
 
-  /** The draft's id once a file has been added, so saving updates it instead of adding another. */
-  async function getExamProjectId() {
-    const result = await draftRequest.current?.catch(() => null);
-    return result?.draft?.examProjectId ?? null;
-  }
-
   return {
     items,
     /** Files are still uploading or being removed. */
@@ -140,7 +139,6 @@ export function useDocumentUploads(draftDetails: { courseId: string | null; exam
     addFiles,
     retry,
     remove,
-    getExamProjectId,
   };
 }
 
@@ -148,7 +146,7 @@ export function useDocumentUploads(draftDetails: { courseId: string | null; exam
 async function uploadFile(
   category: DocumentCategory,
   file: File,
-  getDraft: () => ReturnType<typeof createDraftForUploads>,
+  getDraft: () => Promise<CreateDraftResult>,
 ): Promise<{ documentId?: string; error?: string }> {
   const { contentType, error: fileError } = checkFile(file);
   if (!contentType) return { error: fileError };

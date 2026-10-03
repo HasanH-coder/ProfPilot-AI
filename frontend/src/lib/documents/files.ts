@@ -11,6 +11,15 @@ export const DOCUMENT_CATEGORIES = [
 ] as const;
 export type DocumentCategory = (typeof DOCUMENT_CATEGORIES)[number];
 
+/** An uploaded file, as recorded in the documents table. */
+export type DocumentFile = {
+  id: string;
+  category: DocumentCategory;
+  name: string;
+  /** In bytes; null if unknown. */
+  size: number | null;
+};
+
 export const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 
 /** Allowed extensions, the content type each must have, and a readable label. */

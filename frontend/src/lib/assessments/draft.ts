@@ -99,6 +99,24 @@ export function validateAssessmentDraft(draft: AssessmentDraft): AssessmentDraft
   return errors;
 }
 
+/**
+ * Readable text for a draft's settings, as summaries show them. A setting is
+ * undefined when it isn't specified (or isn't a valid number yet while typing).
+ */
+export function describeSettings(draft: AssessmentDraft) {
+  const { durationMinutes: minutes, mcqPercentage: mcq, subjectivePercentage: subjective } = draft;
+  const versions = draft.numberOfVersions;
+  return {
+    duration: isWholeNumberBetween(minutes, 1, Infinity)
+      ? `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
+      : undefined,
+    distribution:
+      mcq !== null && subjective !== null ? `${mcq}% MCQ / ${subjective}% Subjective` : undefined,
+    versions: isWholeNumberBetween(versions, 1, Infinity) ? `${versions}` : undefined,
+    difficulty: draft.difficulty ? DIFFICULTY_LABELS[draft.difficulty] : undefined,
+  };
+}
+
 /** Checks that untrusted input has the AssessmentDraft shape (TypeScript types don't exist at runtime). */
 export function isAssessmentDraft(input: unknown): input is AssessmentDraft {
   if (typeof input !== "object" || input === null) return false;
