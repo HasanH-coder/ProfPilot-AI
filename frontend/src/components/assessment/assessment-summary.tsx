@@ -2,26 +2,43 @@
 
 import { useId, type ReactNode } from "react";
 
+import type { UploadItem } from "@/components/assessment/use-document-uploads";
 import { DIFFICULTY_LABELS, type AssessmentDraft } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
+import type { DocumentCategory } from "@/lib/documents/files";
 import { cn } from "@/lib/utils";
 
 type AssessmentSummaryProps = {
   draft: AssessmentDraft;
   course: Course | undefined;
+  /** The files added on the page. Only uploads Supabase has confirmed are counted. */
+  files: UploadItem[];
   className?: string;
   /** Actions shown under the summary, such as the Save button. */
   children: ReactNode;
 };
 
 /** A live overview of the assessment settings. Anything left unspecified says so. */
-export function AssessmentSummary({ draft, course, className, children }: AssessmentSummaryProps) {
+export function AssessmentSummary({
+  draft,
+  course,
+  files,
+  className,
+  children,
+}: AssessmentSummaryProps) {
   const titleId = useId();
   const { durationMinutes, mcqPercentage, subjectivePercentage, numberOfVersions } = draft;
 
-  const items = [
+  function fileCount(category: DocumentCategory) {
+    const count = files.filter((file) => file.category === category && file.documentId).length;
+    return count > 0 ? `${count} ${count === 1 ? "file" : "files"}` : undefined;
+  }
+
+  const items: { term: string; value?: string; detail?: string | null; empty?: string }[] = [
     { term: "Course", value: course?.code, detail: course?.name },
     { term: "Assessment", value: draft.examName.trim() },
+    { term: "Course material", value: fileCount("course_material"), empty: "None" },
+    { term: "Previous assessments", value: fileCount("previous_exam"), empty: "None" },
     {
       term: "Duration",
       value: isPositiveWholeNumber(durationMinutes)
@@ -40,6 +57,7 @@ export function AssessmentSummary({ draft, course, className, children }: Assess
       value: isPositiveWholeNumber(numberOfVersions) ? `${numberOfVersions}` : undefined,
     },
     { term: "Difficulty", value: draft.difficulty ? DIFFICULTY_LABELS[draft.difficulty] : undefined },
+    { term: "Attachments", value: fileCount("additional_attachment"), empty: "None" },
   ];
 
   return (
@@ -48,7 +66,7 @@ export function AssessmentSummary({ draft, course, className, children }: Assess
         Assessment summary
       </h2>
       <dl className="mt-3 divide-y text-sm">
-        {items.map(({ term, value, detail }) => (
+        {items.map(({ term, value, detail, empty = "Not specified" }) => (
           <div key={term} className="flex items-baseline justify-between gap-4 py-2.5">
             <dt className="shrink-0 text-muted-foreground">{term}</dt>
             <dd className="min-w-0 text-right">
@@ -60,7 +78,7 @@ export function AssessmentSummary({ draft, course, className, children }: Assess
                   )}
                 </>
               ) : (
-                <span className="text-muted-foreground">Not specified</span>
+                <span className="text-muted-foreground">{empty}</span>
               )}
             </dd>
           </div>

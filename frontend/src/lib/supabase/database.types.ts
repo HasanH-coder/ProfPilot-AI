@@ -52,6 +52,67 @@ export type Database = {
           },
         ];
       };
+      documents: {
+        Row: {
+          category: string;
+          course_id: string | null;
+          created_at: string;
+          exam_project_id: string | null;
+          id: string;
+          mime_type: string | null;
+          original_name: string;
+          professor_id: string;
+          size_bytes: number | null;
+          storage_path: string;
+        };
+        Insert: {
+          category: string;
+          course_id?: string | null;
+          created_at?: string;
+          exam_project_id?: string | null;
+          id?: string;
+          mime_type?: string | null;
+          original_name: string;
+          professor_id?: string;
+          size_bytes?: number | null;
+          storage_path: string;
+        };
+        Update: {
+          category?: string;
+          course_id?: string | null;
+          created_at?: string;
+          exam_project_id?: string | null;
+          id?: string;
+          mime_type?: string | null;
+          original_name?: string;
+          professor_id?: string;
+          size_bytes?: number | null;
+          storage_path?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "documents_course_id_fkey";
+            columns: ["course_id"];
+            isOneToOne: false;
+            referencedRelation: "courses";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "documents_exam_project_id_fkey";
+            columns: ["exam_project_id"];
+            isOneToOne: false;
+            referencedRelation: "exam_projects";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "documents_professor_id_fkey";
+            columns: ["professor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       exam_projects: {
         Row: {
           additional_notes: string | null;

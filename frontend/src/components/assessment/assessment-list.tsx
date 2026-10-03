@@ -31,14 +31,15 @@ export function AssessmentList({ assessments }: { assessments: AssessmentListIte
   );
 }
 
-/** For example: "CMPS 297U · 60 min · 2 versions · Hard". */
+/** For example: "CMPS 297U · 60 min · 2 versions · Hard · 3 files". */
 function describe(assessment: AssessmentListItem) {
-  const { courseCode, durationMinutes, numberOfVersions, difficulty } = assessment;
+  const { courseCode, durationMinutes, numberOfVersions, difficulty, fileCount } = assessment;
   return [
     courseCode ?? "No course",
     durationMinutes && `${durationMinutes} min`,
     `${numberOfVersions} ${numberOfVersions === 1 ? "version" : "versions"}`,
     difficulty && (DIFFICULTY_LABELS[difficulty] ?? difficulty),
+    fileCount > 0 && `${fileCount} ${fileCount === 1 ? "file" : "files"}`,
   ]
     .filter(Boolean)
     .join(" · ");

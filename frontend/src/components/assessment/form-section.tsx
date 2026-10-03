@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 type FormSectionProps = {
   title: string;
+  /** id for the title, so a control can be named by it with aria-labelledby. */
+  titleId?: string;
   description?: string;
   /** id for the description, so a field can point to it with aria-describedby. */
   descriptionId?: string;
@@ -13,6 +15,7 @@ type FormSectionProps = {
 /** A titled part of the Create assessment form. */
 export function FormSection({
   title,
+  titleId,
   description,
   descriptionId,
   labelFor,
@@ -21,7 +24,7 @@ export function FormSection({
   return (
     <section className="flex flex-col gap-6">
       <div className="flex flex-col gap-1 border-b pb-3">
-        <h2 className="text-base font-semibold tracking-tight">
+        <h2 id={titleId} className="text-base font-semibold tracking-tight">
           {labelFor ? <label htmlFor={labelFor}>{title}</label> : title}
         </h2>
         {description && (

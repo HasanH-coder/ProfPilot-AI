@@ -13,6 +13,8 @@ export type AssessmentListItem = {
   durationMinutes: number | null;
   numberOfVersions: number;
   difficulty: Difficulty | null;
+  /** How many files the professor uploaded for the assessment. */
+  fileCount: number;
 };
 
 /** The signed-in professor's assessments, newest first. Row Level Security returns only their own. */
@@ -21,7 +23,7 @@ export async function getAssessments(): Promise<AssessmentListItem[]> {
   const { data, error } = await supabase
     .from("exam_projects")
     .select(
-      "id, exam_name, status, created_at, duration_minutes, number_of_versions, difficulty, course:courses(code)",
+      "id, exam_name, status, created_at, duration_minutes, number_of_versions, difficulty, course:courses(code), documents(count)",
     )
     .order("created_at", { ascending: false });
   if (error) throw new Error(`Could not load assessments: ${error.message}`);
@@ -35,5 +37,6 @@ export async function getAssessments(): Promise<AssessmentListItem[]> {
     durationMinutes: row.duration_minutes,
     numberOfVersions: row.number_of_versions,
     difficulty: row.difficulty as Difficulty | null,
+    fileCount: row.documents[0]?.count ?? 0,
   }));
 }
