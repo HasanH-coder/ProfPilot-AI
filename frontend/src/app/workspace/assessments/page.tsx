@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { AssessmentList } from "@/components/assessment/assessment-list";
 import { PageHeader } from "@/components/layout/page-header";
+import { LinkPendingIcon } from "@/components/link-pending-icon";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { buttonVariants } from "@/components/ui/button";
 import {
@@ -28,12 +29,7 @@ export default async function AssessmentsPage({ searchParams }: PageProps<"/work
   return (
     <div className="flex flex-col gap-10">
       <PageHeader title="Assessments" description="Exams and other assessments for your courses.">
-        {assessments.length > 0 && (
-          <Link href="/workspace/assessments/new" className={buttonVariants()}>
-            <Plus />
-            Create assessment
-          </Link>
-        )}
+        {assessments.length > 0 && <CreateAssessmentLink />}
       </PageHeader>
 
       {deleted === "1" && (
@@ -58,13 +54,21 @@ export default async function AssessmentsPage({ searchParams }: PageProps<"/work
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Link href="/workspace/assessments/new" className={buttonVariants()}>
-              <Plus />
-              Create assessment
-            </Link>
+            <CreateAssessmentLink />
           </EmptyContent>
         </Empty>
       )}
     </div>
+  );
+}
+
+function CreateAssessmentLink() {
+  return (
+    <Link href="/workspace/assessments/new" className={buttonVariants()}>
+      <LinkPendingIcon>
+        <Plus />
+      </LinkPendingIcon>
+      Create assessment
+    </Link>
   );
 }

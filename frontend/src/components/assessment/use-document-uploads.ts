@@ -91,8 +91,16 @@ export function useDocumentUploads(
 
   /** Adds files to a category. Files that aren't allowed are listed with the reason. */
   function addFiles(category: DocumentCategory, files: File[]) {
+    // The same file (name and size) added to a section again isn't uploaded twice.
+    const inSection = new Set(
+      items
+        .filter((item) => item.category === category && item.status !== "rejected" && item.status !== "failed")
+        .map((item) => `${item.name}/${item.size}`),
+    );
     const added = files.map((file): UploadItem => {
-      const { error } = checkFile(file);
+      const isDuplicate = inSection.has(`${file.name}/${file.size}`);
+      inSection.add(`${file.name}/${file.size}`);
+      const error = isDuplicate ? "This file is already added." : checkFile(file).error;
       return {
         key: crypto.randomUUID(),
         category,

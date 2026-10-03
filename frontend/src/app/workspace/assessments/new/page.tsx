@@ -16,7 +16,7 @@ export default async function NewAssessmentPage() {
       <PageHeader
         back={{ href: "/workspace/assessments", label: "Assessments" }}
         title="Create assessment"
-        description="Provide as much or as little guidance as you want. ProfPilot will use your course material, previous assessments, preferences, and instructions to prepare the exam."
+        description="Only a course and an assessment name are required. Everything else is optional: ProfPilot will use whatever course material, previous assessments, preferences, and instructions you add to prepare the exam."
       />
       <AssessmentForm courses={courses} />
     </div>

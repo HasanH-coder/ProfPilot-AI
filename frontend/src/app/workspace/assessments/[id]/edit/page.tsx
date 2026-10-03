@@ -31,7 +31,7 @@ export default async function EditAssessmentPage({
       <PageHeader
         back={{ href: `/workspace/assessments/${id}`, label: assessment.draft.examName }}
         title="Edit assessment"
-        description="Change anything you like. Save your draft as you go, or continue to its overview."
+        description="Only the course and assessment name are required; everything else is optional. Save your draft as you go, or continue to its overview."
       />
       <AssessmentForm
         courses={courses}

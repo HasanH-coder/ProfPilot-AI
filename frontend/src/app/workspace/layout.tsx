@@ -7,7 +7,7 @@ export default async function WorkspaceLayout({ children }: LayoutProps<"/worksp
 
   return (
     <div className="flex min-h-svh">
-      <aside className="sticky top-0 hidden h-svh w-64 shrink-0 border-r bg-sidebar text-sidebar-foreground md:block">
+      <aside className="sticky top-0 hidden h-svh w-64 shrink-0 border-r bg-sidebar text-sidebar-foreground lg:block">
         <WorkspaceSidebar professor={professor} />
       </aside>
 

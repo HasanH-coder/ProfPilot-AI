@@ -21,15 +21,20 @@ export type AssessmentListItem = {
   fileCount: number;
 };
 
-/** The signed-in professor's assessments, most recently updated first. Row Level Security returns only their own. */
-export async function getAssessments(): Promise<AssessmentListItem[]> {
+/**
+ * The signed-in professor's assessments, most recently updated first, or just
+ * the first `limit` of them. Row Level Security returns only their own.
+ */
+export async function getAssessments({ limit }: { limit?: number } = {}): Promise<AssessmentListItem[]> {
   const supabase = await createClient();
-  const { data, error } = await supabase
+  let query = supabase
     .from("exam_projects")
     .select(
       "id, exam_name, status, updated_at, duration_minutes, number_of_versions, difficulty, course:courses(code), documents(count)",
     )
     .order("updated_at", { ascending: false });
+  if (limit) query = query.limit(limit);
+  const { data, error } = await query;
   if (error) throw new Error(`Could not load assessments: ${error.message}`);
 
   return data.map((row) => ({

@@ -1,4 +1,4 @@
-import { LayoutDashboard } from "lucide-react";
+import { ClipboardCheck } from "lucide-react";
 import Link from "next/link";
 
 import { GridBackground } from "@/components/layout/grid-background";
@@ -38,22 +38,22 @@ export default function HomePage() {
           academic work.
         </p>
 
-        {/* Placeholder until the Professor Workspace is built. */}
+        {/* What the workspace offers today, and what comes next. */}
         <Empty className="mt-14 max-w-md flex-none border border-foreground/15 bg-background">
           <EmptyHeader>
             <EmptyMedia variant="icon">
-              <LayoutDashboard />
+              <ClipboardCheck />
             </EmptyMedia>
-            <EmptyTitle>Professor Workspace</EmptyTitle>
+            <EmptyTitle>Assessment setup</EmptyTitle>
             <EmptyDescription>
-              Your workspace is being built. Tools for teaching, research, and
-              communication will appear here.
+              Choose a course, upload course material and previous exams, and
+              describe the exam you want, in your own words.
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             <Badge variant="outline">
               <span className="size-1.5 rounded-full bg-amber-500" />
-              In development
+              AI exam generation in development
             </Badge>
           </EmptyContent>
         </Empty>

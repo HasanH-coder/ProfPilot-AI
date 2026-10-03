@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { LogoutButton } from "@/components/auth/logout-button";
+import { LinkPendingIcon } from "@/components/link-pending-icon";
 import { Logo } from "@/components/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import type { Professor } from "@/lib/auth/current-professor";
@@ -48,7 +49,9 @@ export function WorkspaceSidebar({ professor, onNavigate }: WorkspaceSidebarProp
                 isActive && "bg-sidebar-accent text-sidebar-accent-foreground",
               )}
             >
-              <Icon className="size-4" />
+              <LinkPendingIcon>
+                <Icon className="size-4" />
+              </LinkPendingIcon>
               {label}
             </Link>
           );

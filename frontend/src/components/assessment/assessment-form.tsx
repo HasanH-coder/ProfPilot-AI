@@ -114,6 +114,10 @@ const EMPTY_SNAPSHOT = JSON.stringify(toDraft(EMPTY_FORM));
 
 const assessmentPath = (id: string) => `/workspace/assessments/${id}`;
 
+// The first save of a new assessment reopens the form at the draft's own
+// address. This flag lets the reopened form give keyboard focus back to Save draft.
+let refocusSaveButton = false;
+
 type AssessmentFormProps = {
   courses: Course[];
   /** The draft to edit. Left out when creating a new assessment. */
@@ -123,6 +127,7 @@ type AssessmentFormProps = {
 export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
   const [values, setValues] = useState(() => (saved ? toFormValues(saved.draft) : EMPTY_FORM));
   // The draft as it was last saved (or opened), to tell whether anything changed since.
   const [savedSnapshot, setSavedSnapshot] = useState(() =>
@@ -153,6 +158,12 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     saved || (values.courseId && values.examName.trim())
       ? undefined
       : "Choose a course and enter the assessment name above to add files.";
+
+  useEffect(() => {
+    if (!refocusSaveButton) return;
+    refocusSaveButton = false;
+    if (document.activeElement === document.body) saveButtonRef.current?.focus();
+  }, []);
 
   // Ask before the page is reloaded or closed while changes or uploads would be lost.
   const shouldWarnBeforeLeaving = hasUnsavedChanges || uploads.isBusy;
@@ -223,6 +234,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           else router.replace(assessmentPath(examProjectId));
         } else if (!saved) {
           // A new assessment moves to its own edit address, so reloading the page reopens it.
+          refocusSaveButton = true;
           router.replace(`${assessmentPath(examProjectId)}/edit`, { scroll: false });
         }
       });
@@ -243,7 +255,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
       ref={formRef}
       onSubmit={handleSubmit}
       noValidate
-      className="grid items-start gap-12 lg:grid-cols-[minmax(0,1fr)_17rem] lg:gap-10 xl:grid-cols-[minmax(0,1fr)_19rem]"
+      className="grid items-start gap-12 xl:grid-cols-[minmax(0,1fr)_19rem] xl:gap-10"
     >
       <div className="flex min-w-0 flex-col gap-12">
         <AssessmentBasics
@@ -257,7 +269,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
 
         <DocumentUploadSection
           title="Course material"
-          description="Upload lectures, notes, readings, assignments, or other material the assessment should be based on."
+          description="Optional. Upload lectures, notes, readings, assignments, or other material the assessment should be based on."
           category="course_material"
           uploads={uploads}
           disabledReason={uploadsDisabledReason}
@@ -273,7 +285,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
 
         <FormSection
           title="Exam design"
-          description="Set what you already know. Everything here is optional."
+          description="Optional. Set only what you already know."
         >
           <ExamDuration
             value={values.duration}
@@ -322,7 +334,8 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         draft={draft}
         course={course}
         files={uploads.items}
-        className="lg:sticky lg:top-10"
+        // On short screens the summary scrolls on its own, so its buttons stay reachable.
+        className="xl:sticky xl:top-10 xl:max-h-[calc(100svh-5rem)] xl:overflow-y-auto"
       >
         <Button
           type="button"
@@ -340,6 +353,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         </Button>
         {/* The form's submit button, so pressing Enter in a field saves too. */}
         <Button
+          ref={saveButtonRef}
           type="submit"
           variant="outline"
           size="lg"
@@ -350,7 +364,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           {isSaving && savingFor === "stay" ? "Saving…" : "Save draft"}
         </Button>
 
-        <p role="status" className="flex min-h-5 items-center justify-center gap-1.5 text-sm">
+        <p role="status" className="flex items-center justify-center gap-1.5 text-sm">
           {isSaving ? (
             <span className="text-muted-foreground">Saving…</span>
           ) : saveFailed ? (
@@ -363,9 +377,11 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
               <CircleCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
               Saved
             </span>
-          ) : savedSnapshot !== null ? (
-            <span className="text-muted-foreground">Unsaved changes</span>
-          ) : null}
+          ) : (
+            <span className="text-muted-foreground">
+              {savedSnapshot !== null ? "Unsaved changes" : "Not saved yet"}
+            </span>
+          )}
         </p>
         {saveResult.error && (
           <Alert variant="destructive">

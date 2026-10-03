@@ -26,8 +26,9 @@ The browser only ever receives the **publishable** key, which is designed to be 
 - `profiles`: one row per professor (`id` is the Supabase user id), with full name, institution and department.
 - `courses`: owned by a professor through `professor_id`.
 - `exam_projects`: owned by a professor through `professor_id`, optionally linked to one of their courses.
+- `documents`: one row per uploaded file, owned through `professor_id` and linked to an exam project. The files themselves are in the private `assessment-files` Storage bucket. See [Assessment setup](assessment-setup.md).
 
-Deleting a professor's account deletes their profile, courses and exam projects. Deleting a course keeps its exam projects but unlinks them.
+Deleting a professor's account deletes their profile, courses, exam projects and document rows. Deleting a course keeps its exam projects and documents but unlinks them. Deleting an exam project deletes its document rows.
 
 ## Row Level Security policies
 
@@ -38,6 +39,8 @@ Policies apply to signed-in users (`authenticated`) only. Signed-out visitors (`
 | `profiles` | own profile | only by the sign-up trigger | own profile | only with the account |
 | `courses` | own courses | for themselves | own courses | own courses |
 | `exam_projects` | own projects | for themselves, linked only to their own courses | own projects, linked only to their own courses | own projects |
+| `documents` | own documents | for themselves, in their own Storage folder, linked only to their own course and exam project | same rules as create | own documents |
+| Storage `assessment-files` | files in their own folder | into their own folder only | not allowed (files are never overwritten) | files in their own folder |
 
 "Own" means the row's `id` or `professor_id` equals `auth.uid()`. `professor_id` defaults to the signed-in professor, so the browser never needs to send it, and a forged value is rejected.
 

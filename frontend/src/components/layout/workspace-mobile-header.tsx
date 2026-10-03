@@ -11,12 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { Professor } from "@/lib/auth/current-professor";
 
-/** Top bar for small screens. The menu button opens the sidebar in a sliding panel. */
+/** Top bar for phones and tablets. The menu button opens the sidebar in a sliding panel. */
 export function WorkspaceMobileHeader({ professor }: { professor: Professor }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   return (
-    <header className="sticky top-0 z-40 flex h-14 items-center gap-2 border-b bg-background/80 px-3 backdrop-blur md:hidden">
+    <header className="sticky top-0 z-40 flex h-14 items-center gap-2 border-b bg-background/80 px-3 backdrop-blur lg:hidden">
       <Sheet open={isMenuOpen} onOpenChange={setIsMenuOpen}>
         <SheetTrigger render={<Button variant="ghost" size="icon" aria-label="Open menu" />}>
           <Menu />

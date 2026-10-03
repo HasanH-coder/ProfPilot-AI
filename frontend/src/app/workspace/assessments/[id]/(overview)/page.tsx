@@ -6,6 +6,7 @@ import { notFound } from "next/navigation";
 import { AssessmentOverview } from "@/components/assessment/assessment-overview";
 import { DeleteAssessmentDialog } from "@/components/assessment/delete-assessment-dialog";
 import { PageHeader } from "@/components/layout/page-header";
+import { LinkPendingIcon } from "@/components/link-pending-icon";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -40,7 +41,9 @@ export default async function AssessmentPage({ params }: PageProps<"/workspace/a
         description={`${courseText} · Updated ${timeAgo(assessment.updatedAt)}`}
       >
         <Link href={`/workspace/assessments/${id}/edit`} className={buttonVariants()}>
-          <Pencil />
+          <LinkPendingIcon>
+            <Pencil />
+          </LinkPendingIcon>
           Edit assessment
         </Link>
         <DeleteAssessmentDialog assessmentId={id} examName={draft.examName} fileCount={files.length} />

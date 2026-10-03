@@ -4,7 +4,7 @@ ProfPilot AI is a personalized, multi-agent AI workspace for university professo
 
 The planned system brings together specialized agents for assessment generation, lecture and slide creation, course knowledge, email, planning, literature review, and research writing. A central orchestrator will coordinate them, with long-term memory that adapts to each professor.
 
-> **Status:** professors can sign up, log in, and reach a protected workspace. No AI features exist yet. See [Current status](#current-status).
+> **Status:** professors can sign up, manage their courses, and set up assessments, with course material, previous exams and attachments uploaded and saved as drafts. No AI features exist yet: AI exam generation is the next phase. See [Current status](#current-status).
 
 ## Architecture
 
@@ -15,11 +15,15 @@ ProfPilot-AI/
 ├── frontend/                 Next.js web app (the professor's workspace)
 │   └── src/
 │       ├── proxy.ts          Refreshes the login session and redirects on every request
-│       ├── app/              Pages: landing, /login, /signup, /workspace, /auth/confirm
-│       ├── components/       Auth forms, layout (header, sidebar), shadcn/ui components
+│       ├── app/              Pages: landing, /login, /signup, /auth/confirm, and the workspace:
+│       │                     /workspace, /courses, /assessments (list, new, [id], [id]/edit)
+│       ├── components/       Assessment form and uploads, courses, auth forms, layout, shadcn/ui
 │       └── lib/
 │           ├── supabase/     Supabase clients for the browser, the server and the proxy
-│           └── auth/         Login/signup/logout actions and the signed-in professor
+│           ├── auth/         Login/signup/logout actions and the signed-in professor
+│           ├── courses/      Course queries and actions
+│           ├── assessments/  Draft rules, queries, and save/delete actions
+│           └── documents/    File rules and upload/remove actions
 ├── backend/                  FastAPI service (will host the AI agents)
 │   ├── app/
 │   │   ├── main.py           Creates the app, configures CORS, registers routes
@@ -30,11 +34,14 @@ ProfPilot-AI/
 │   │   ├── services/         Business logic (empty for now)
 │   │   └── agents/           AI agents (empty for now)
 │   └── tests/                API tests (pytest)
-├── supabase/migrations/      Database schema as versioned SQL migrations
+├── supabase/migrations/      Database schema and Storage bucket, as versioned SQL migrations
 └── docs/                     Project documentation
 ```
 
-The browser talks to the Next.js frontend, which uses **Supabase Auth** for accounts and reads data from **Supabase PostgreSQL**. Every table has Row Level Security, so each professor can only ever reach their own rows. The FastAPI backend is not connected yet; it will handle AI work later. See [docs/authentication.md](docs/authentication.md) for how sign-up, login and data isolation work.
+The browser talks to the Next.js frontend, which uses **Supabase Auth** for accounts, **Supabase PostgreSQL** for data, and a private **Supabase Storage** bucket for uploaded files. Every table has Row Level Security, and the bucket has matching policies, so each professor can only ever reach their own rows and files. The FastAPI backend is not connected yet; it will handle AI work later.
+
+- [docs/assessment-setup.md](docs/assessment-setup.md): the assessment setup flow, drafts, uploaded files and the private bucket, and how to test it
+- [docs/authentication.md](docs/authentication.md): sign-up, login and data isolation
 
 ## Frontend stack
 
@@ -52,12 +59,12 @@ The browser talks to the Next.js frontend, which uses **Supabase Auth** for acco
 - Pydantic for data models, pydantic-settings for configuration
 - pytest for tests
 
-Planned: Supabase Storage, Realtime and pgvector, and the OpenAI API, with room to swap in other AI providers.
+Planned: Supabase Realtime and pgvector, and the OpenAI API, with room to swap in other AI providers.
 
 ## Setting up Supabase
 
 1. Create a project at [supabase.com](https://supabase.com).
-2. Apply the database schema in `supabase/migrations/`. Either paste the migration file into the dashboard's **SQL Editor** and run it, or use the Supabase CLI: `npx supabase login`, `npx supabase init`, `npx supabase link --project-ref <your-project-ref>`, then `npx supabase db push`.
+2. Apply the migrations in `supabase/migrations/`, in order. They create the tables, Row Level Security, and the private `assessment-files` Storage bucket with its policies. Either paste each migration file into the dashboard's **SQL Editor** and run it, or use the Supabase CLI: `npx supabase login`, `npx supabase init`, `npx supabase link --project-ref <your-project-ref>`, then `npx supabase db push`.
 3. In **Authentication > URL Configuration**, set the Site URL to `http://localhost:3000` and add `http://localhost:3000/**` to the Redirect URLs.
 4. Optional but recommended: in the **Authentication** email templates, change the "Confirm signup" link to `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`. With this template, confirmation links work in any browser, not only the one used to sign up.
 5. Copy `frontend/.env.example` to `frontend/.env.local` and fill in the project URL and **publishable** key (dashboard: **Connect**, or **Settings > API Keys**). Never put a secret key or the `service_role` key in the frontend.
@@ -109,16 +116,25 @@ The defaults work for local development. To change settings, copy `backend/.env.
 
 - Monorepo structure for the frontend, backend, database migrations, and docs
 - Email and password sign-up (with email confirmation), login, and logout using Supabase Auth
-- Database schema for professor profiles, courses, and exam projects, with Row Level Security on every table
+- Database schema for professor profiles, courses, exam projects and uploaded documents, with Row Level Security on every table
 - A profile created automatically for every new professor
 - Protected Professor Workspace with a sidebar (Home, Courses, Assessments), showing the professor's name, email and institution
-- Landing page, light and dark mode, and a responsive layout
+- Course management: add, edit and delete courses
+- Assessment setup ([details](docs/assessment-setup.md)):
+  - the full form: course, name, course material, previous assessments, exam design, notes, attachments, and instructions;
+  - drafts that can be saved, reopened, edited and deleted;
+  - an overview page for each assessment, and the Assessments list
+- File uploads to a private Supabase Storage bucket, with per-professor access policies
+- Landing page, light and dark mode, and a responsive layout for phones, tablets and desktops
 - Backend API with `GET /` and `GET /health`, CORS for the local frontend, environment-based configuration, and tests
+
+**Next phase: AI generation**
+
+- Turning a saved draft into an exam: Prompt Interpreter, then Enhanced Prompt, then ExamSpec, then the generated exam
+- Reading the uploaded files (parsing, then course knowledge search with pgvector)
 
 **Not started**
 
-- Managing courses and creating assessments (the pages exist as placeholders)
 - Password reset and profile editing
 - Frontend-to-backend communication, and verifying Supabase tokens in FastAPI
-- File uploads (Supabase Storage) and course knowledge search (pgvector)
-- AI agents, the orchestrator, and professor personalization
+- The other AI agents, the orchestrator, and professor personalization

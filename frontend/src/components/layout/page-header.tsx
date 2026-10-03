@@ -2,6 +2,8 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { LinkPendingIcon } from "@/components/link-pending-icon";
+
 type PageHeaderProps = {
   title: string;
   description: ReactNode;
@@ -22,7 +24,9 @@ export function PageHeader({ title, description, back, badge, children }: PageHe
           href={back.href}
           className="mb-2 inline-flex w-fit max-w-full items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
-          <ArrowLeft className="size-4 shrink-0" />
+          <LinkPendingIcon>
+            <ArrowLeft className="size-4 shrink-0" />
+          </LinkPendingIcon>
           <span className="truncate">{back.label}</span>
         </Link>
       )}

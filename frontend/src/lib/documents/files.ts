@@ -81,7 +81,9 @@ export function checkFile(file: { name: string; type?: string | null; size: numb
   }
 
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    return { error: `This file is ${formatFileSize(file.size)}. Files can be up to 25 MB.` };
+    // Rounded up, so a file just over the limit never reads as "25 MB".
+    const megabytes = Math.ceil((file.size / (1024 * 1024)) * 10) / 10;
+    return { error: `This file is ${megabytes} MB. Files can be up to 25 MB.` };
   }
 
   return { contentType: allowed.mimeType };

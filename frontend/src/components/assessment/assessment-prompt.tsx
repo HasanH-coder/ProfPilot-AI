@@ -26,7 +26,7 @@ export function AssessmentPrompt({ value, onChange, error }: AssessmentPromptPro
   return (
     <FormSection
       title="Tell ProfPilot what you want"
-      description="You can write naturally. Anything you leave unspecified above can be described here."
+      description="Optional. Write naturally. Anything you leave unspecified above can be described here."
       descriptionId={descriptionId}
       labelFor={textareaId}
     >

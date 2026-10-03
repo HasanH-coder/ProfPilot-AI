@@ -60,7 +60,13 @@ export function UploadList({ items, onRetry, onRemove }: UploadListProps) {
             </div>
 
             {status === "failed" && (
-              <Button type="button" variant="outline" size="sm" onClick={() => onRetry(item)}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={`Retry ${name}`}
+                onClick={() => onRetry(item)}
+              >
                 <RotateCw />
                 Retry
               </Button>

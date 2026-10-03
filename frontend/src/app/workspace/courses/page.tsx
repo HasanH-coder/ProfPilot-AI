@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -24,14 +25,7 @@ export default async function CoursesPage() {
   return (
     <div className="flex flex-col gap-10">
       <PageHeader title="Courses" description="The courses you teach. Each assessment is created for one of them.">
-        <CourseFormDialog
-          trigger={
-            <Button>
-              <Plus />
-              Add course
-            </Button>
-          }
-        />
+        {courses.length > 0 && <AddCourseButton />}
       </PageHeader>
 
       {courses.length > 0 ? (
@@ -45,8 +39,24 @@ export default async function CoursesPage() {
             <EmptyTitle>No courses yet</EmptyTitle>
             <EmptyDescription>Add the courses you teach to start creating assessments for them.</EmptyDescription>
           </EmptyHeader>
+          <EmptyContent>
+            <AddCourseButton />
+          </EmptyContent>
         </Empty>
       )}
     </div>
+  );
+}
+
+function AddCourseButton() {
+  return (
+    <CourseFormDialog
+      trigger={
+        <Button>
+          <Plus />
+          Add course
+        </Button>
+      }
+    />
   );
 }

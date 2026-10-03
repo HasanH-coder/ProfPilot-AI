@@ -53,6 +53,7 @@ export function AssessmentBasics({
               id={courseFieldId}
               className="w-full sm:flex-1"
               disabled={courses.length === 0}
+              aria-required
               aria-invalid={courseError ? true : undefined}
               aria-describedby={courseError ? courseErrorId : undefined}
             >
