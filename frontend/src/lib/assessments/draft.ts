@@ -14,6 +14,13 @@ export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   hard: "Hard",
 };
 
+/** The split a difficulty distribution starts with when the professor switches it on. */
+export const DEFAULT_DIFFICULTY_DISTRIBUTION: Record<Difficulty, number> = {
+  easy: 30,
+  medium: 40,
+  hard: 30,
+};
+
 export const LIMITS = {
   examName: 120,
   durationMinutes: 1440, // 24 hours
@@ -22,9 +29,22 @@ export const LIMITS = {
   professorPrompt: 5000,
 };
 
-/** An assessment draft, shaped like the exam_projects columns it is saved to. */
+/** Shown in place of a missing assessment name. Never saved: an unnamed assessment's exam_name is null. */
+export const UNTITLED_ASSESSMENT = "Untitled assessment";
+
+/** The name to show for an assessment, which is optional. */
+export function assessmentTitle(examName: string | null) {
+  return examName?.trim() || UNTITLED_ASSESSMENT;
+}
+
+/**
+ * An assessment draft, shaped like the exam_projects columns it is saved to.
+ * Every setting is optional except the number of versions.
+ */
 export type AssessmentDraft = {
+  /** null when no course is chosen. */
   courseId: string | null;
+  /** As typed. A blank name is saved as null. */
   examName: string;
   /** null when no duration is specified. */
   durationMinutes: number | null;
@@ -32,8 +52,10 @@ export type AssessmentDraft = {
   mcqPercentage: number | null;
   subjectivePercentage: number | null;
   numberOfVersions: number;
-  /** null when no difficulty is specified. */
-  difficulty: Difficulty | null;
+  /** All three null when the difficulty distribution is not specified; otherwise they add up to 100. */
+  easyPercentage: number | null;
+  mediumPercentage: number | null;
+  hardPercentage: number | null;
   additionalNotes: string;
   professorPrompt: string;
 };
@@ -45,7 +67,7 @@ export type AssessmentDraftErrors = Partial<
     | "durationMinutes"
     | "distribution"
     | "numberOfVersions"
-    | "difficulty"
+    | "difficultyDistribution"
     | "additionalNotes"
     | "professorPrompt",
     string
@@ -56,11 +78,7 @@ export type AssessmentDraftErrors = Partial<
 export function validateAssessmentDraft(draft: AssessmentDraft): AssessmentDraftErrors {
   const errors: AssessmentDraftErrors = {};
 
-  if (!draft.courseId) errors.courseId = "Choose a course.";
-
-  const examName = draft.examName.trim();
-  if (!examName) errors.examName = "Enter an assessment name.";
-  else if (examName.length > LIMITS.examName) {
+  if (draft.examName.trim().length > LIMITS.examName) {
     errors.examName = `Use ${LIMITS.examName} characters or fewer.`;
   }
 
@@ -85,9 +103,8 @@ export function validateAssessmentDraft(draft: AssessmentDraft): AssessmentDraft
     errors.numberOfVersions = `Enter a whole number of versions, from 1 to ${LIMITS.versions}.`;
   }
 
-  if (draft.difficulty !== null && !DIFFICULTIES.includes(draft.difficulty)) {
-    errors.difficulty = "Choose a difficulty, or leave it not specified.";
-  }
+  const difficultyError = checkDifficultyDistribution(draft);
+  if (difficultyError) errors.difficultyDistribution = difficultyError;
 
   if (draft.additionalNotes.length > LIMITS.additionalNotes) {
     errors.additionalNotes = `Use ${LIMITS.additionalNotes.toLocaleString("en")} characters or fewer.`;
@@ -99,12 +116,33 @@ export function validateAssessmentDraft(draft: AssessmentDraft): AssessmentDraft
   return errors;
 }
 
+export type DifficultyPercentages = Pick<
+  AssessmentDraft,
+  "easyPercentage" | "mediumPercentage" | "hardPercentage"
+>;
+
+/**
+ * What's wrong with a difficulty distribution, if anything. Valid means not
+ * specified at all (all three null), or three whole numbers from 0 to 100 that
+ * add up to 100. The database enforces the same rule.
+ */
+export function checkDifficultyDistribution(draft: DifficultyPercentages): string | undefined {
+  const percentages = [draft.easyPercentage, draft.mediumPercentage, draft.hardPercentage];
+  if (percentages.every((percentage) => percentage === null)) return undefined;
+  if (!percentages.every((percentage) => isWholeNumberBetween(percentage, 0, 100))) {
+    return "Enter a whole number from 0 to 100 for each difficulty.";
+  }
+  if (sum(percentages) !== 100) return "Difficulty percentages must total 100%.";
+  return undefined;
+}
+
 /**
  * Readable text for a draft's settings, as summaries show them. A setting is
  * undefined when it isn't specified (or isn't a valid number yet while typing).
  */
 export function describeSettings(draft: AssessmentDraft) {
   const { durationMinutes: minutes, mcqPercentage: mcq, subjectivePercentage: subjective } = draft;
+  const { easyPercentage: easy, mediumPercentage: medium, hardPercentage: hard } = draft;
   const versions = draft.numberOfVersions;
   return {
     duration: isWholeNumberBetween(minutes, 1, Infinity)
@@ -113,7 +151,9 @@ export function describeSettings(draft: AssessmentDraft) {
     distribution:
       mcq !== null && subjective !== null ? `${mcq}% MCQ / ${subjective}% Subjective` : undefined,
     versions: isWholeNumberBetween(versions, 1, Infinity) ? `${versions}` : undefined,
-    difficulty: draft.difficulty ? DIFFICULTY_LABELS[draft.difficulty] : undefined,
+    difficulty: [easy, medium, hard].every((percentage) => isWholeNumberBetween(percentage, 0, 100))
+      ? `${easy}% Easy / ${medium}% Medium / ${hard}% Hard`
+      : undefined,
   };
 }
 
@@ -131,7 +171,9 @@ export function isAssessmentDraft(input: unknown): input is AssessmentDraft {
     isNumberOrNull(value.mcqPercentage) &&
     isNumberOrNull(value.subjectivePercentage) &&
     typeof value.numberOfVersions === "number" &&
-    isStringOrNull(value.difficulty) &&
+    isNumberOrNull(value.easyPercentage) &&
+    isNumberOrNull(value.mediumPercentage) &&
+    isNumberOrNull(value.hardPercentage) &&
     typeof value.additionalNotes === "string" &&
     typeof value.professorPrompt === "string"
   );
@@ -139,4 +181,8 @@ export function isAssessmentDraft(input: unknown): input is AssessmentDraft {
 
 function isWholeNumberBetween(value: unknown, min: number, max: number): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+function sum(numbers: (number | null)[]) {
+  return numbers.reduce<number>((total, number) => total + (number ?? 0), 0);
 }

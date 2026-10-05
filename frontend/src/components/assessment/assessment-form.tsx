@@ -9,7 +9,13 @@ import { AdditionalNotes } from "@/components/assessment/additional-notes";
 import { AssessmentBasics } from "@/components/assessment/assessment-basics";
 import { AssessmentPrompt } from "@/components/assessment/assessment-prompt";
 import { AssessmentSummary } from "@/components/assessment/assessment-summary";
-import { DifficultySelector } from "@/components/assessment/difficulty-selector";
+import {
+  DIFFICULTY_NOT_SPECIFIED,
+  DifficultyDistribution,
+  difficultyDistributionValue,
+  difficultyPercentages,
+  type DifficultyDistributionValue,
+} from "@/components/assessment/difficulty-distribution";
 import { DocumentUploadSection } from "@/components/assessment/document-upload-section";
 import {
   durationInMinutes,
@@ -38,11 +44,7 @@ import {
   type DraftLocation,
   type SaveDraftResult,
 } from "@/lib/assessments/actions";
-import {
-  validateAssessmentDraft,
-  type AssessmentDraft,
-  type Difficulty,
-} from "@/lib/assessments/draft";
+import { validateAssessmentDraft, type AssessmentDraft } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
 import type { DocumentFile } from "@/lib/documents/files";
 
@@ -53,7 +55,7 @@ type FormValues = {
   duration: DurationValue;
   distribution: DistributionValue;
   versions: VersionValue;
-  difficulty: Difficulty | null;
+  difficulty: DifficultyDistributionValue;
   additionalNotes: string;
   professorPrompt: string;
 };
@@ -64,7 +66,7 @@ const EMPTY_FORM: FormValues = {
   duration: { choice: "none", customMinutes: "" },
   distribution: { enabled: false, mcqPercentage: 50 },
   versions: { choice: "1", customCount: "" },
-  difficulty: null,
+  difficulty: DIFFICULTY_NOT_SPECIFIED,
   additionalNotes: "",
   professorPrompt: "",
 };
@@ -79,7 +81,7 @@ function toDraft(values: FormValues): AssessmentDraft {
     mcqPercentage: distribution.enabled ? distribution.mcqPercentage : null,
     subjectivePercentage: distribution.enabled ? 100 - distribution.mcqPercentage : null,
     numberOfVersions: versionCount(values.versions),
-    difficulty: values.difficulty,
+    ...difficultyPercentages(values.difficulty),
     additionalNotes: values.additionalNotes,
     professorPrompt: values.professorPrompt,
   };
@@ -97,7 +99,7 @@ function toFormValues(draft: AssessmentDraft): FormValues {
         ? { enabled: false, mcqPercentage: 50 }
         : { enabled: true, mcqPercentage: draft.mcqPercentage },
     versions: versionValue(draft.numberOfVersions),
-    difficulty: draft.difficulty,
+    difficulty: difficultyDistributionValue(draft),
     additionalNotes: draft.additionalNotes,
     professorPrompt: draft.professorPrompt,
   };
@@ -153,11 +155,6 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   const course = courses.find((candidate) => candidate.id === values.courseId);
   const hasUnsavedChanges = JSON.stringify(draft) !== (savedSnapshot ?? EMPTY_SNAPSHOT);
   const saveFailed = Boolean(saveResult.error || saveResult.fieldErrors);
-  // A new assessment needs its course and name before its draft can hold files.
-  const uploadsDisabledReason =
-    saved || (values.courseId && values.examName.trim())
-      ? undefined
-      : "Choose a course and enter the assessment name above to add files.";
 
   useEffect(() => {
     if (!refocusSaveButton) return;
@@ -272,7 +269,6 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           description="Optional. Upload lectures, notes, readings, assignments, or other material the assessment should be based on."
           category="course_material"
           uploads={uploads}
-          disabledReason={uploadsDisabledReason}
         />
 
         <DocumentUploadSection
@@ -280,7 +276,6 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           description="Optional. Upload previous exams, quizzes, or answer keys so ProfPilot can later understand your assessment style and difficulty."
           category="previous_exam"
           uploads={uploads}
-          disabledReason={uploadsDisabledReason}
         />
 
         <FormSection
@@ -302,10 +297,10 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
             onChange={(versions) => update({ versions })}
             error={errors.numberOfVersions}
           />
-          <DifficultySelector
+          <DifficultyDistribution
             value={values.difficulty}
             onChange={(difficulty) => update({ difficulty })}
-            error={errors.difficulty}
+            error={errors.difficultyDistribution}
           />
         </FormSection>
 
@@ -320,7 +315,6 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           description="Optional. Add screenshots, diagrams, graphs, tables, or other images you may want the assessment to reference."
           category="additional_attachment"
           uploads={uploads}
-          disabledReason={uploadsDisabledReason}
         />
 
         <AssessmentPrompt

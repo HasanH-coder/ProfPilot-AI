@@ -22,6 +22,7 @@ import { deleteAssessment } from "@/lib/assessments/actions";
 
 type DeleteAssessmentDialogProps = {
   assessmentId: string;
+  /** Blank when the assessment has no name. */
   examName: string;
   fileCount: number;
 };
@@ -63,7 +64,9 @@ export function DeleteAssessmentDialog({ assessmentId, examName, fileCount }: De
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete {examName}?</AlertDialogTitle>
+          <AlertDialogTitle>
+            {examName.trim() ? `Delete ${examName.trim()}?` : "Delete this untitled assessment?"}
+          </AlertDialogTitle>
           <AlertDialogDescription>
             {fileCount > 0
               ? `This permanently deletes the assessment and its ${files}. This can't be undone.`

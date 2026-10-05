@@ -2,7 +2,7 @@ import "server-only";
 
 import { cache } from "react";
 
-import type { AssessmentDraft, Difficulty } from "@/lib/assessments/draft";
+import type { AssessmentDraft } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
 import type { DocumentCategory, DocumentFile } from "@/lib/documents/files";
 import { createClient } from "@/lib/supabase/server";
@@ -10,13 +10,13 @@ import { createClient } from "@/lib/supabase/server";
 /** An assessment as shown in the Assessments list. */
 export type AssessmentListItem = {
   id: string;
-  examName: string;
+  /** null when the assessment has no name; show assessmentTitle() instead. */
+  examName: string | null;
   status: string;
   updatedAt: string;
   courseCode: string | null;
   durationMinutes: number | null;
   numberOfVersions: number;
-  difficulty: Difficulty | null;
   /** How many files the professor uploaded for the assessment. */
   fileCount: number;
 };
@@ -30,7 +30,7 @@ export async function getAssessments({ limit }: { limit?: number } = {}): Promis
   let query = supabase
     .from("exam_projects")
     .select(
-      "id, exam_name, status, updated_at, duration_minutes, number_of_versions, difficulty, course:courses(code), documents(count)",
+      "id, exam_name, status, updated_at, duration_minutes, number_of_versions, course:courses(code), documents(count)",
     )
     .order("updated_at", { ascending: false });
   if (limit) query = query.limit(limit);
@@ -45,7 +45,6 @@ export async function getAssessments({ limit }: { limit?: number } = {}): Promis
     courseCode: row.course?.code ?? null,
     durationMinutes: row.duration_minutes,
     numberOfVersions: row.number_of_versions,
-    difficulty: row.difficulty as Difficulty | null,
     fileCount: row.documents[0]?.count ?? 0,
   }));
 }
@@ -77,7 +76,7 @@ export const getAssessment = cache(async (id: string): Promise<Assessment | null
   const { data, error } = await supabase
     .from("exam_projects")
     .select(
-      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, difficulty, additional_notes, professor_prompt, course:courses(id, code, name), documents(id, category, original_name, size_bytes)",
+      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, easy_percentage, medium_percentage, hard_percentage, additional_notes, professor_prompt, course:courses(id, code, name), documents(id, category, original_name, size_bytes)",
     )
     .eq("id", id)
     .order("created_at", { referencedTable: "documents" })
@@ -92,12 +91,16 @@ export const getAssessment = cache(async (id: string): Promise<Assessment | null
     course: data.course,
     draft: {
       courseId: data.course_id,
-      examName: data.exam_name,
+      examName: data.exam_name ?? "",
       durationMinutes: data.duration_minutes,
       mcqPercentage: data.mcq_percentage,
       subjectivePercentage: data.subjective_percentage,
       numberOfVersions: data.number_of_versions,
-      difficulty: data.difficulty as Difficulty | null,
+      // The deprecated difficulty column isn't read: drafts saved before the
+      // distribution existed show it as not specified.
+      easyPercentage: data.easy_percentage,
+      mediumPercentage: data.medium_percentage,
+      hardPercentage: data.hard_percentage,
       additionalNotes: data.additional_notes ?? "",
       professorPrompt: data.professor_prompt ?? "",
     },

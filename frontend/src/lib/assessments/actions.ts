@@ -36,9 +36,10 @@ export type SaveDraftResult = {
 // professor can only ever read, change or delete their own assessments.
 
 /**
- * Creates the draft for a new assessment, with just its course and name. The
- * form calls this once, on the first upload or the first save. Everything
- * after that updates this draft, so one assessment never becomes two.
+ * Creates the draft for a new assessment, with its course and name if the
+ * professor has given them (both are optional). The form calls this once, on
+ * the first upload or the first save. Everything after that updates this
+ * draft, so one assessment never becomes two.
  */
 export async function createAssessmentDraft(input: {
   courseId: string | null;
@@ -47,15 +48,15 @@ export async function createAssessmentDraft(input: {
   const professor = await getCurrentProfessor();
   const courseId = typeof input?.courseId === "string" ? input.courseId : null;
   const examName = typeof input?.examName === "string" ? input.examName.trim() : "";
-  if (!courseId || !examName || examName.length > LIMITS.examName) {
-    return { error: "Choose a course and enter the assessment name first." };
+  if (examName.length > LIMITS.examName) {
+    return { error: `Use an assessment name of ${LIMITS.examName} characters or fewer.` };
   }
 
   const supabase = await createClient();
   // professor_id defaults to the signed-in professor and status to 'draft'.
   const { data, error } = await supabase
     .from("exam_projects")
-    .insert({ course_id: courseId, exam_name: examName })
+    .insert({ course_id: courseId, exam_name: examName || null })
     .select("id")
     .single();
   if (error) {
@@ -89,12 +90,16 @@ export async function saveAssessmentDraft(
     .from("exam_projects")
     .update({
       course_id: draft.courseId,
-      exam_name: draft.examName.trim(),
+      // An unnamed assessment is stored as null, never as a placeholder name.
+      exam_name: draft.examName.trim() || null,
       duration_minutes: draft.durationMinutes,
       mcq_percentage: draft.mcqPercentage,
       subjective_percentage: draft.subjectivePercentage,
       number_of_versions: draft.numberOfVersions,
-      difficulty: draft.difficulty,
+      // The deprecated difficulty column is left as it is: these replace it.
+      easy_percentage: draft.easyPercentage,
+      medium_percentage: draft.mediumPercentage,
+      hard_percentage: draft.hardPercentage,
       additional_notes: textOrNull(draft.additionalNotes),
       professor_prompt: textOrNull(draft.professorPrompt),
     })

@@ -14,8 +14,6 @@ type DocumentUploadSectionProps = {
   /** Which kind of files this section holds. Each section keeps its own category. */
   category: DocumentCategory;
   uploads: DocumentUploads;
-  /** Set when files can't be added yet. Explains why. */
-  disabledReason?: string;
 };
 
 /** A section of the Create assessment form where the professor adds one kind of file. */
@@ -24,7 +22,6 @@ export function DocumentUploadSection({
   description,
   category,
   uploads,
-  disabledReason,
 }: DocumentUploadSectionProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -41,7 +38,6 @@ export function DocumentUploadSection({
         <FileDropzone
           labelledBy={titleId}
           describedBy={descriptionId}
-          disabledReason={disabledReason}
           onFiles={(files) => uploads.addFiles(category, files)}
         />
         {items.length > 0 && (

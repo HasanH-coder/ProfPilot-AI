@@ -10,6 +10,7 @@ import { LinkPendingIcon } from "@/components/link-pending-icon";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
+import { assessmentTitle } from "@/lib/assessments/draft";
 import { getAssessment } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import { timeAgo } from "@/lib/time";
@@ -19,7 +20,7 @@ export async function generateMetadata({
 }: PageProps<"/workspace/assessments/[id]">): Promise<Metadata> {
   await getCurrentProfessor();
   const assessment = await getAssessment((await params).id);
-  return { title: assessment?.draft.examName ?? "Assessment not found" };
+  return { title: assessment ? assessmentTitle(assessment.draft.examName) : "Assessment not found" };
 }
 
 export default async function AssessmentPage({ params }: PageProps<"/workspace/assessments/[id]">) {
@@ -36,7 +37,7 @@ export default async function AssessmentPage({ params }: PageProps<"/workspace/a
     <div className="flex flex-col gap-10">
       <PageHeader
         back={{ href: "/workspace/assessments", label: "Assessments" }}
-        title={draft.examName}
+        title={assessmentTitle(draft.examName)}
         badge={<Badge variant="secondary">Draft</Badge>}
         description={`${courseText} · Updated ${timeAgo(assessment.updatedAt)}`}
       >

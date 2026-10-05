@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 
 import { AssessmentForm } from "@/components/assessment/assessment-form";
 import { PageHeader } from "@/components/layout/page-header";
+import { assessmentTitle } from "@/lib/assessments/draft";
 import { getAssessment } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import { getCourses } from "@/lib/courses/queries";
@@ -12,7 +13,9 @@ export async function generateMetadata({
 }: PageProps<"/workspace/assessments/[id]/edit">): Promise<Metadata> {
   await getCurrentProfessor();
   const assessment = await getAssessment((await params).id);
-  return { title: assessment ? `Edit ${assessment.draft.examName}` : "Assessment not found" };
+  if (!assessment) return { title: "Assessment not found" };
+  const examName = assessment.draft.examName.trim();
+  return { title: examName ? `Edit ${examName}` : "Edit assessment" };
 }
 
 export default async function EditAssessmentPage({
@@ -29,9 +32,9 @@ export default async function EditAssessmentPage({
   return (
     <div className="flex flex-col gap-10">
       <PageHeader
-        back={{ href: `/workspace/assessments/${id}`, label: assessment.draft.examName }}
+        back={{ href: `/workspace/assessments/${id}`, label: assessmentTitle(assessment.draft.examName) }}
         title="Edit assessment"
-        description="Only the course and assessment name are required; everything else is optional. Save your draft as you go, or continue to its overview."
+        description="Everything is optional. Add as much or as little guidance as you want, save your draft as you go, or continue to its overview."
       />
       <AssessmentForm
         courses={courses}

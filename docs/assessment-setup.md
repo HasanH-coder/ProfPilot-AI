@@ -8,29 +8,35 @@ How a professor sets up an assessment in ProfPilot AI, how drafts and uploaded f
 
 1. **Workspace** (`/workspace`). The home page links to **Create assessment** and lists the professor's most recent assessments.
 2. **Create assessment** (`/workspace/assessments/new`). One page with these sections:
-   - **Course** and **Assessment name**: the only two required fields. A course can be added without leaving the page (**New course**).
+   - **Course** and **Assessment name**: both optional. A course can be added without leaving the page (**New course**), and **No course** clears the choice.
    - **Course material**: lectures, notes, readings, assignments.
    - **Previous assessments**: past exams, quizzes, answer keys.
-   - **Exam design**: duration, question distribution (MCQ / subjective, always adding up to 100%), number of versions, difficulty.
+   - **Exam design**: duration, question distribution (MCQ / subjective, always adding up to 100%), number of versions, difficulty distribution (easy / medium / hard percentages that must add up to 100%).
    - **Additional notes**: specific requests or constraints.
    - **Additional images or attachments**: screenshots, diagrams, graphs, tables.
    - **Tell ProfPilot what you want**: the professor's instructions in their own words.
 
-   Everything except the course and name is optional, and each optional section says so. A live **Assessment summary** shows the current settings and how many files are in each category.
+   Everything is optional: a professor can leave every field blank, upload material, and describe the rest in **Tell ProfPilot what you want**. A live **Assessment summary** shows the current settings and how many files are in each category.
 3. **Save draft** keeps the professor on the page and shows **Saving…**, then **Saved** (or **Save failed** with the reason). The first save moves the page to the draft's own address, `/workspace/assessments/[id]/edit`, so reloading reopens it. **Continue** saves, then opens the assessment's overview.
 4. **Overview** (`/workspace/assessments/[id]`). A read-only summary: settings, notes, instructions, and the files in each category, with **Edit assessment** and **Delete**.
 5. **Edit** (`/workspace/assessments/[id]/edit`). The same form, reopened with every option, text and uploaded file restored.
-6. **Assessments list** (`/workspace/assessments`). Every assessment, most recently updated first, with its course, duration, versions, file count and last update. Each row opens its overview.
+6. **Assessments list** (`/workspace/assessments`). Every assessment, most recently updated first, with its course, duration, versions, file count and last update. Each row opens its overview. The difficulty distribution is left out of the rows to keep them short; the overview and summary show it.
 
 ## The draft model
 
 An assessment is a row in `exam_projects` with `status = 'draft'`. The fields the form fills are:
 
-`course_id`, `exam_name`, `duration_minutes`, `mcq_percentage`, `subjective_percentage`, `number_of_versions`, `difficulty`, `additional_notes`, `professor_prompt`.
+`course_id`, `exam_name`, `duration_minutes`, `mcq_percentage`, `subjective_percentage`, `number_of_versions`, `easy_percentage`, `medium_percentage`, `hard_percentage`, `additional_notes`, `professor_prompt`.
 
-Unspecified options are stored as `null`; `number_of_versions` defaults to 1. The AI fields (`enhanced_prompt`, `exam_spec`, `generation_mode`) are left empty for the next phase.
+Unspecified options are stored as `null`; `number_of_versions` defaults to 1. A completely empty form is a valid draft. The AI fields (`enhanced_prompt`, `exam_spec`, `generation_mode`) are left empty for the next phase.
 
-**One assessment is always one draft.** A new assessment gets its `exam_projects` row the first time the professor uploads a file or saves, whichever comes first (`createAssessmentDraft`). Every later upload and save reuses that row; saving only ever updates it (`saveAssessmentDraft`). Double clicks and parallel uploads share the same request, so they can't create a second draft.
+- **No name.** An unnamed assessment has `exam_name = null`; the database rejects a blank name, so "no name" is always `null`. The app shows **Untitled assessment** in its place, but never stores that text. A missing course shows as **No course** (or **Not specified** in settings).
+- **Difficulty distribution.** `easy_percentage`, `medium_percentage` and `hard_percentage` (`smallint`) are either all `null` (not specified) or all set, each from 0 to 100, adding up to 100. A `CHECK` constraint enforces this, so a partly specified or wrong total (such as 30 / `null` / 70 or 30 / 30 / 30) can never be stored, whatever the browser sends.
+- **Legacy `difficulty`.** The old single `difficulty` column (`easy` / `medium` / `hard`) is deprecated. The app no longer reads or writes it, so new assessments leave it `null`, and drafts saved before the change keep their old value but show the difficulty distribution as **Not specified**. It is kept only so that old value isn't lost; a later migration can convert or drop it.
+
+These changes are in migration `supabase/migrations/20261005194656_optional_assessment_name_and_difficulty_distribution.sql`.
+
+**One assessment is always one draft.** A new assessment gets its `exam_projects` row the first time the professor uploads a file or saves, whichever comes first (`createAssessmentDraft`), even if no course or name has been given yet. Every later upload and save reuses that row; saving only ever updates it (`saveAssessmentDraft`). Double clicks and parallel uploads share the same request, so they can't create a second draft.
 
 **Files are saved as soon as they upload**, independently of **Save draft**. Removing a file deletes it right away. So an assessment's files are never "unsaved", and a draft created by an upload keeps its files even if the professor leaves without saving.
 
@@ -118,10 +124,10 @@ Automated checks, from `frontend/`: `npm run lint`, `npx tsc --noEmit` and `npm 
 
 To try the flow by hand (about 10 minutes), use two accounts (A and B):
 
-1. As **A**, open **Courses** and add a course. Then **Create assessment**: choose the course, enter a name, and press **Save draft**. The page moves to the draft's address and says **Saved**. Reload: everything is still there.
-2. Upload a PDF to each of the three file sections. Try an unsupported file (for example a `.zip`): it is listed as **Not added** with the reason. Remove one file.
-3. Set a duration, a question distribution, versions and difficulty; add notes and instructions; press **Continue**. The overview shows all of it.
-4. **Edit assessment**: everything is restored. Change the percentage, save, reload: the new percentage remains.
+1. As **A**, open **Create assessment** and press **Save draft** without filling in anything. The page moves to the draft's address and says **Saved**; the Assessments list shows **Untitled assessment**, **No course · 1 version**.
+2. Open **Create assessment** again and, without a course or name, upload two PDFs to **Course material**. Only one new draft appears in the list. Then add a course with **New course** (it is chosen for you), enter a name and press **Save draft**: that same draft is updated, and the list still has one entry for it. Upload a PDF to each of the three file sections. Try an unsupported file (for example a `.zip`): it is listed as **Not added** with the reason. Remove one file.
+3. Set a duration, a question distribution and versions. Tick **Specify difficulty distribution**: it starts at 30 / 40 / 30. Try 30 / 30 / 30: the message **Difficulty percentages must total 100%.** appears and saving is blocked. Set 20 / 50 / 30, add notes and instructions, and press **Continue**. The overview shows all of it.
+4. **Edit assessment**: everything is restored, including 20 / 50 / 30. Untick the difficulty distribution and save: the overview says **Not specified**.
 5. Open **Assessments**: the draft is listed with its course, settings, file count and last update.
 6. Copy the overview's address. Log in as **B** (another browser or a private window): B sees no courses and no assessments, and A's address shows **Assessment not found**.
 7. As **A**, delete the assessment from its overview. It disappears from the list, and its files are removed from the bucket.

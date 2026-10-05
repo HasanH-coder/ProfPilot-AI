@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
-import { DIFFICULTY_LABELS } from "@/lib/assessments/draft";
+import { assessmentTitle } from "@/lib/assessments/draft";
 import type { AssessmentListItem } from "@/lib/assessments/queries";
 import { timeAgo } from "@/lib/time";
 
@@ -21,7 +21,7 @@ export function AssessmentList({ assessments }: { assessments: AssessmentListIte
                 href={`/workspace/assessments/${assessment.id}`}
                 className="truncate font-medium outline-none after:absolute after:inset-0"
               >
-                {assessment.examName}
+                {assessmentTitle(assessment.examName)}
               </Link>
               <Badge variant="secondary" className="shrink-0">
                 {capitalize(assessment.status)}
@@ -38,14 +38,13 @@ export function AssessmentList({ assessments }: { assessments: AssessmentListIte
   );
 }
 
-/** For example: "CMPS 297U · 60 min · 2 versions · Hard · 3 files". */
+/** For example: "CMPS 297U · 60 min · 2 versions · 3 files". */
 function describe(assessment: AssessmentListItem) {
-  const { courseCode, durationMinutes, numberOfVersions, difficulty, fileCount } = assessment;
+  const { courseCode, durationMinutes, numberOfVersions, fileCount } = assessment;
   return [
     courseCode ?? "No course",
     durationMinutes && `${durationMinutes} min`,
     `${numberOfVersions} ${numberOfVersions === 1 ? "version" : "versions"}`,
-    difficulty && (DIFFICULTY_LABELS[difficulty] ?? difficulty),
     fileCount > 0 && `${fileCount} ${fileCount === 1 ? "file" : "files"}`,
   ]
     .filter(Boolean)

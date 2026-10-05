@@ -1,8 +1,15 @@
 import type { ReactNode } from "react";
 
+import { DifficultyBar, DifficultySwatch } from "@/components/assessment/difficulty-bar";
 import { DocumentList } from "@/components/assessment/document-list";
 import { Badge } from "@/components/ui/badge";
-import { describeSettings } from "@/lib/assessments/draft";
+import {
+  describeSettings,
+  DIFFICULTIES,
+  DIFFICULTY_LABELS,
+  type AssessmentDraft,
+  type Difficulty,
+} from "@/lib/assessments/draft";
 import type { Assessment } from "@/lib/assessments/queries";
 import type { DocumentCategory } from "@/lib/documents/files";
 
@@ -16,28 +23,27 @@ const FILE_SECTIONS: { category: DocumentCategory; title: string }[] = [
 export function AssessmentOverview({ assessment }: { assessment: Assessment }) {
   const { course, draft, files } = assessment;
   const settings = describeSettings(draft);
-  const details = [
-    {
-      term: "Course",
-      value: course && (course.name ? `${course.code} · ${course.name}` : course.code),
-      empty: "No course",
-    },
-    { term: "Assessment name", value: draft.examName },
+  const details: { term: string; value?: ReactNode }[] = [
+    { term: "Course", value: course && (course.name ? `${course.code} · ${course.name}` : course.code) },
+    { term: "Assessment name", value: draft.examName.trim() },
     { term: "Duration", value: settings.duration },
     { term: "Question distribution", value: settings.distribution },
     { term: "Versions", value: settings.versions },
-    { term: "Difficulty", value: settings.difficulty },
+    {
+      term: "Difficulty distribution",
+      value: settings.difficulty && <DifficultyDistributionDetail draft={draft} />,
+    },
   ];
 
   return (
     <div className="flex flex-col gap-10">
       <OverviewSection title="Settings">
         <dl className="divide-y rounded-xl border text-sm">
-          {details.map(({ term, value, empty = "Not specified" }) => (
+          {details.map(({ term, value }) => (
             <div key={term} className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4">
               <dt className="text-muted-foreground">{term}</dt>
               <dd className={value ? "font-medium break-words" : "text-muted-foreground"}>
-                {value || empty}
+                {value || "Not specified"}
               </dd>
             </div>
           ))}
@@ -64,6 +70,29 @@ export function AssessmentOverview({ assessment }: { assessment: Assessment }) {
           </OverviewSection>
         );
       })}
+    </div>
+  );
+}
+
+/** The easy, medium and hard shares as a bar, with each percentage written out below it. */
+function DifficultyDistributionDetail({ draft }: { draft: AssessmentDraft }) {
+  const percentages: Record<Difficulty, number> = {
+    easy: draft.easyPercentage ?? 0,
+    medium: draft.mediumPercentage ?? 0,
+    hard: draft.hardPercentage ?? 0,
+  };
+  return (
+    <div className="flex max-w-xs flex-col gap-3 pt-1">
+      <DifficultyBar percentages={percentages} />
+      <ul className="flex flex-col gap-1.5">
+        {DIFFICULTIES.map((difficulty) => (
+          <li key={difficulty} className="flex items-center gap-2">
+            <DifficultySwatch difficulty={difficulty} />
+            <span className="font-normal">{DIFFICULTY_LABELS[difficulty]}</span>
+            <span className="ml-auto tabular-nums">{percentages[difficulty]}%</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

@@ -26,7 +26,7 @@ type AssessmentBasicsProps = {
   errors: { courseId?: string; examName?: string };
 };
 
-/** Which course the assessment is for (or a new one), and the assessment's name. */
+/** Which course the assessment is for (or a new one), and the assessment's name. Both are optional. */
 export function AssessmentBasics({
   courses,
   courseId,
@@ -40,8 +40,8 @@ export function AssessmentBasics({
   const examNameId = useId();
   // Tells the select which text to show for the chosen course.
   const courseLabels = Object.fromEntries(courses.map((course) => [course.id, courseLabel(course)]));
-  const courseError =
-    errors.courseId && courses.length === 0 ? "Add a course to continue." : errors.courseId;
+  // Only set when the save is rejected, for example for a course that was just deleted.
+  const courseError = errors.courseId;
 
   return (
     <div className="flex flex-col gap-6">
@@ -53,15 +53,14 @@ export function AssessmentBasics({
               id={courseFieldId}
               className="w-full sm:flex-1"
               disabled={courses.length === 0}
-              aria-required
               aria-invalid={courseError ? true : undefined}
               aria-describedby={courseError ? courseErrorId : undefined}
             >
-              <SelectValue
-                placeholder={courses.length > 0 ? "Choose a course" : "No courses yet. Add one to continue."}
-              />
+              <SelectValue placeholder={courses.length > 0 ? "No course selected" : "No courses yet"} />
             </SelectTrigger>
             <SelectContent>
+              {/* Clears the choice: an assessment doesn't need a course. */}
+              <SelectItem value={null}>No course</SelectItem>
               {courses.map((course) => (
                 <SelectItem key={course.id} value={course.id}>
                   {courseLabel(course)}
@@ -88,7 +87,6 @@ export function AssessmentBasics({
         label="Assessment name"
         placeholder="e.g. Midterm, Final Exam, Quiz 2"
         autoComplete="off"
-        required
         maxLength={LIMITS.examName}
         value={examName}
         onChange={(event) => onExamNameChange(event.target.value)}
