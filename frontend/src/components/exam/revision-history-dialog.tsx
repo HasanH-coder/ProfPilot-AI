@@ -68,7 +68,7 @@ export function RevisionHistoryDialog({ question, open, onOpenChange, onRestored
   const locked = question.status === "approved";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="workspace-theme max-h-[85svh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>History of question {question.number}</DialogTitle>
           <DialogDescription>

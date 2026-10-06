@@ -39,16 +39,22 @@ export function AssessmentBasics({
   const courseErrorId = useId();
   const examNameId = useId();
   // Tells the select which text to show for the chosen course.
-  const courseLabels = Object.fromEntries(courses.map((course) => [course.id, courseLabel(course)]));
+  const courseLabels = Object.fromEntries(
+    courses.map((course) => [course.id, courseLabel(course)]),
+  );
   // Only set when the save is rejected, for example for a course that was just deleted.
   const courseError = errors.courseId;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       <Field data-invalid={courseError ? true : undefined}>
         <FieldLabel htmlFor={courseFieldId}>Course</FieldLabel>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Select items={courseLabels} value={courseId} onValueChange={onCourseChange}>
+          <Select
+            items={courseLabels}
+            value={courseId}
+            onValueChange={onCourseChange}
+          >
             <SelectTrigger
               id={courseFieldId}
               className="w-full sm:flex-1"
@@ -56,9 +62,13 @@ export function AssessmentBasics({
               aria-invalid={courseError ? true : undefined}
               aria-describedby={courseError ? courseErrorId : undefined}
             >
-              <SelectValue placeholder={courses.length > 0 ? "No course selected" : "No courses yet"} />
+              <SelectValue
+                placeholder={
+                  courses.length > 0 ? "No course selected" : "No courses yet"
+                }
+              />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className="workspace-theme">
               {/* Clears the choice: an assessment doesn't need a course. */}
               <SelectItem value={null}>No course</SelectItem>
               {courses.map((course) => (
@@ -71,7 +81,7 @@ export function AssessmentBasics({
           <CourseFormDialog
             trigger={
               // text-foreground: keep the button's normal colour when the course field shows an error.
-              <Button variant="outline" className="text-foreground">
+              <Button variant="outline" className="assessment-new-course">
                 <Plus />
                 New course
               </Button>
@@ -79,7 +89,9 @@ export function AssessmentBasics({
             onSaved={(course) => onCourseChange(course.id)}
           />
         </div>
-        {courseError && <FieldError id={courseErrorId}>{courseError}</FieldError>}
+        {courseError && (
+          <FieldError id={courseErrorId}>{courseError}</FieldError>
+        )}
       </Field>
 
       <FormField

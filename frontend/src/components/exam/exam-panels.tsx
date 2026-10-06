@@ -303,7 +303,7 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
             <SelectTrigger id={kindId} className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className="workspace-theme">
               {Object.entries(EXPORT_KINDS).map(([value, label]) => (
                 <SelectItem key={value} value={value}>
                   {label}
@@ -319,7 +319,7 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
               <SelectTrigger id={versionId} className="w-full">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="workspace-theme">
                 {Object.entries(versionItems).map(([value, label]) => (
                   <SelectItem key={value} value={value}>
                     {label}
@@ -371,7 +371,7 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
       )}
 
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
-        <AlertDialogContent>
+        <AlertDialogContent className="workspace-theme">
           <AlertDialogHeader>
             <AlertDialogTitle>Export anyway?</AlertDialogTitle>
             <AlertDialogDescription render={<div />}>

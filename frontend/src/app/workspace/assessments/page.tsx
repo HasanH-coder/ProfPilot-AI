@@ -15,28 +15,50 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { assessmentTitle } from "@/lib/assessments/draft";
 import { getAssessments } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 
 export const metadata: Metadata = { title: "Assessments" };
 
-export default async function AssessmentsPage({ searchParams }: PageProps<"/workspace/assessments">) {
+export default async function AssessmentsPage({
+  searchParams,
+}: PageProps<"/workspace/assessments">) {
   await getCurrentProfessor();
   // Set after an assessment is deleted.
-  const { deleted } = await searchParams;
-  const assessments = await getAssessments();
+  const { deleted, search } = await searchParams;
+  const searchText = (typeof search === "string" ? search : "").trim();
+  const allAssessments = await getAssessments();
+  const assessments = allAssessments.filter(
+    (assessment) =>
+      !searchText ||
+      [assessmentTitle(assessment.examName), assessment.courseCode]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(searchText.toLowerCase()),
+  );
 
   return (
     <div className="flex flex-col gap-10">
-      <PageHeader title="Assessments" description="Exams and other assessments for your courses.">
-        {assessments.length > 0 && <CreateAssessmentLink />}
+      <PageHeader
+        title="Assessments"
+        description={
+          searchText
+            ? `Results for “${searchText}”`
+            : "Exams and other assessments for your courses."
+        }
+      >
+        {allAssessments.length > 0 && <CreateAssessmentLink />}
       </PageHeader>
 
       {deleted === "1" && (
         <Alert>
           <CircleCheck />
           <AlertTitle>Assessment deleted</AlertTitle>
-          <AlertDescription>The assessment and its uploaded files were permanently deleted.</AlertDescription>
+          <AlertDescription>
+            The assessment and its uploaded files were permanently deleted.
+          </AlertDescription>
         </Alert>
       )}
 
@@ -48,13 +70,26 @@ export default async function AssessmentsPage({ searchParams }: PageProps<"/work
             <EmptyMedia variant="icon">
               <ClipboardCheck />
             </EmptyMedia>
-            <EmptyTitle>No assessments yet</EmptyTitle>
+            <EmptyTitle>
+              {searchText ? "No matching assessments" : "No assessments yet"}
+            </EmptyTitle>
             <EmptyDescription>
-              Create an assessment to choose its course, format, files, and instructions.
+              {searchText
+                ? "Try another name or course code, or clear your search."
+                : "Create an assessment to choose its course, format, files, and instructions."}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <CreateAssessmentLink />
+            {searchText ? (
+              <Link
+                href="/workspace/assessments"
+                className={buttonVariants({ variant: "outline" })}
+              >
+                Clear search
+              </Link>
+            ) : (
+              <CreateAssessmentLink />
+            )}
           </EmptyContent>
         </Empty>
       )}

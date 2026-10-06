@@ -495,7 +495,7 @@ function ModeChoice({
       </p>
 
       <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
-        <AlertDialogContent>
+        <AlertDialogContent className="workspace-theme">
           <AlertDialogHeader>
             <AlertDialogTitle>Replace the current exam?</AlertDialogTitle>
             <AlertDialogDescription>

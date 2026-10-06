@@ -1,18 +1,34 @@
+import {
+  BookOpen,
+  Database,
+  FileText,
+  MessageSquareText,
+  Paperclip,
+  Settings2,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
+
+const SECTION_ICONS: Record<string, LucideIcon> = {
+  "Course & Assessment Details": BookOpen,
+  "Course material": FileText,
+  "Previous assessments": Database,
+  "Exam design": Settings2,
+  "Additional notes": MessageSquareText,
+  "Additional images or attachments": Paperclip,
+  "Tell ProfPilot what you want": Sparkles,
+};
 
 type FormSectionProps = {
   title: string;
-  /** id for the title, so a control can be named by it with aria-labelledby. */
   titleId?: string;
   description?: string;
-  /** id for the description, so a field can point to it with aria-describedby. */
   descriptionId?: string;
-  /** When the section holds a single field, its title becomes that field's label. */
   labelFor?: string;
   children: ReactNode;
 };
 
-/** A titled part of the Create assessment form. */
 export function FormSection({
   title,
   titleId,
@@ -21,14 +37,19 @@ export function FormSection({
   labelFor,
   children,
 }: FormSectionProps) {
+  const Icon = SECTION_ICONS[title] ?? FileText;
   return (
-    <section className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1 border-b pb-3">
-        <h2 id={titleId} className="text-base font-semibold tracking-tight">
+    <section className="assessment-section">
+      <div className="assessment-section-header">
+        <h2 id={titleId} className="assessment-section-title">
+          <Icon className="size-5 shrink-0" aria-hidden="true" />
           {labelFor ? <label htmlFor={labelFor}>{title}</label> : title}
         </h2>
         {description && (
-          <p id={descriptionId} className="text-sm text-muted-foreground">
+          <p
+            id={descriptionId}
+            className="text-xs leading-relaxed text-muted-foreground"
+          >
             {description}
           </p>
         )}

@@ -179,7 +179,7 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
 
   return (
     <Dialog open={open} onOpenChange={reset}>
-      <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="workspace-theme max-h-[90svh] overflow-y-auto sm:max-w-2xl">
         <form onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
           <DialogHeader>
             <DialogTitle>Edit question {question.number}</DialogTitle>
@@ -200,7 +200,7 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
                 <SelectTrigger id={ids.type} className="w-full">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="workspace-theme">
                   {Object.entries(TYPE_LABELS).map(([value, label]) => (
                     <SelectItem key={value} value={value}>
                       {label}
@@ -219,7 +219,7 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
                 <SelectTrigger id={ids.difficulty} className="w-full">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="workspace-theme">
                   {Object.entries(DIFFICULTY_LABELS).map(([value, label]) => (
                     <SelectItem key={value} value={value}>
                       {label}

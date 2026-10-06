@@ -254,7 +254,7 @@ export function ExamBuilder({ assessmentId }: { assessmentId: string }) {
         <section
           aria-label="Conversation with ProfPilot"
           className={cn(
-            "flex flex-col gap-4 rounded-xl border bg-card p-4 lg:sticky lg:top-10 lg:flex lg:max-h-[calc(100svh-5rem)]",
+            "flex flex-col gap-4 rounded-xl border bg-card p-4 lg:sticky lg:top-[88px] lg:flex lg:max-h-[calc(100svh-7rem)]",
             panel === "conversation" ? "flex" : "hidden",
           )}
         >

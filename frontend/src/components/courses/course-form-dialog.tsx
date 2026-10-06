@@ -17,7 +17,11 @@ import {
 } from "@/components/ui/dialog";
 import { FieldGroup } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
-import { createCourse, updateCourse, type CourseFormState } from "@/lib/courses/actions";
+import {
+  createCourse,
+  updateCourse,
+  type CourseFormState,
+} from "@/lib/courses/actions";
 import type { Course } from "@/lib/courses/queries";
 
 type CourseFormDialogProps = {
@@ -30,13 +34,17 @@ type CourseFormDialogProps = {
 };
 
 /** A dialog for adding a new course or editing an existing one. */
-export function CourseFormDialog({ trigger, course, onSaved }: CourseFormDialogProps) {
+export function CourseFormDialog({
+  trigger,
+  course,
+  onSaved,
+}: CourseFormDialogProps) {
   const [open, setOpen] = useState(false);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={trigger} />
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="workspace-theme sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{course ? "Edit course" : "New course"}</DialogTitle>
           <DialogDescription>
@@ -58,7 +66,13 @@ export function CourseFormDialog({ trigger, course, onSaved }: CourseFormDialogP
 }
 
 // Rendered inside the dialog, so its fields start fresh every time the dialog opens.
-function CourseForm({ course, onSaved }: { course?: Course; onSaved: (course: Course) => void }) {
+function CourseForm({
+  course,
+  onSaved,
+}: {
+  course?: Course;
+  onSaved: (course: Course) => void;
+}) {
   const codeId = useId();
   const nameId = useId();
   // Controlled, so typed values survive the form reset React does after each submit.

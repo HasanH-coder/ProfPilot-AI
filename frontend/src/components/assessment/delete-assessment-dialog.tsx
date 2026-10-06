@@ -28,7 +28,11 @@ type DeleteAssessmentDialogProps = {
 };
 
 /** A Delete button that asks for confirmation before deleting the assessment and its files. */
-export function DeleteAssessmentDialog({ assessmentId, examName, fileCount }: DeleteAssessmentDialogProps) {
+export function DeleteAssessmentDialog({
+  assessmentId,
+  examName,
+  fileCount,
+}: DeleteAssessmentDialogProps) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string>();
   const [isDeleting, startDeleting] = useTransition();
@@ -43,7 +47,9 @@ export function DeleteAssessmentDialog({ assessmentId, examName, fileCount }: De
         // Let Next.js carry out that redirect (or the one to the login page).
         unstable_rethrow(cause);
         console.error("Delete failed:", cause);
-        setError("The assessment couldn't be deleted. Check your connection and try again.");
+        setError(
+          "The assessment couldn't be deleted. Check your connection and try again.",
+        );
       }
     });
   }
@@ -62,10 +68,12 @@ export function DeleteAssessmentDialog({ assessmentId, examName, fileCount }: De
         <Trash2 />
         Delete
       </AlertDialogTrigger>
-      <AlertDialogContent>
+      <AlertDialogContent className="workspace-theme">
         <AlertDialogHeader>
           <AlertDialogTitle>
-            {examName.trim() ? `Delete ${examName.trim()}?` : "Delete this untitled assessment?"}
+            {examName.trim()
+              ? `Delete ${examName.trim()}?`
+              : "Delete this untitled assessment?"}
           </AlertDialogTitle>
           <AlertDialogDescription>
             {fileCount > 0
@@ -80,7 +88,11 @@ export function DeleteAssessmentDialog({ assessmentId, examName, fileCount }: De
         )}
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={isDeleting}
+          >
             {isDeleting && <Spinner />}
             Delete assessment
           </AlertDialogAction>

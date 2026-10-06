@@ -157,3 +157,706 @@
     linear-gradient(to bottom, var(--border) 1px, transparent 1px);
   background-size: 3rem 3rem;
 }
+
+/* AUB workspace theme: deliberately scoped so public/auth pages keep their theme. */
+.workspace-theme {
+  --background: #fdfcfc;
+  --foreground: #232020;
+  --card: #ffffff;
+  --card-foreground: #232020;
+  --primary: #a6091b;
+  --primary-foreground: #ffffff;
+  --secondary: #faf0f1;
+  --secondary-foreground: #971b2b;
+  --muted: #f6f3f3;
+  --muted-foreground: #716b6b;
+  --accent: #fbeef0;
+  --accent-foreground: #a6091b;
+  --border: #ebe6e6;
+  --input: #e2dcdc;
+  --ring: #b14250;
+  --sidebar: #ffffff;
+  --sidebar-accent: #fbeef0;
+  --sidebar-accent-foreground: #a6091b;
+  --workspace-display: Georgia, "Times New Roman", serif;
+  background: var(--background);
+  color: var(--foreground);
+}
+.dark .workspace-theme {
+  --background: #191617;
+  --foreground: #f4eded;
+  --card: #231f20;
+  --card-foreground: #f4eded;
+  --primary: #e87787;
+  --primary-foreground: #241014;
+  --secondary: #362228;
+  --secondary-foreground: #f4bac3;
+  --muted: #2d2729;
+  --muted-foreground: #b9adb1;
+  --accent: #39242a;
+  --accent-foreground: #f4bac3;
+  --border: #3d3236;
+  --input: #504045;
+  --ring: #d88794;
+  --sidebar: #201c1d;
+  --sidebar-accent: #39242a;
+  --sidebar-accent-foreground: #f4bac3;
+}
+.workspace-shell {
+  display: flex;
+  min-height: 100svh;
+  --workspace-sidebar-width: 244px;
+}
+.workspace-desktop-sidebar {
+  position: sticky;
+  top: 0;
+  width: var(--workspace-sidebar-width);
+  height: 100svh;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  z-index: 35;
+}
+.workspace-body {
+  flex: 1;
+  min-width: 0;
+}
+.workspace-sidebar {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 420px;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--sidebar);
+}
+.workspace-brand {
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 82px;
+  flex-shrink: 0;
+  background: #a6091b;
+  border-radius: 0 0 24px 24px;
+}
+.workspace-brand a {
+  display: block;
+  width: 210px;
+  border-radius: 6px;
+}
+.workspace-brand-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.workspace-nav {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 24px 18px;
+}
+.workspace-nav-item {
+  position: relative;
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.workspace-nav-item:hover {
+  background: var(--muted);
+}
+.workspace-nav-item.is-active {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+  font-weight: 650;
+}
+.workspace-nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: -18px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--primary);
+}
+.workspace-nav-item.is-active svg {
+  border-radius: 4px;
+  padding: 3px;
+  width: 22px;
+  height: 22px;
+  color: #fff;
+  background: #a6091b;
+}
+.workspace-nav-upcoming {
+  color: var(--muted-foreground);
+}
+.workspace-nav-upcoming:hover {
+  background: transparent;
+}
+.workspace-soon {
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 9px;
+  font-weight: 400;
+}
+.workspace-sidebar-art {
+  pointer-events: none;
+  position: absolute;
+  inset: 43% 0 40px;
+  background: url("/images/aub-college-hall.jpg") 57% 40% / cover no-repeat;
+  opacity: 0.4;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 24%,
+    #000 67%,
+    transparent
+  );
+  background-size: auto 88%;
+  background-position: 57% 100%;
+  filter: none;
+  background-color: #bc4352;
+  background-blend-mode: luminosity;
+}
+.workspace-sidebar-footer {
+  position: relative;
+  z-index: 1;
+  margin-top: auto;
+  padding: 12px 18px;
+  background: linear-gradient(transparent, var(--sidebar) 36%);
+}
+.workspace-sidebar-footer > p {
+  margin: 0 0 8px;
+  color: var(--primary);
+  font-family: var(--workspace-display);
+  font-size: 17px;
+  font-weight: 700;
+}
+.workspace-sidebar-footer > p span {
+  font-family: var(--font-sans), sans-serif;
+  font-size: 10px;
+  font-weight: 500;
+}
+.workspace-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  padding: 0 30px;
+  box-shadow: 0 3px 14px #35121b03;
+}
+.workspace-search {
+  position: relative;
+  width: min(100%, 400px);
+  min-width: 0;
+}
+.workspace-search form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  color: var(--muted-foreground);
+  background: var(--background);
+  box-shadow: 0 1px 3px #00000003;
+}
+.workspace-search form:focus-within {
+  border-color: var(--ring);
+  outline: 2px solid color-mix(in srgb, var(--ring), transparent 80%);
+}
+.workspace-search input {
+  width: 100%;
+  min-width: 0;
+  outline: 0;
+  font-size: 11px;
+}
+.workspace-search-results {
+  position: absolute;
+  top: 44px;
+  width: max(100%, 260px);
+  max-width: min(400px, 90vw);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  background: var(--card);
+  box-shadow: 0 8px 30px #30101818;
+}
+.workspace-search-results p {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.workspace-search-results a {
+  display: block;
+  padding: 10px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.workspace-search-results a:hover {
+  background: var(--accent);
+}
+.workspace-topbar-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 14px;
+}
+.workspace-topbar-divider {
+  height: 26px;
+  width: 1px;
+  background: var(--border);
+}
+.workspace-profile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px;
+  border-radius: 8px;
+  text-align: left;
+}
+.workspace-profile:hover {
+  background: var(--muted);
+}
+.workspace-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: #a6091b;
+  font-size: 12px;
+}
+.workspace-profile-name {
+  display: flex;
+  max-width: 170px;
+  flex-direction: column;
+  gap: 2px;
+}
+.workspace-profile-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+}
+.workspace-profile-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+.workspace-main {
+  position: relative;
+  isolation: isolate;
+  padding: 30px 30px 50px;
+  outline: none;
+}
+.workspace-content {
+  position: relative;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.workspace-campus-art {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  top: 0;
+  right: 0;
+  width: 410px;
+  height: 300px;
+  background: url("/images/aub-college-hall.jpg") 62% 44% / cover no-repeat;
+  border-bottom-left-radius: 85% 100%;
+  opacity: 0.46;
+  filter: saturate(0.45) sepia(0.2);
+  mask-image: linear-gradient(
+    135deg,
+    transparent 3%,
+    #000 50%,
+    transparent 88%
+  );
+  overflow: hidden;
+}
+.workspace-campus-art::after {
+  content: "";
+  position: absolute;
+  top: -195px;
+  left: -72px;
+  width: 500px;
+  height: 370px;
+  border: 2px solid #a6091b;
+  border-radius: 50%;
+  transform: rotate(35deg);
+}
+.workspace-page-title {
+  font-family: var(--workspace-display);
+  font-size: clamp(30px, 3.5vw, 44px);
+  line-height: 1.12;
+}
+.workspace-page-title > span,
+.workspace-back-link {
+  color: var(--primary);
+}
+.workspace-page-header {
+  position: relative;
+}
+.workspace-page-header > p {
+  font-size: 12px;
+}
+.assessment-form {
+  display: grid;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
+  padding-bottom: 58px;
+}
+.assessment-fields {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+.assessment-section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 16px 18px;
+  box-shadow: 0 1px 3px #30101803;
+}
+.assessment-section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.assessment-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--workspace-display);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.assessment-section-title svg {
+  color: var(--primary);
+}
+.assessment-section [data-slot="field-label"],
+.assessment-section [data-slot="field-legend"] {
+  font-size: 12px;
+  font-weight: 500;
+}
+.assessment-section [data-slot="input"],
+.assessment-section [data-slot="select-trigger"] {
+  background: var(--card);
+  font-size: 12px;
+  box-shadow: 0 1px 3px #00000003;
+  height: 30px;
+}
+.assessment-section [data-slot="field-description"] {
+  font-size: 12px;
+}
+.assessment-section [data-slot="field-set"] + [data-slot="field-set"] {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+.assessment-new-course {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary), transparent 78%);
+  background: var(--accent);
+  padding-inline: 16px;
+  font-size: 12px;
+}
+.assessment-aside {
+  position: sticky;
+  top: 88px;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+.assessment-summary {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 18px;
+  box-shadow: 0 4px 18px #30101805;
+}
+.assessment-summary > h2 {
+  color: var(--primary);
+}
+.assessment-help {
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  padding: 16px 18px;
+}
+.assessment-help h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--workspace-display);
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1.3;
+}
+.assessment-help > p {
+  margin: 8px 0 12px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.assessment-help [data-slot="button"] {
+  font-size: 12px;
+  height: 34px;
+}
+.assessment-help h3 {
+  font-size: 11px;
+  font-weight: 650;
+  margin: 10px 0 5px;
+}
+.assessment-help ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.assessment-help li {
+  display: flex;
+  align-items: start;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.assessment-help li svg {
+  margin-top: 2px;
+}
+#assessment-instructions {
+  scroll-margin-top: 88px;
+}
+.assessment-action-bar {
+  position: fixed;
+  z-index: 25;
+  bottom: 0;
+  left: calc(var(--workspace-sidebar-width) + 30px);
+  width: calc(100vw - var(--workspace-sidebar-width) - 380px);
+  max-width: 880px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card), transparent 3%);
+  backdrop-filter: blur(10px);
+  padding: 12px 0 max(12px, env(safe-area-inset-bottom));
+}
+.assessment-action-buttons {
+  display: flex;
+  gap: 8px;
+}
+.assessment-action-bar [data-slot="button"] {
+  height: 36px;
+  padding-inline: 18px;
+  font-size: 12px;
+}
+.workspace-theme [data-slot="empty"],
+.workspace-theme ul.divide-y,
+.workspace-theme dl.rounded-xl {
+  background: var(--card);
+}
+.workspace-theme [data-slot="tabs-trigger"] {
+  color: var(--muted-foreground);
+}
+.workspace-theme [data-slot="tabs-trigger"][data-active],
+.workspace-theme [data-slot="tabs-trigger"]:hover {
+  color: var(--primary);
+}
+.workspace-skip-link {
+  position: fixed;
+  top: 8px;
+  left: 12px;
+  z-index: 100;
+  transform: translateY(-160%);
+  padding: 10px 16px;
+  border-radius: 6px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.workspace-skip-link:focus {
+  transform: translateY(0);
+}
+.workspace-theme a:focus-visible,
+.workspace-profile:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.dark .workspace-sidebar-art,
+.dark .workspace-campus-art {
+  opacity: 0.14;
+}
+@media (min-width: 1504px) {
+  .assessment-action-bar {
+    left: calc(
+      var(--workspace-sidebar-width) +
+        (100vw - var(--workspace-sidebar-width) - 1200px) / 2
+    );
+    width: 880px;
+  }
+}
+@media (max-width: 1199px) {
+  .assessment-form {
+    grid-template-columns: minmax(0, 1fr) 270px;
+    gap: 16px;
+  }
+  .assessment-action-bar {
+    width: calc(100vw - var(--workspace-sidebar-width) - 346px);
+  }
+  .assessment-section {
+    padding: 16px;
+  }
+  .assessment-summary,
+  .assessment-help {
+    padding: 16px;
+  }
+  .assessment-section-title {
+    font-size: 16px;
+  }
+}
+@media (max-width: 1023px) {
+  .workspace-shell {
+    --workspace-sidebar-width: 0px;
+  }
+  .workspace-desktop-sidebar {
+    display: none;
+  }
+  .workspace-topbar {
+    gap: 12px;
+    padding-inline: 20px;
+  }
+  .workspace-main {
+    padding-inline: 24px;
+  }
+  .assessment-action-bar {
+    left: 24px;
+    width: calc(100vw - 24px - 24px - 270px - 16px);
+  }
+}
+@media (max-width: 767px) {
+  .workspace-topbar {
+    padding-inline: 12px;
+    gap: 8px;
+  }
+  .workspace-topbar-actions {
+    gap: 6px;
+  }
+  .workspace-topbar-divider,
+  .workspace-profile-name,
+  .workspace-profile > svg {
+    display: none;
+  }
+  .workspace-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 11px;
+  }
+  .workspace-search input {
+    font-size: 12px;
+  }
+  .workspace-main {
+    padding: 24px 16px 32px;
+  }
+  .workspace-campus-art {
+    width: 240px;
+    height: 180px;
+    opacity: 0.18;
+  }
+  .assessment-form {
+    grid-template-columns: minmax(0, 1fr);
+    padding-bottom: 72px;
+    gap: 18px;
+  }
+  .assessment-aside {
+    position: static;
+  }
+  .assessment-action-bar {
+    left: 0;
+    width: 100%;
+    max-width: none;
+    padding: 12px 16px max(12px, env(safe-area-inset-bottom));
+  }
+  .assessment-action-bar [data-slot="button"] {
+    padding-inline: 12px;
+  }
+  .assessment-section [data-slot="input"],
+  .assessment-section [data-slot="textarea"] {
+    font-size: 16px;
+  }
+  .workspace-sidebar-art {
+    inset-block-start: 40%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-theme *,
+  .workspace-theme *::before,
+  .workspace-theme *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+  }
+}
+.assessment-summary dl > div {
+  padding-block: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.assessment-summary dd > span {
+  font-size: 11px;
+}
+.assessment-action-state {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.assessment-action-state [role="status"] {
+  font-size: 10px;
+}
+.assessment-section [data-slot="field"] {
+  gap: 4px;
+}
+@media (max-width: 767px) {
+  .assessment-action-state [role="status"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+    overflow: hidden;
+  }
+  .assessment-section [data-slot="input"],
+  .assessment-section [data-slot="select-trigger"] {
+    min-height: 36px;
+  }
+}

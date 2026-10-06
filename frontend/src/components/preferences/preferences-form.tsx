@@ -167,7 +167,7 @@ export function PreferencesForm() {
               <Eraser />
               Forget what ProfPilot learned
             </AlertDialogTrigger>
-            <AlertDialogContent>
+            <AlertDialogContent className="workspace-theme">
               <AlertDialogHeader>
                 <AlertDialogTitle>Forget what ProfPilot learned?</AlertDialogTitle>
                 <AlertDialogDescription>

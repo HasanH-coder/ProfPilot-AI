@@ -1,11 +1,26 @@
 "use client";
 
-import { ArrowRight, AudioLines, BookOpenCheck, CircleAlert, CircleCheck, Save } from "lucide-react";
+import {
+  ArrowRight,
+  BookOpenCheck,
+  CircleAlert,
+  CircleCheck,
+  Save,
+} from "lucide-react";
 import { unstable_rethrow, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, useTransition, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { flushSync } from "react-dom";
 
 import { AdditionalNotes } from "@/components/assessment/additional-notes";
+import { AssessmentHelp } from "@/components/assessment/assessment-help";
 import { AssessmentBasics } from "@/components/assessment/assessment-basics";
 import { AssessmentPrompt } from "@/components/assessment/assessment-prompt";
 import { AssessmentSummary } from "@/components/assessment/assessment-summary";
@@ -47,7 +62,10 @@ import {
   type DraftLocation,
   type SaveDraftResult,
 } from "@/lib/assessments/actions";
-import { validateAssessmentDraft, type AssessmentDraft } from "@/lib/assessments/draft";
+import {
+  validateAssessmentDraft,
+  type AssessmentDraft,
+} from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
 import type { DocumentFile } from "@/lib/documents/files";
 import { cn } from "@/lib/utils";
@@ -83,7 +101,9 @@ function toDraft(values: FormValues): AssessmentDraft {
     examName: values.examName,
     durationMinutes: durationInMinutes(values.duration),
     mcqPercentage: distribution.enabled ? distribution.mcqPercentage : null,
-    subjectivePercentage: distribution.enabled ? 100 - distribution.mcqPercentage : null,
+    subjectivePercentage: distribution.enabled
+      ? 100 - distribution.mcqPercentage
+      : null,
     numberOfVersions: versionCount(values.versions),
     ...difficultyPercentages(values.difficulty),
     additionalNotes: values.additionalNotes,
@@ -128,24 +148,38 @@ const FIELD_GROUPS: Record<string, string> = {
  * Puts changes from the AI assistant into the form, one part at a time, so
  * anything else the professor is editing at that moment is left alone.
  */
-function applyChanges(current: FormValues, setup: AssessmentDraft, fields: Set<string>): FormValues {
+function applyChanges(
+  current: FormValues,
+  setup: AssessmentDraft,
+  fields: Set<string>,
+): FormValues {
   const next = { ...current };
   if (fields.has("courseId")) next.courseId = setup.courseId;
   if (fields.has("examName")) next.examName = setup.examName;
-  if (fields.has("durationMinutes")) next.duration = durationValue(setup.durationMinutes);
+  if (fields.has("durationMinutes"))
+    next.duration = durationValue(setup.durationMinutes);
   if (fields.has("mcqPercentage") || fields.has("subjectivePercentage")) {
     next.distribution =
       setup.mcqPercentage === null
         ? { ...current.distribution, enabled: false }
         : { enabled: true, mcqPercentage: setup.mcqPercentage };
   }
-  if (fields.has("numberOfVersions")) next.versions = versionValue(setup.numberOfVersions);
-  if (fields.has("easyPercentage") || fields.has("mediumPercentage") || fields.has("hardPercentage")) {
+  if (fields.has("numberOfVersions"))
+    next.versions = versionValue(setup.numberOfVersions);
+  if (
+    fields.has("easyPercentage") ||
+    fields.has("mediumPercentage") ||
+    fields.has("hardPercentage")
+  ) {
     next.difficulty =
-      setup.easyPercentage === null ? { ...current.difficulty, enabled: false } : difficultyDistributionValue(setup);
+      setup.easyPercentage === null
+        ? { ...current.difficulty, enabled: false }
+        : difficultyDistributionValue(setup);
   }
-  if (fields.has("additionalNotes")) next.additionalNotes = setup.additionalNotes;
-  if (fields.has("professorPrompt")) next.professorPrompt = setup.professorPrompt;
+  if (fields.has("additionalNotes"))
+    next.additionalNotes = setup.additionalNotes;
+  if (fields.has("professorPrompt"))
+    next.professorPrompt = setup.professorPrompt;
   return next;
 }
 
@@ -168,13 +202,20 @@ type AssessmentFormProps = {
   courses: Course[];
   /** The draft to edit. Left out when creating a new assessment. */
   saved?: SavedAssessment;
+  initialAssistantOpen?: boolean;
 };
 
-export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
+export function AssessmentForm({
+  courses,
+  saved,
+  initialAssistantOpen = false,
+}: AssessmentFormProps) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
-  const [values, setValues] = useState(() => (saved ? toFormValues(saved.draft) : EMPTY_FORM));
+  const [values, setValues] = useState(() =>
+    saved ? toFormValues(saved.draft) : EMPTY_FORM,
+  );
   // The draft as it was last saved (or opened), to tell whether anything changed since.
   const [savedSnapshot, setSavedSnapshot] = useState(() =>
     saved ? JSON.stringify(toDraft(toFormValues(saved.draft))) : null,
@@ -186,7 +227,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   const [savingFor, setSavingFor] = useState<"stay" | "continue">("stay");
   // Stops a quick second click from saving twice.
   const saveInProgress = useRef(false);
-  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(initialAssistantOpen);
   // While a voice call runs, saving must never reload the page (that would end the call).
   const callActive = useRef(false);
   const [highlighted, setHighlighted] = useState<Set<string>>(() => new Set());
@@ -198,7 +239,9 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     latestValues.current = values;
   });
   // The draft's id, once it exists (a new assessment gets one on its first upload or save).
-  const [draftId, setDraftId] = useState<string | null>(saved?.examProjectId ?? null);
+  const [draftId, setDraftId] = useState<string | null>(
+    saved?.examProjectId ?? null,
+  );
 
   const getDraftLocation = useAssessmentDraft(saved ?? null, {
     courseId: values.courseId,
@@ -210,20 +253,26 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     return result;
   }, [getDraftLocation]);
   const uploads = useDocumentUploads(saved?.files ?? [], getDraft);
-  const uploadedIds = uploads.items.flatMap((item) => (item.documentId ? [item.documentId] : []));
+  const uploadedIds = uploads.items.flatMap((item) =>
+    item.documentId ? [item.documentId] : [],
+  );
   const analysis = useDocumentAnalysis(draftId, uploadedIds);
 
   const draft = toDraft(values);
   const clientErrors = validateAssessmentDraft(draft);
-  const errors = showErrors ? { ...clientErrors, ...saveResult.fieldErrors } : {};
+  const errors = showErrors
+    ? { ...clientErrors, ...saveResult.fieldErrors }
+    : {};
   const course = courses.find((candidate) => candidate.id === values.courseId);
-  const hasUnsavedChanges = JSON.stringify(draft) !== (savedSnapshot ?? EMPTY_SNAPSHOT);
+  const hasUnsavedChanges =
+    JSON.stringify(draft) !== (savedSnapshot ?? EMPTY_SNAPSHOT);
   const saveFailed = Boolean(saveResult.error || saveResult.fieldErrors);
 
   useEffect(() => {
     if (!refocusSaveButton) return;
     refocusSaveButton = false;
-    if (document.activeElement === document.body) saveButtonRef.current?.focus();
+    if (document.activeElement === document.body)
+      saveButtonRef.current?.focus();
   }, []);
 
   // Ask before the page is reloaded or closed while changes or uploads would be lost.
@@ -242,10 +291,15 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   }
 
   /** Saves the form, creating the draft first if this is a new assessment. */
-  async function saveDraft(target: AssessmentDraft = draft): Promise<SaveDraftResult & { examProjectId?: string }> {
+  async function saveDraft(
+    target: AssessmentDraft = draft,
+  ): Promise<SaveDraftResult & { examProjectId?: string }> {
     try {
       const { draft: location, error } = await getDraft();
-      if (!location) return { error: error ?? "Your draft couldn't be saved. Please try again." };
+      if (!location)
+        return {
+          error: error ?? "Your draft couldn't be saved. Please try again.",
+        };
       const result = await saveAssessmentDraft(location.examProjectId, target);
       if (result.error || result.fieldErrors) return result;
       return { examProjectId: location.examProjectId };
@@ -253,7 +307,10 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
       // For example, the session ended: Next.js then opens the login page.
       unstable_rethrow(error);
       console.error("Save failed:", error);
-      return { error: "Your draft couldn't be saved. Check your connection and try again." };
+      return {
+        error:
+          "Your draft couldn't be saved. Check your connection and try again.",
+      };
     }
   }
 
@@ -263,7 +320,9 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     if (Object.keys(clientErrors).length > 0) {
       // Show the errors now, then move focus to the first field that needs attention.
       flushSync(() => setShowErrors(true));
-      formRef.current?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")?.focus();
+      formRef.current
+        ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
+        ?.focus();
       return;
     }
     setShowErrors(true);
@@ -297,10 +356,16 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           // A new assessment moves to its own edit address, so reloading the page reopens it.
           if (callActive.current) {
             // Mid-call: change the address only, without reloading the form.
-            window.history.replaceState(null, "", `${assessmentPath(examProjectId)}/edit`);
+            window.history.replaceState(
+              null,
+              "",
+              `${assessmentPath(examProjectId)}/edit`,
+            );
           } else {
             refocusSaveButton = true;
-            router.replace(`${assessmentPath(examProjectId)}/edit`, { scroll: false });
+            router.replace(`${assessmentPath(examProjectId)}/edit`, {
+              scroll: false,
+            });
           }
         }
       });
@@ -315,7 +380,9 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     const current = toDraft(latestValues.current);
     if (Object.keys(validateAssessmentDraft(current)).length > 0) {
       flushSync(() => setShowErrors(true));
-      formRef.current?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")?.focus();
+      formRef.current
+        ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
+        ?.focus();
       return null;
     }
     const result = await saveDraft(current);
@@ -328,17 +395,28 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     setSavedSnapshot(JSON.stringify(current));
     // A new assessment gets its own address, so reloading reopens it (no reload now).
     if (!saved && !window.location.pathname.endsWith("/edit")) {
-      window.history.replaceState(null, "", `${assessmentPath(result.examProjectId)}/edit`);
+      window.history.replaceState(
+        null,
+        "",
+        `${assessmentPath(result.examProjectId)}/edit`,
+      );
     }
     return result.examProjectId;
   }
 
   /** Puts the assistant's changes into the form, shows them, and saves them shortly after. */
-  function applyAssistantChanges(setup: AssessmentDraft, changedFields: string[]) {
+  function applyAssistantChanges(
+    setup: AssessmentDraft,
+    changedFields: string[],
+  ) {
     const fields = new Set(changedFields);
     setValues((current) => applyChanges(current, setup, fields));
     setSaveResult({});
-    setHighlighted(new Set(changedFields.map((field) => FIELD_GROUPS[field]).filter(Boolean)));
+    setHighlighted(
+      new Set(
+        changedFields.map((field) => FIELD_GROUPS[field]).filter(Boolean),
+      ),
+    );
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
     highlightTimer.current = setTimeout(() => setHighlighted(new Set()), 2500);
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
@@ -349,7 +427,8 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   const changedBy = (group: string) =>
     cn(
       "rounded-xl transition-shadow duration-700",
-      highlighted.has(group) && "ring-2 ring-primary/35 ring-offset-4 ring-offset-background",
+      highlighted.has(group) &&
+        "ring-2 ring-primary/35 ring-offset-4 ring-offset-background",
     );
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -366,51 +445,44 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
       ref={formRef}
       onSubmit={handleSubmit}
       noValidate
-      className="grid items-start gap-12 xl:grid-cols-[minmax(0,1fr)_19rem] xl:gap-10"
+      className="assessment-form"
     >
-      <div className="flex min-w-0 flex-col gap-12">
-        {assistantOpen ? (
+      <div className="assessment-fields">
+        {assistantOpen && (
           <SetupAssistant
             getSetup={() => toDraft(latestValues.current)}
             onApply={applyAssistantChanges}
-            ensureDraft={async () => (await getDraft()).draft?.examProjectId ?? null}
+            ensureDraft={async () =>
+              (await getDraft()).draft?.examProjectId ?? null
+            }
             onCallActiveChange={(active) => {
               callActive.current = active;
             }}
             onClose={() => setAssistantOpen(false)}
           />
-        ) : (
-          <div className="flex flex-col gap-3 rounded-xl border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-muted-foreground">
-              Prefer to talk it through? ProfPilot can fill in this form from a short conversation.
-            </p>
-            <Button type="button" className="shrink-0" onClick={() => setAssistantOpen(true)}>
-              <AudioLines />
-              Set up with AI
-            </Button>
-          </div>
         )}
 
         <div className={changedBy("basics")}>
-          <AssessmentBasics
-            courses={courses}
-            courseId={values.courseId}
-            onCourseChange={(courseId) => update({ courseId })}
-            examName={values.examName}
-            onExamNameChange={(examName) => update({ examName })}
-            errors={errors}
-          />
+          <FormSection title="Course & Assessment Details">
+            <AssessmentBasics
+              courses={courses}
+              courseId={values.courseId}
+              onCourseChange={(courseId) => update({ courseId })}
+              examName={values.examName}
+              onExamNameChange={(examName) => update({ examName })}
+              errors={errors}
+            />
+          </FormSection>
         </div>
 
         <DocumentUploadSection
           title="Course material"
-          description="Optional. Upload lectures, notes, readings, assignments, or other material the assessment should be based on."
+          description="Upload lectures, notes, readings, assignments, or any material the assessment should be based on."
           category="course_material"
           uploads={uploads}
           analysis={analysis.documents}
           onRetryAnalysis={analysis.retry}
         />
-
         <DocumentUploadSection
           title="Previous assessments"
           description="Optional. Upload previous exams, quizzes, or answer keys so ProfPilot can learn your assessment style and difficulty. They guide the style; they aren't copied."
@@ -421,13 +493,14 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           footer={
             analysis.styleProfile && (
               <StyleNote>
-                ProfPilot analysed {analysis.styleProfile.examsAnalyzed} previous{" "}
-                {analysis.styleProfile.examsAnalyzed === 1 ? "exam" : "exams"}: {analysis.styleProfile.summary}
+                ProfPilot analysed {analysis.styleProfile.examsAnalyzed}{" "}
+                previous{" "}
+                {analysis.styleProfile.examsAnalyzed === 1 ? "exam" : "exams"}:{" "}
+                {analysis.styleProfile.summary}
               </StyleNote>
             )
           }
         />
-
         <FormSection
           title="Exam design"
           description="Optional. Set only what you already know."
@@ -479,80 +552,124 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           onRetryAnalysis={analysis.retry}
         />
 
-        <div className={cn("flex flex-col gap-4", changedBy("prompt"))}>
+        <div
+          id="assessment-instructions"
+          data-assessment-prompt
+          className={cn("flex flex-col gap-4", changedBy("prompt"))}
+        >
           <AssessmentPrompt
             value={values.professorPrompt}
             onChange={(professorPrompt) => update({ professorPrompt })}
             error={errors.professorPrompt}
           />
-          <ImproveWithAi ensureSaved={persist} disabled={uploads.isBusy || isSaving} />
+          <ImproveWithAi
+            ensureSaved={persist}
+            disabled={uploads.isBusy || isSaving}
+          />
         </div>
       </div>
-
-      <AssessmentSummary
-        draft={draft}
-        course={course}
-        files={uploads.items}
-        // On short screens the summary scrolls on its own, so its buttons stay reachable.
-        className="xl:sticky xl:top-10 xl:max-h-[calc(100svh-5rem)] xl:overflow-y-auto"
-      >
-        <Button
-          type="button"
-          size="lg"
-          className="w-full"
-          disabled={isSaving || uploads.isBusy}
-          onClick={() => save("continue")}
-        >
-          Continue
-          {isSaving && savingFor === "continue" ? (
-            <Spinner data-icon="inline-end" />
-          ) : (
-            <ArrowRight data-icon="inline-end" />
-          )}
-        </Button>
-        {/* The form's submit button, so pressing Enter in a field saves too. */}
-        <Button
-          ref={saveButtonRef}
-          type="submit"
-          variant="outline"
-          size="lg"
-          className="w-full"
-          disabled={isSaving || uploads.isBusy}
-        >
-          {isSaving && savingFor === "stay" ? <Spinner /> : <Save />}
-          {isSaving && savingFor === "stay" ? "Saving…" : "Save draft"}
-        </Button>
-
-        <p role="status" className="flex items-center justify-center gap-1.5 text-sm">
-          {isSaving ? (
-            <span className="text-muted-foreground">Saving…</span>
-          ) : saveFailed ? (
-            <span className="inline-flex items-center gap-1.5 font-medium text-destructive">
-              <CircleAlert className="size-4" />
-              Save failed
-            </span>
-          ) : savedSnapshot !== null && !hasUnsavedChanges ? (
-            <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-              <CircleCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
-              Saved
-            </span>
-          ) : (
-            <span className="text-muted-foreground">
-              {savedSnapshot !== null ? "Unsaved changes" : "Not saved yet"}
-            </span>
-          )}
-        </p>
+      <div className="assessment-aside">
+        <AssessmentSummary
+          draft={draft}
+          course={course}
+          files={uploads.items}
+        />
         {saveResult.error && (
           <Alert variant="destructive">
             <AlertDescription>{saveResult.error}</AlertDescription>
           </Alert>
         )}
-        <p className="text-xs text-muted-foreground">
-          {uploads.isBusy
-            ? "You can save once your files finish uploading."
-            : "Continue saves your draft and opens its overview. When you're ready, use Improve with AI to plan and generate the exam."}
-        </p>
-      </AssessmentSummary>
+        <AssessmentHelp
+          onOpenAssistant={() => {
+            setAssistantOpen(true);
+            requestAnimationFrame(() => {
+              const panel = formRef.current?.querySelector<HTMLElement>(
+                "[data-setup-assistant]",
+              );
+              panel?.scrollIntoView({
+                block: "center",
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+                  .matches
+                  ? "instant"
+                  : "smooth",
+              });
+              panel
+                ?.querySelector<HTMLInputElement>("input")
+                ?.focus({ preventScroll: true });
+            });
+          }}
+        />
+      </div>
+      <div className="assessment-action-bar">
+        <div className="assessment-action-state">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isSaving || uploads.isBusy}
+            onClick={() => {
+              if (
+                !hasUnsavedChanges ||
+                window.confirm(
+                  "Leave this assessment? Unsaved form changes will be lost. Uploaded files remain saved.",
+                )
+              )
+                router.push("/workspace/assessments");
+            }}
+          >
+            Cancel
+          </Button>
+          <p role="status" className="flex items-center gap-1.5 text-sm">
+            {isSaving ? (
+              <span className="text-muted-foreground">Saving…</span>
+            ) : saveFailed ? (
+              <span className="inline-flex items-center gap-1.5 font-medium text-destructive">
+                <CircleAlert className="size-4" />
+                Save failed
+              </span>
+            ) : savedSnapshot !== null && !hasUnsavedChanges ? (
+              <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                <CircleCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
+                Saved
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                {savedSnapshot !== null ? "Unsaved changes" : "Not saved yet"}
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="assessment-action-buttons">
+          {/* Keep submit semantics: Enter in a field saves without leaving. */}
+          <Button
+            ref={saveButtonRef}
+            type="submit"
+            variant="outline"
+            size="lg"
+            disabled={isSaving || uploads.isBusy}
+          >
+            {isSaving && savingFor === "stay" ? <Spinner /> : <Save />}
+            {isSaving && savingFor === "stay" ? "Saving…" : "Save draft"}
+          </Button>
+          <Button
+            type="button"
+            size="lg"
+            disabled={isSaving || uploads.isBusy}
+            title={
+              uploads.isBusy
+                ? "Wait for files to finish uploading"
+                : "Save your draft and open its overview"
+            }
+            onClick={() => save("continue")}
+          >
+            Continue
+            {isSaving && savingFor === "continue" ? (
+              <Spinner data-icon="inline-end" />
+            ) : (
+              <ArrowRight data-icon="inline-end" />
+            )}
+          </Button>
+        </div>
+      </div>
     </form>
   );
 }

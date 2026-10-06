@@ -1,0 +1,16 @@
+Image credits
+
+AUB wordmark (aub-logo.png)
+American University of Beirut, official university identity.
+https://www.aub.edu.lb/communications/logo/Pages/default.aspx
+https://www.aub.edu.lb/Style%20Library/AUB/images/American%20University%20of%20Beirut-AUB.png
+The university mark is used to implement the supplied AUB interface reference.
+
+College Hall photograph (aub-college-hall.jpg)
+"Admission's Office-College Hall/ AUB", HusseinHijazy, 19 June 2009.
+Source: https://commons.wikimedia.org/wiki/File:Admission%27s_Office-College_Hall-_AUB_-_panoramio.jpg
+License: Creative Commons Attribution-ShareAlike 3.0 Unported.
+https://creativecommons.org/licenses/by-sa/3.0/
+The source image is unmodified. The interface applies cropping, tinting, fading,
+and masking with CSS. Those visual adaptations are provided under CC BY-SA 3.0.
+No endorsement by the photographer or university is implied.

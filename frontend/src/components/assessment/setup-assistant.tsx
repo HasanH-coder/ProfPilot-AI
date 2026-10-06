@@ -135,6 +135,7 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
 
   return (
     <section
+      data-setup-assistant
       aria-labelledby={headingId}
       className="flex flex-col gap-4 rounded-xl border bg-card p-4 sm:p-5"
     >

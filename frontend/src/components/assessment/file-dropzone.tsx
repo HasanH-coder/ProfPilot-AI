@@ -1,9 +1,12 @@
 "use client";
 
-import { Upload } from "lucide-react";
+import { CloudUpload } from "lucide-react";
 import { useId, useState, type DragEvent } from "react";
 
-import { ACCEPTED_EXTENSIONS, SUPPORTED_TYPES_TEXT } from "@/lib/documents/files";
+import {
+  ACCEPTED_EXTENSIONS,
+  SUPPORTED_TYPES_TEXT,
+} from "@/lib/documents/files";
 import { cn } from "@/lib/utils";
 
 type FileDropzoneProps = {
@@ -15,7 +18,11 @@ type FileDropzoneProps = {
 };
 
 /** An area to drop files on, or to click (or press Enter or Space on) to choose files. */
-export function FileDropzone({ labelledBy, describedBy, onFiles }: FileDropzoneProps) {
+export function FileDropzone({
+  labelledBy,
+  describedBy,
+  onFiles,
+}: FileDropzoneProps) {
   const hintId = useId();
   const [isDragging, setIsDragging] = useState(false);
 
@@ -28,7 +35,8 @@ export function FileDropzone({ labelledBy, describedBy, onFiles }: FileDropzoneP
 
   function handleDragLeave(event: DragEvent<HTMLLabelElement>) {
     // Moving onto the dropzone's own icon or text also counts as leaving; ignore that.
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDragging(false);
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+      setIsDragging(false);
   }
 
   function handleDrop(event: DragEvent<HTMLLabelElement>) {
@@ -44,7 +52,7 @@ export function FileDropzone({ labelledBy, describedBy, onFiles }: FileDropzoneP
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={cn(
-        "flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed px-6 py-8 text-center transition-colors hover:border-foreground/25 hover:bg-muted/40",
+        "flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-5 text-center transition-colors hover:border-primary/40 hover:bg-accent/40",
         "has-[:focus-visible]:border-ring has-[:focus-visible]:ring-3 has-[:focus-visible]:ring-ring/50",
         isDragging && "border-primary bg-muted/60",
       )}
@@ -62,14 +70,17 @@ export function FileDropzone({ labelledBy, describedBy, onFiles }: FileDropzoneP
           event.target.value = "";
         }}
       />
-      <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        <Upload className="size-5" />
+      <span className="flex size-10 items-center justify-center rounded-full bg-accent text-primary">
+        <CloudUpload className="size-5" />
       </span>
       <span className="text-sm font-medium">
-        Drag files here or <span className="underline underline-offset-4">browse</span>
+        Drag files here or{" "}
+        <span className="text-primary underline underline-offset-2">
+          browse
+        </span>
       </span>
       <span id={hintId} className="text-xs text-balance text-muted-foreground">
-        {SUPPORTED_TYPES_TEXT}. Up to 25 MB each.
+        {SUPPORTED_TYPES_TEXT} · Up to 25 MB each
       </span>
     </label>
   );

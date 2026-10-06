@@ -7,18 +7,25 @@ import { getCourses } from "@/lib/courses/queries";
 
 export const metadata: Metadata = { title: "Create assessment" };
 
-export default async function NewAssessmentPage() {
+export default async function NewAssessmentPage({
+  searchParams,
+}: PageProps<"/workspace/assessments/new">) {
   await getCurrentProfessor();
   const courses = await getCourses();
+  const { assistant } = await searchParams;
 
   return (
-    <div className="flex flex-col gap-10">
+    <div className="flex flex-col gap-6">
       <PageHeader
-        back={{ href: "/workspace/assessments", label: "Assessments" }}
-        title="Create assessment"
-        description="Everything is optional. Provide whatever you already know, leave any field blank, and describe the rest in your own words below. ProfPilot will use whatever course material, previous assessments, preferences, and instructions you add to prepare the exam."
+        back={{ href: "/workspace/assessments", label: "Back to Assessments" }}
+        title="Create Assessment"
+        highlight="Assessment"
+        description="Provide the details and materials for your assessment. Every field is optional. Save your draft and continue later."
       />
-      <AssessmentForm courses={courses} />
+      <AssessmentForm
+        courses={courses}
+        initialAssistantOpen={assistant === "setup"}
+      />
     </div>
   );
 }

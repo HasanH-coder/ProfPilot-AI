@@ -52,6 +52,7 @@ import { cn } from "@/lib/utils";
 
 type QuestionCardProps = {
   question: Question;
+  headingLevel?: 2 | 3;
   /** Show the answer key (answers, solutions, rubrics) inline. */
   showKey: boolean;
   multiVersion: boolean;
@@ -65,7 +66,8 @@ type QuestionCardProps = {
 type Notice = { summary: string | null; warnings: DistributionWarning[] };
 
 /** One question, with everything the professor can do to it. */
-export function QuestionCard({ question, showKey, multiVersion, onChanged, highlighted, move }: QuestionCardProps) {
+export function QuestionCard({ question, headingLevel = 2, showKey, multiVersion, onChanged, highlighted, move }: QuestionCardProps) {
+  const Heading = headingLevel === 3 ? "h3" : "h2";
   const headingId = useId();
   const askId = useId();
   const [busy, setBusy] = useState<string | null>(null);
@@ -123,9 +125,9 @@ export function QuestionCard({ question, showKey, multiVersion, onChanged, highl
     >
       <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <h3 id={headingId} className="font-semibold">
+          <Heading id={headingId} className="font-semibold">
             Question {question.number}
-          </h3>
+          </Heading>
           <Badge variant="secondary">{TYPE_LABELS[question.type]}</Badge>
           <Badge variant="outline">{DIFFICULTY_LABELS[question.difficulty]}</Badge>
           <span className="text-sm text-muted-foreground">{marks(question.points)}</span>
@@ -187,7 +189,7 @@ export function QuestionCard({ question, showKey, multiVersion, onChanged, highl
             >
               <MoreHorizontal />
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-60">
+            <DropdownMenuContent align="end" className="workspace-theme w-60">
               <DropdownMenuGroup>
                 <DropdownMenuLabel>Change with AI</DropdownMenuLabel>
                 {QUICK_ACTIONS.map((action) => (
@@ -370,7 +372,7 @@ export function QuestionCard({ question, showKey, multiVersion, onChanged, highl
         onRestored={onChanged}
       />
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="workspace-theme">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete question {question.number}?</AlertDialogTitle>
             <AlertDialogDescription>

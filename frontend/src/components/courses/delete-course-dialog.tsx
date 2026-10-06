@@ -43,17 +43,23 @@ export function DeleteCourseDialog({ course }: { course: Course }) {
       }}
     >
       <AlertDialogTrigger
-        render={<Button variant="ghost" size="sm" aria-label={`Delete ${course.code}`} />}
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`Delete ${course.code}`}
+          />
+        }
       >
         <Trash2 />
         <span className="max-sm:sr-only">Delete</span>
       </AlertDialogTrigger>
-      <AlertDialogContent>
+      <AlertDialogContent className="workspace-theme">
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {course.code}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This removes the course from your workspace. Assessments created for it are kept,
-            but they will no longer be linked to a course.
+            This removes the course from your workspace. Assessments created for
+            it are kept, but they will no longer be linked to a course.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && (
@@ -63,7 +69,11 @@ export function DeleteCourseDialog({ course }: { course: Course }) {
         )}
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={isDeleting}
+          >
             {isDeleting && <Spinner />}
             Delete course
           </AlertDialogAction>

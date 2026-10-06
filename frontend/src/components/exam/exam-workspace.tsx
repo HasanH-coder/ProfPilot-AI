@@ -245,6 +245,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
                 <QuestionCard
                   key={question.id}
                   question={question}
+                  headingLevel={section.title ? 3 : 2}
                   showKey={showKey}
                   multiVersion={exam.versions.length > 1}
                   onChanged={() => void load()}
@@ -258,7 +259,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
           ))}
         </div>
 
-        <aside className="flex flex-col gap-4 xl:sticky xl:top-10 xl:max-h-[calc(100svh-5rem)] xl:overflow-y-auto">
+        <aside aria-label="Exam review and export" className="flex flex-col gap-4 xl:sticky xl:top-[88px] xl:max-h-[calc(100svh-7rem)] xl:overflow-y-auto">
           {version && <DistributionPanel exam={exam} version={version} />}
           <QualityCheckPanel
             exam={exam}
