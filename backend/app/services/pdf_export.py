@@ -4,9 +4,8 @@ The student paper is built only from fields meant for students (question text,
 choices, marks, figures). Answers, solutions, rubrics, explanations, sources
 and any AI notes are never read when building it, so they can't leak into it.
 
-Fonts: the standard PDF Times family, with the built-in Symbol font for Greek
-letters and mathematical symbols, and an optional system Unicode font for
-anything else. No font files are bundled or downloaded.
+Fonts: bundled Computer Modern for the reference exam's LaTeX typography,
+with Symbol and an optional system Unicode font for additional characters.
 """
 
 import io
@@ -15,11 +14,12 @@ import re
 import unicodedata
 import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
@@ -29,6 +29,7 @@ from reportlab.pdfbase.rl_codecs import RL_Codecs
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.platypus import (
+    CondPageBreak,
     Flowable,
     Image,
     KeepTogether,
@@ -40,8 +41,19 @@ from reportlab.platypus import (
 )
 
 from app.services.exam_store import FullExam
+from app.services.pdf_math import Equation, is_equation
 
 RL_Codecs.register()
+
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
+for name, filename in (
+    ("ExamRoman", "cmr12.ttf"),
+    ("ExamBold", "cmbx12.ttf"),
+    ("ExamItalic", "cmti12.ttf"),
+):
+    pdfmetrics.registerFont(TTFont(name, str(ASSETS / "fonts" / filename)))
+pdfmetrics.registerFontFamily("ExamRoman", normal="ExamRoman", bold="ExamBold", italic="ExamItalic", boldItalic="ExamBold")
+_roman_chars = set(pdfmetrics.getFont("ExamRoman").face.charToGlyph)
 
 _FALLBACK_FONT = "ProfPilotUnicode"
 _FALLBACK_CANDIDATES = [
@@ -50,13 +62,14 @@ _FALLBACK_CANDIDATES = [
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
     "/Library/Fonts/Arial Unicode.ttf",
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "C:/Windows/Fonts/arial.ttf",
 ]
 _fallback_registered: bool | None = None
 _fallback_chars: set[int] = set()
 
-INK = colors.HexColor("#171717")
+INK = colors.black
 MUTED = colors.HexColor("#5c5c5c")
-RULE = colors.HexColor("#c8c8c8")
+RULE = colors.black
 CODE_BACKGROUND = colors.HexColor("#f3f3f3")
 
 
@@ -87,8 +100,12 @@ def _encodable(character: str, codec: str) -> bool:
 
 def _glyph(character: str) -> str | None:
     """Markup for one character in a font that has it, or None."""
-    if _encodable(character, "winansi"):
+    # BaKoMa uses TeX's legacy encoding: some Unicode aliases and ASCII slots
+    # (e.g. superscript 2, underscore and vertical bar) map to unrelated glyphs.
+    if ord(character) in _roman_chars and character.isascii() and (character.isalnum() or character in " .,;:!?+-=*/()[]'"):
         return escape(character)
+    if _encodable(character, "winansi"):
+        return f'<font name="Times-Roman">{escape(character)}</font>'
     if _encodable(character, "symbol"):
         return f'<font name="Symbol">{escape(character)}</font>'
     if _fallback_font() and ord(character) in _fallback_chars:
@@ -127,20 +144,114 @@ def markup(text: str, *, preserve_spaces: bool = False) -> str:
 # Styles
 # -----------------------------------------------------------------------------
 
-BODY = ParagraphStyle("body", fontName="Times-Roman", fontSize=11, leading=14.5, textColor=INK)
+BODY = ParagraphStyle("body", fontName="ExamRoman", fontSize=12, leading=17, textColor=INK)
 SMALL = ParagraphStyle("small", parent=BODY, fontSize=9.5, leading=12, textColor=MUTED)
-TITLE = ParagraphStyle("title", parent=BODY, fontName="Times-Bold", fontSize=17, leading=21, alignment=TA_CENTER)
-COURSE = ParagraphStyle("course", parent=BODY, fontSize=11.5, leading=15, alignment=TA_CENTER)
-META = ParagraphStyle("meta", parent=BODY, fontSize=10.5, leading=14, alignment=TA_CENTER, textColor=MUTED)
-SECTION = ParagraphStyle("section", parent=BODY, fontName="Times-Bold", fontSize=12.5, leading=16, spaceBefore=10)
-CHOICE = ParagraphStyle("choice", parent=BODY, leftIndent=0.6 * cm, firstLineIndent=0)
+HEADER = ParagraphStyle("header", parent=BODY, fontName="ExamBold", leading=18, alignment=TA_RIGHT)
+META = ParagraphStyle("meta", parent=BODY, fontSize=10, leading=14, alignment=TA_RIGHT)
+SECTION = ParagraphStyle(
+    "section", parent=BODY, fontName="ExamBold", fontSize=12.5, leading=16, spaceBefore=10, keepWithNext=True
+)
+QUESTION = ParagraphStyle("question", parent=BODY, leftIndent=0.6 * cm)
+QUESTION_LEAD = ParagraphStyle("question-lead", parent=QUESTION, firstLineIndent=-0.6 * cm, keepWithNext=True)
+CHOICE = ParagraphStyle("choice", parent=BODY, leftIndent=0.6 * cm, firstLineIndent=0, spaceBefore=6)
 SUBPART = ParagraphStyle("subpart", parent=BODY, leftIndent=0.6 * cm)
-KEY_LABEL = ParagraphStyle("key", parent=BODY, fontName="Times-Bold", spaceBefore=4)
+KEY_LABEL = ParagraphStyle("key", parent=BODY, fontName="ExamBold", spaceBefore=8, spaceAfter=3, keepWithNext=True)
 CODE = ParagraphStyle("code", parent=BODY, fontName="Courier", fontSize=9, leading=11.5)
 
 
+def inline_markup(text: str) -> str:
+    """Readable legacy variable subscripts and exponent notation within prose."""
+    pattern = r"(?<![A-Za-z])([xwyzpGh])([0-9]+)|\b([xwyzpGh])_([A-Za-z0-9]+)|\^\(([^()]+)\)|\^([−-]?[0-9]+)"
+    result = []
+    last = 0
+    for match in re.finditer(pattern, text):
+        result.append(markup(text[last : match.start()]))
+        if match[1] or match[3]:
+            result.append(markup(match[1] or match[3]) + "<sub>" + markup(match[2] or match[4]) + "</sub>")
+        else:
+            result.append("<super>" + markup(match[5] or match[6]) + "</super>")
+        last = match.end()
+    result.append(markup(text[last:]))
+    return "".join(result)
+
+
+def _table_at(lines: list[str], start: int) -> tuple[list[list[str]], int] | None:
+    """Recognize explicit pipe tables and unambiguous legacy numeric tables."""
+    pipe = "|" in lines[start]
+
+    def cells(line: str) -> list[str]:
+        if pipe:
+            return [cell.strip() for cell in line.strip().strip("|").split("|")]
+        # Older generated tables sometimes have single-space numeric columns.
+        line = re.sub(
+            r"(Standard deviation|Validation loss|Training error|Cross-validation error|Training examples|Desired p\(y = 1\))",
+            lambda m: m[0].replace(" ", "\x00"),
+            line,
+        )
+        return [cell.replace("\x00", " ") for cell in re.split(r"\s+", line.strip())]
+
+    rows = [cells(lines[start])]
+    count = len(rows[0])
+    if not 2 <= count <= 10:
+        return None
+    end = start + 1
+    while end < len(lines) and lines[end].strip():
+        if pipe and "|" not in lines[end]:
+            break
+        row = cells(lines[end])
+        if not pipe and count == 2 and len(row) != count:
+            row = lines[end].strip().split(maxsplit=1)
+        if len(row) != count:
+            break
+        if all(re.fullmatch(r":?-{3,}:?", cell) for cell in row):
+            end += 1
+            continue
+        if not pipe and not all(re.fullmatch(r"[−+-]?\d+(?:\.\d+)?%?", cell) or is_equation(cell) for cell in row[1:]):
+            break
+        rows.append(row)
+        end += 1
+    return (rows, end) if len(rows) >= (2 if pipe else 3) else None
+
+
+def _data_table(rows: list[list[str]], style: ParagraphStyle) -> Flowable:
+    count = len(rows[0])
+    cell_style = ParagraphStyle("table-cell", parent=BODY, fontSize=10 if count > 6 else 11, leading=14)
+    weights = [
+        min(160, max(32, max(pdfmetrics.stringWidth(row[i], "Times-Roman", cell_style.fontSize) for row in rows) + 16))
+        for i in range(count)
+    ]
+    width = A4[0] - 5.08 * cm - style.leftIndent
+    table = Table(
+        [
+            [Paragraph(("<b>" if r == 0 else "") + inline_markup(cell) + ("</b>" if r == 0 else ""), cell_style) for cell in row]
+            for r, row in enumerate(rows)
+        ],
+        colWidths=[width * weight / sum(weights) for weight in weights],
+        repeatRows=1,
+        hAlign="LEFT",
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("LINEABOVE", (0, 0), (-1, 0), 0.7, INK),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.5, INK),
+                ("LINEBELOW", (0, -1), (-1, -1), 0.7, INK),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    table.spaceBefore = 8
+    table.spaceAfter = 10
+    return table
+
+
 def rich_text(text: str | None, style: ParagraphStyle = BODY) -> list[Flowable]:
-    """Paragraphs for plain text with line breaks and ``` code blocks."""
+    """Preserve paragraphs and render data tables, display equations and code."""
     flowables: list[Flowable] = []
     if not text:
         return flowables
@@ -162,9 +273,42 @@ def rich_text(text: str | None, style: ParagraphStyle = BODY) -> list[Flowable]:
             )
             flowables.append(table)
             continue
-        for paragraph in re.split(r"\n{2,}", part.strip()):
-            if paragraph.strip():
-                flowables.append(Paragraph(markup(paragraph.strip()), style))
+        lines = part.strip().splitlines()
+        prose: list[str] = []
+
+        def flush(prose: list[str] = prose) -> None:
+            if prose:
+                flowables.append(Paragraph(inline_markup("\n".join(prose)), style))
+                prose.clear()
+
+        line = 0
+        while line < len(lines):
+            content = lines[line].strip()
+            if not content:
+                flush()
+                if flowables and not isinstance(flowables[-1], Spacer):
+                    flowables.append(Spacer(1, 8))
+                line += 1
+                continue
+            table = _table_at(lines, line)
+            if table:
+                flush()
+                rows, line = table
+                flowables.append(_data_table(rows, style))
+                continue
+            if is_equation(content):
+                try:
+                    equation = Equation(content)
+                except (ValueError, RuntimeError):
+                    equation = None  # Unsupported notation remains readable text.
+                if equation is not None:
+                    flush()
+                    flowables.append(equation)
+                    line += 1
+                    continue
+            prose.append(content)
+            line += 1
+        flush()
     return flowables
 
 
@@ -186,14 +330,14 @@ class _NumberedCanvas(pdf_canvas.Canvas):
         total = len(self._saved)
         for state in self._saved:
             self.__dict__.update(state)
-            self.setFont("Times-Roman", 9)
+            self.setFont("ExamRoman", 9)
             self.setFillColor(MUTED)
             width = A4[0]
             self.drawCentredString(width / 2, 1.2 * cm, f"Page {self._pageNumber} of {total}")
             if self.footer_left:
-                self.drawString(2 * cm, 1.2 * cm, self.footer_left[:70])
+                self.drawString(2.54 * cm, 1.2 * cm, self.footer_left[:45])
             if self.footer_right:
-                self.drawRightString(width - 2 * cm, 1.2 * cm, self.footer_right)
+                self.drawRightString(width - 2.54 * cm, 1.2 * cm, self.footer_right)
             super().showPage()
         super().save()
 
@@ -227,26 +371,44 @@ class PdfExportService:
         multi = len(full.versions) > 1
         total = sum(float(q["points"]) for q in questions)
 
-        story: list[Flowable] = []
+        title = header.title + (" - Answer key" if answer_key else "")
+        heading = []
+        if header.course and re.match(r"CMPS\b", header.course, flags=re.I):
+            heading.extend(["Faculty of Arts and Sciences", "Department of Computer Science"])
         if header.course:
-            story.append(Paragraph(markup(header.course), COURSE))
-        title = header.title + (" — Answer key" if answer_key else "")
-        story.append(Paragraph(markup(title), TITLE))
+            heading.append(header.course)
+        heading.append(title + (f" - {header.duration_minutes} min" if header.duration_minutes else ""))
+        logo = Image(str(ASSETS / "aub-logo.png"), width=6.5 * cm, height=2.15 * cm, kind="proportional")
+        width = A4[0] - 5.08 * cm
+        banner = Table(
+            [[logo, Paragraph("<br/>".join(markup(line) for line in heading), HEADER)]],
+            colWidths=[6.7 * cm, width - 6.7 * cm],
+        )
+        banner.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        story: list[Flowable] = [KeepTogether([_rule(), banner, _rule()])]
         meta = [
             f"Version {version_label}" if multi else None,
-            f"Duration: {header.duration_minutes} minutes" if header.duration_minutes else None,
             f"Total: {_marks(total)}",
         ]
-        story.append(Spacer(1, 4))
-        story.append(Paragraph(markup("   ·   ".join(part for part in meta if part)), META))
-        story.append(Spacer(1, 10))
-        story.append(_rule())
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(markup(" | ".join(part for part in meta if part)), META))
+        story.append(Spacer(1, 12))
 
         if not answer_key:
             story.append(Spacer(1, 6))
-            line = "_" * 34
+            line = "_" * 28
             info = Table(
-                [[Paragraph(f"Name: {line}", BODY), Paragraph(f"Student ID: {'_' * 22}", BODY)]],
+                [[Paragraph(markup(f"Name: {line}"), BODY), Paragraph(markup(f"Student ID: {'_' * 17}"), BODY)]],
                 colWidths=["58%", "42%"],
             )
             info.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
@@ -264,10 +426,8 @@ class PdfExportService:
                 instructions.append(f"You have {header.duration_minutes} minutes.")
             if any(q["type"] == "mcq" for q in questions):
                 instructions.append("For multiple-choice questions, choose one answer.")
-            story.append(Paragraph("<b>Instructions</b>", BODY))
-            for item in instructions:
-                story.append(Paragraph(markup(f"•  {item}"), BODY))
-            story.append(Spacer(1, 8))
+            story.append(Paragraph("<b>" + markup(" ".join(instructions)) + "</b>", BODY))
+            story.append(Spacer(1, 12))
         else:
             story.append(Spacer(1, 4))
             story.append(Paragraph("Confidential: for markers only.", SMALL))
@@ -286,20 +446,20 @@ class PdfExportService:
                     story.extend(rich_text(section["instructions"], SMALL))
                 story.append(Spacer(1, 4))
             block = self._question(question, number, answer_key=answer_key, figures=figures)
-            # Keep a short question on one page; let a long one flow across pages.
-            if len(block) < 14:
-                story.append(KeepTogether(block))
-            else:
-                story.extend(block)
-            story.append(Spacer(1, 10))
+            # Leave room for a useful part of the stem, not just its opening line.
+            story.append(CondPageBreak(100))
+            # A table or equation can be tall despite having few flowables.
+            # Let stems paginate naturally; the MCQ choices stay together.
+            story.extend(block)
+            story.append(Spacer(1, 24))
 
         buffer = io.BytesIO()
         document = SimpleDocTemplate(
             buffer,
             pagesize=A4,
-            leftMargin=2 * cm,
-            rightMargin=2 * cm,
-            topMargin=1.8 * cm,
+            leftMargin=2.54 * cm,
+            rightMargin=2.54 * cm,
+            topMargin=2.1 * cm,
             bottomMargin=2 * cm,
             title=title,
             author="",
@@ -317,13 +477,14 @@ class PdfExportService:
 
     def _question(self, q: dict[str, Any], number: int, *, answer_key: bool, figures: dict[str, bytes]) -> list[Flowable]:
         block: list[Flowable] = []
-        prompt = rich_text(q["prompt"])
-        lead = f"<b>{number}.</b>  <i>({_marks(float(q['points']))})</i>  "
+        prompt = rich_text(q["prompt"], QUESTION)
+        lead = f"{number})  "
+        points = f"  <i>[{_marks(float(q['points']))}]</i>"
         if prompt and isinstance(prompt[0], Paragraph):
             first = prompt[0]
-            prompt[0] = Paragraph(lead + first.text, BODY)
+            prompt[0] = Paragraph(lead + first.text + points, QUESTION_LEAD)
         else:
-            block.append(Paragraph(lead, BODY))
+            block.append(Paragraph(lead + points, QUESTION_LEAD))
         block.extend(prompt)
 
         figure = q.get("figure_document_id")
@@ -332,12 +493,15 @@ class PdfExportService:
             if image is not None:
                 block.extend([Spacer(1, 6), image, Spacer(1, 4)])
 
+        choice_block: list[Flowable] = []
         for choice in q.get("choices") or []:
             correct = answer_key and choice.get("id") == q.get("correct_choice")
-            text = f"{choice.get('id')}.  {markup(str(choice.get('text', '')))}"
+            text = f"{escape(str(choice.get('id', '')).lower())})  {inline_markup(str(choice.get('text', '')))}"
             if correct:
                 text = f'<b>{text}</b>  <font name="ZapfDingbats">\u2714</font>'
-            block.append(Paragraph(text, CHOICE))
+            choice_block.append(Paragraph(text, CHOICE))
+        if choice_block:
+            block.append(KeepTogether(choice_block))
 
         for part in q.get("subparts") or []:
             block.append(Spacer(1, 3))
@@ -421,6 +585,9 @@ def _rubric(items: list[dict[str, Any]], *, indent: bool = False) -> Flowable:
                 ("BACKGROUND", (0, 0), (-1, 0), CODE_BACKGROUND),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
             ]
         )
     )

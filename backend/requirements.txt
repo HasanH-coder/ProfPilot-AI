@@ -13,3 +13,5 @@ python-docx==1.2.0
 # Exam PDFs (and images inside them).
 reportlab==5.0.1
 pillow==12.3.0
+# Vector math typesetting for exam PDF equations (no system LaTeX required).
+matplotlib==3.11.2

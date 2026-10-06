@@ -286,14 +286,13 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
         </div>
       )}
 
-      {approved && (
-        <ModeChoice
-          hasExam={Boolean(exam)}
-          examPath={exam ? `${base}/${exam.mode === "interactive" && exam.status === "building" ? "builder" : "exam"}` : null}
-          onChoose={createExam}
-          onRegenerate={regenerate}
-        />
-      )}
+      <ModeChoice
+        approved={approved}
+        hasExam={Boolean(exam)}
+        examPath={exam ? `${base}/${exam.mode === "interactive" && exam.status === "building" ? "builder" : "exam"}` : null}
+        onChoose={createExam}
+        onRegenerate={regenerate}
+      />
     </div>
   );
 }
@@ -411,11 +410,13 @@ function EnhancedPrompt({
 }
 
 function ModeChoice({
+  approved,
   hasExam,
   examPath,
   onChoose,
   onRegenerate,
 }: {
+  approved: boolean;
   hasExam: boolean;
   examPath: string | null;
   onChoose: (mode: "full" | "interactive", replace: boolean) => Promise<void>;
@@ -445,13 +446,13 @@ function ModeChoice({
       mode: "interactive" as const,
       icon: Sparkles,
       title: "Build with AI",
-      text: "Work with ProfPilot question by question, by voice or chat, and watch the assessment take shape. You approve each question before moving on.",
+      text: "Start a live call with ProfPilot or use chat. Watch questions appear in the exam preview, request changes, and approve each question before moving on.",
       action: "Build with AI",
     },
   ];
 
   return (
-    <ReviewSection title="Create the exam" description="Choose how you'd like to work. You can edit everything afterwards.">
+    <ReviewSection title="Create the exam" description={approved ? "Choose how you'd like to work. You can edit everything afterwards." : "Review and approve the plan above to unlock these two options."}>
       {hasExam && examPath && (
         <Alert>
           <FileText />
@@ -477,7 +478,7 @@ function ModeChoice({
             <Button
               className="mt-auto w-fit"
               variant={mode === "full" ? "default" : "outline"}
-              disabled={busy !== null}
+              disabled={!approved || busy !== null}
               onClick={() => (hasExam ? setConfirming(mode) : void choose(mode, false))}
             >
               {busy === mode ? <Spinner /> : <Icon />}

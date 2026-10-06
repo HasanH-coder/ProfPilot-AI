@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 import { useActionState, useState } from "react";
 
 import { FormField } from "@/components/form-field";
@@ -28,9 +29,10 @@ export function LoginForm({ notice }: { notice?: string }) {
   const [email, setEmail] = useState("");
 
   return (
-    <Card className="w-full max-w-sm">
+    <Card className="auth-form-card">
       <CardHeader>
-        <CardTitle className="text-xl">
+        <p className="public-eyebrow">LOG IN</p>
+        <CardTitle className="auth-form-title">
           <h1>Welcome back</h1>
         </CardTitle>
         <CardDescription>Log in to your ProfPilot AI workspace.</CardDescription>
@@ -55,6 +57,7 @@ export function LoginForm({ notice }: { notice?: string }) {
               label="Email"
               type="email"
               autoComplete="email"
+              placeholder="you@university.edu"
               required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -72,13 +75,14 @@ export function LoginForm({ notice }: { notice?: string }) {
             <Button type="submit" size="lg" disabled={isPending}>
               {isPending && <Spinner />}
               Log in
+              {!isPending && <ArrowRight data-icon="inline-end" aria-hidden="true" />}
             </Button>
           </FieldGroup>
         </form>
       </CardContent>
       <CardFooter className="justify-center gap-1 text-muted-foreground">
         Don&apos;t have an account?
-        <Link href="/signup" className="font-medium text-foreground underline-offset-4 hover:underline">
+        <Link href="/signup" className="font-medium text-primary underline-offset-4 hover:underline">
           Sign up
         </Link>
       </CardFooter>

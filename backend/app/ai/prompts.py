@@ -91,6 +91,9 @@ PREVIOUS_EXAMS = (
 FORMATTING = (
     "TEXT FORMAT. Write plain text that reads well on screen and in a printed exam. Use line "
     "breaks for structure. Write mathematics with Unicode (x², √x, ≤, ≥, Σ, π, θ, →), never LaTeX. "
+    "Put standalone equations on their own lines, with a blank line before and after. "
+    "Separate paragraphs with blank lines. Format all data tables with pipe-separated columns, "
+    "a header row and a Markdown separator row; never align tables with spaces. "
     "Put program code in fenced code blocks (```). Do not use Markdown headings or bold."
 )
 

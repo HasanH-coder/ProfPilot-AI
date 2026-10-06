@@ -1,6 +1,6 @@
 "use client";
 
-import { MailCheck } from "lucide-react";
+import { ArrowRight, MailCheck } from "lucide-react";
 import Link from "next/link";
 import { useActionState, useState } from "react";
 
@@ -32,12 +32,12 @@ export function SignupForm() {
   // Supabase is waiting for the professor to confirm their email address.
   if (state.message) {
     return (
-      <Card role="status" className="w-full max-w-sm">
+      <Card role="status" className="auth-form-card">
         <CardHeader>
-          <span className="mb-2 flex size-10 items-center justify-center rounded-lg bg-muted">
+          <span className="public-icon mb-3">
             <MailCheck className="size-5" />
           </span>
-          <CardTitle className="text-xl">
+          <CardTitle className="auth-form-title">
             <h1>Check your email</h1>
           </CardTitle>
           <CardDescription>{state.message}</CardDescription>
@@ -52,9 +52,10 @@ export function SignupForm() {
   }
 
   return (
-    <Card className="w-full max-w-sm">
+    <Card className="auth-form-card">
       <CardHeader>
-        <CardTitle className="text-xl">
+        <p className="public-eyebrow">GET STARTED</p>
+        <CardTitle className="auth-form-title">
           <h1>Create your account</h1>
         </CardTitle>
         <CardDescription>Set up your ProfPilot AI workspace.</CardDescription>
@@ -72,6 +73,7 @@ export function SignupForm() {
               name="fullName"
               label="Full name"
               autoComplete="name"
+              placeholder="Your full name"
               required
               value={fullName}
               onChange={(event) => setFullName(event.target.value)}
@@ -83,6 +85,7 @@ export function SignupForm() {
               label="Email"
               type="email"
               autoComplete="email"
+              placeholder="you@university.edu"
               required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -101,13 +104,14 @@ export function SignupForm() {
             <Button type="submit" size="lg" disabled={isPending}>
               {isPending && <Spinner />}
               Create account
+              {!isPending && <ArrowRight data-icon="inline-end" aria-hidden="true" />}
             </Button>
           </FieldGroup>
         </form>
       </CardContent>
       <CardFooter className="justify-center gap-1 text-muted-foreground">
         Already have an account?
-        <Link href="/login" className="font-medium text-foreground underline-offset-4 hover:underline">
+        <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
           Log in
         </Link>
       </CardFooter>

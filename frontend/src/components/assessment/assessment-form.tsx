@@ -57,6 +57,8 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { ApiError, apiRequest, errorMessage } from "@/lib/api/client";
+import type { AiStatus } from "@/lib/api/types";
 import {
   saveAssessmentDraft,
   type DraftLocation,
@@ -314,7 +316,7 @@ export function AssessmentForm({
     }
   }
 
-  function save(then: "stay" | "continue") {
+  function save() {
     if (saveInProgress.current || uploads.isBusy) return;
 
     if (Object.keys(clientErrors).length > 0) {
@@ -327,14 +329,8 @@ export function AssessmentForm({
     }
     setShowErrors(true);
 
-    // Nothing changed since the draft was saved, so there's nothing to save again.
-    if (then === "continue" && saved && !hasUnsavedChanges) {
-      router.push(assessmentPath(saved.examProjectId));
-      return;
-    }
-
     saveInProgress.current = true;
-    setSavingFor(then);
+    setSavingFor("stay");
     const snapshot = JSON.stringify(draft);
     startSaving(async () => {
       const result = await saveDraft();
@@ -347,12 +343,7 @@ export function AssessmentForm({
         }
         setSaveResult({});
         setSavedSnapshot(snapshot);
-        if (then === "continue") {
-          // For a new assessment, the overview replaces the "new" page in the
-          // history, so Back doesn't return to an empty form.
-          if (saved) router.push(assessmentPath(examProjectId));
-          else router.replace(assessmentPath(examProjectId));
-        } else if (!saved) {
+        if (!saved) {
           // A new assessment moves to its own edit address, so reloading the page reopens it.
           if (callActive.current) {
             // Mid-call: change the address only, without reloading the form.
@@ -404,6 +395,40 @@ export function AssessmentForm({
     return result.examProjectId;
   }
 
+  /** Continue into plan review, starting interpretation when the setup needs it. */
+  function continueToPlan() {
+    if (saveInProgress.current || uploads.isBusy) return;
+    saveInProgress.current = true;
+    setSavingFor("continue");
+    startSaving(async () => {
+      try {
+        const id = await persist();
+        if (!id) return;
+        const status = await apiRequest<AiStatus>(`/api/assessments/${id}/ai-status`);
+        const interpreting = status.runs.some(
+          (run) => run.kind === "interpretation" && run.status === "running",
+        );
+        if (!interpreting && (status.spec.status === "none" || status.spec.status === "stale")) {
+          try {
+            await apiRequest(`/api/assessments/${id}/interpretation`, {
+              method: "POST",
+              freshSession: true,
+            });
+          } catch (cause) {
+            // A concurrent tab may have started the same job; the plan follows it.
+            if (!(cause instanceof ApiError && cause.code === "job_running")) throw cause;
+          }
+        }
+        router.push(`${assessmentPath(id)}/plan`);
+      } catch (cause) {
+        unstable_rethrow(cause);
+        setSaveResult({ error: errorMessage(cause) });
+      } finally {
+        saveInProgress.current = false;
+      }
+    });
+  }
+
   /** Puts the assistant's changes into the form, shows them, and saves them shortly after. */
   function applyAssistantChanges(
     setup: AssessmentDraft,
@@ -437,7 +462,7 @@ export function AssessmentForm({
     if (event.target !== event.currentTarget) return;
     event.preventDefault();
     // Pressing Enter in a field saves the draft without leaving the page.
-    save("stay");
+    save();
   }
 
   return (
@@ -657,9 +682,9 @@ export function AssessmentForm({
             title={
               uploads.isBusy
                 ? "Wait for files to finish uploading"
-                : "Save your draft and open its overview"
+                : "Prepare your exam plan and choose how to generate it"
             }
-            onClick={() => save("continue")}
+            onClick={continueToPlan}
           >
             Continue
             {isSaving && savingFor === "continue" ? (
