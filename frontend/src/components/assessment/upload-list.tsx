@@ -1,8 +1,9 @@
 "use client";
 
-import { CircleAlert, CircleCheck, RotateCw, X } from "lucide-react";
+import { BookOpenCheck, CircleAlert, CircleCheck, RotateCw, X } from "lucide-react";
 
 import { FileTypeIcon } from "@/components/assessment/file-type-icon";
+import type { DocumentAnalysis } from "@/components/assessment/use-document-analysis";
 import type { UploadItem, UploadStatus } from "@/components/assessment/use-document-uploads";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -20,15 +21,19 @@ type UploadListProps = {
   items: UploadItem[];
   onRetry: (item: UploadItem) => void;
   onRemove: (item: UploadItem) => void;
+  /** Whether ProfPilot has read each uploaded file (by document id), when known. */
+  analysis?: DocumentAnalysis;
+  onRetryAnalysis?: (documentId: string) => void;
 };
 
 /** The files added to one section, each with its type, size, and upload status. */
-export function UploadList({ items, onRetry, onRemove }: UploadListProps) {
+export function UploadList({ items, onRetry, onRemove, analysis, onRetryAnalysis }: UploadListProps) {
   return (
     <ul className="flex flex-col gap-2">
       {items.map((item) => {
         const { name, size, status, error } = item;
         const isBusy = status === "uploading" || status === "removing";
+        const reading = item.documentId && status === "uploaded" ? analysis?.[item.documentId] : undefined;
 
         return (
           <li key={item.key} className="flex items-center gap-3 rounded-lg border bg-card p-3">
@@ -51,13 +56,38 @@ export function UploadList({ items, onRetry, onRemove }: UploadListProps) {
                   <StatusIcon status={status} />
                   {STATUS_LABELS[status]}
                 </span>
+                {reading && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span role="status" className="inline-flex items-center gap-1">
+                      <ReadingIcon status={reading.status} />
+                      {READING_LABELS[reading.status]}
+                    </span>
+                  </>
+                )}
               </p>
               {error && (
                 <p role="alert" className="mt-1 text-xs text-destructive">
                   {error}
                 </p>
               )}
+              {reading?.status === "failed" && reading.error && (
+                <p className="mt-1 text-xs text-destructive">{reading.error}</p>
+              )}
             </div>
+
+            {reading?.status === "failed" && onRetryAnalysis && item.documentId && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={`Read ${name} again`}
+                onClick={() => onRetryAnalysis(item.documentId as string)}
+              >
+                <RotateCw />
+                Read again
+              </Button>
+            )}
 
             {status === "failed" && (
               <Button
@@ -86,6 +116,19 @@ export function UploadList({ items, onRetry, onRemove }: UploadListProps) {
       })}
     </ul>
   );
+}
+
+const READING_LABELS = {
+  pending: "Waiting to be read",
+  processing: "Being read by ProfPilot…",
+  ready: "Read by ProfPilot",
+  failed: "Couldn't be read",
+} as const;
+
+function ReadingIcon({ status }: { status: keyof typeof READING_LABELS }) {
+  if (status === "pending" || status === "processing") return <Spinner className="size-3" aria-hidden />;
+  if (status === "ready") return <BookOpenCheck className="size-3 text-emerald-600 dark:text-emerald-400" />;
+  return <CircleAlert className="size-3 text-destructive" />;
 }
 
 function StatusIcon({ status }: { status: UploadStatus }) {

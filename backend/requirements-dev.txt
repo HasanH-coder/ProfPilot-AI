@@ -3,3 +3,5 @@
 pytest==9.1.1
 # HTTP client used by FastAPI's TestClient in the tests.
 httpx2==2.13.1
+# Linting and formatting: `ruff check .` and `ruff format .` from backend/.
+ruff==0.16.10

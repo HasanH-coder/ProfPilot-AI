@@ -2,7 +2,7 @@
 
 How a professor sets up an assessment in ProfPilot AI, how drafts and uploaded files are stored, and how each professor's files stay private.
 
-> **Scope.** Assessment setup collects and saves everything ProfPilot will need to prepare an exam. **No AI runs yet:** nothing is generated, files are stored but not read, and the professor's instructions are saved exactly as written. AI generation is the [next phase](#next-phase-ai-generation).
+> **Scope.** Assessment setup collects and saves everything ProfPilot needs to prepare an exam. What the AI does with it (reading the files, **Set up with AI**, **Improve with AI**, generation, editing and export) is described in [Assessment Agent](assessment-agent.md). The form saves the professor's own words exactly as written; the AI's interpretation is stored separately and never overwrites them.
 
 ## The flow
 
@@ -17,8 +17,14 @@ How a professor sets up an assessment in ProfPilot AI, how drafts and uploaded f
    - **Tell ProfPilot what you want**: the professor's instructions in their own words.
 
    Everything is optional: a professor can leave every field blank, upload material, and describe the rest in **Tell ProfPilot what you want**. A live **Assessment summary** shows the current settings and how many files are in each category.
+
+   With the backend running, the form also has:
+   - **Set up with AI** at the top: talk (or type) to ProfPilot, which fills in the form as you go, highlights each change, and saves it to the same draft;
+   - a reading status on every uploaded file: **Being read…**, **Read by ProfPilot**, or **Couldn't be read** with the reason and **Read again**;
+   - a note under **Previous assessments** once their style has been analysed;
+   - **Improve with AI** under **Tell ProfPilot what you want**, which saves the draft and opens the plan (`/workspace/assessments/[id]/plan`).
 3. **Save draft** keeps the professor on the page and shows **Saving…**, then **Saved** (or **Save failed** with the reason). The first save moves the page to the draft's own address, `/workspace/assessments/[id]/edit`, so reloading reopens it. **Continue** saves, then opens the assessment's overview.
-4. **Overview** (`/workspace/assessments/[id]`). A read-only summary: settings, notes, instructions, and the files in each category, with **Edit assessment** and **Delete**.
+4. **Overview** (`/workspace/assessments/[id]`). A read-only summary: settings, notes, instructions, and the files in each category, with **Edit assessment** and **Delete**. Its **AI assessment** section shows how many files ProfPilot has read, the plan's status and the exam's, with the next step (**Improve with AI**, **Review the plan** or **Open exam**).
 5. **Edit** (`/workspace/assessments/[id]/edit`). The same form, reopened with every option, text and uploaded file restored.
 6. **Assessments list** (`/workspace/assessments`). Every assessment, most recently updated first, with its course, duration, versions, file count and last update. Each row opens its overview. The difficulty distribution is left out of the rows to keep them short; the overview and summary show it.
 
@@ -28,7 +34,7 @@ An assessment is a row in `exam_projects` with `status = 'draft'`. The fields th
 
 `course_id`, `exam_name`, `duration_minutes`, `mcq_percentage`, `subjective_percentage`, `number_of_versions`, `easy_percentage`, `medium_percentage`, `hard_percentage`, `additional_notes`, `professor_prompt`.
 
-Unspecified options are stored as `null`; `number_of_versions` defaults to 1. A completely empty form is a valid draft. The AI fields (`enhanced_prompt`, `exam_spec`, `generation_mode`) are left empty for the next phase.
+Unspecified options are stored as `null`; `number_of_versions` defaults to 1. A completely empty form is a valid draft. The form never writes the AI fields: `enhanced_prompt`, `exam_spec` and `spec_status` are written by the Prompt Interpreter, and `generation_mode` when an exam is created. Changing any setting, or adding or removing a file, marks an existing plan out of date (`spec_status = 'stale'`).
 
 - **No name.** An unnamed assessment has `exam_name = null`; the database rejects a blank name, so "no name" is always `null`. The app shows **Untitled assessment** in its place, but never stores that text. A missing course shows as **No course** (or **Not specified** in settings).
 - **Difficulty distribution.** `easy_percentage`, `medium_percentage` and `hard_percentage` (`smallint`) are either all `null` (not specified) or all set, each from 0 to 100, adding up to 100. A `CHECK` constraint enforces this, so a partly specified or wrong total (such as 30 / `null` / 70 or 30 / 30 / 30) can never be stored, whatever the browser sends.
@@ -81,8 +87,10 @@ One row per uploaded file (migration `supabase/migrations/20261003163734_documen
 | `storage_path` | Where the file is in the bucket (unique) |
 | `mime_type`, `size_bytes` | Read from Storage, not from the browser |
 | `created_at` | Upload time |
+| `processing_status`, `processing_error`, `processed_at` | Whether ProfPilot has read the file: `pending`, `processing`, `ready` or `failed` (with a reason the professor can read) |
+| `content_sha256`, `page_count`, `extracted_characters`, `summary` | What was read: a hash (identical files are only read once), size, and an AI summary with topics |
 
-Indexes cover `professor_id`, `course_id` and `exam_project_id`.
+Indexes cover `professor_id`, `course_id` and `exam_project_id`. The processing columns were added by `supabase/migrations/20261005203838_assessment_ai_workflow.sql`; the text itself is stored in `document_chunks`, with embeddings for search.
 
 ### The private Storage bucket
 
@@ -120,7 +128,7 @@ See [Authentication and data security](authentication.md) for sign-up, sessions,
 
 ## How to test the flow
 
-Automated checks, from `frontend/`: `npm run lint`, `npx tsc --noEmit` and `npm run build`; from `backend/`: `pytest`.
+Automated checks, from `frontend/`: `npm run lint`, `npx tsc --noEmit` and `npm run build`; from `backend/`: `pytest` and `ruff check .`.
 
 To try the flow by hand (about 10 minutes), use two accounts (A and B):
 
@@ -132,19 +140,20 @@ To try the flow by hand (about 10 minutes), use two accounts (A and B):
 6. Copy the overview's address. Log in as **B** (another browser or a private window): B sees no courses and no assessments, and A's address shows **Assessment not found**.
 7. As **A**, delete the assessment from its overview. It disappears from the list, and its files are removed from the bucket.
 
-## Next phase: AI generation
+To try the AI steps that follow (with the backend running), see the [Assessment Agent](assessment-agent.md), including its [manual voice checklist](assessment-agent.md#manual-voice-checklist).
 
-Not implemented yet. The next phase turns a saved draft into an exam:
+## From setup to exam
 
 ```text
-Professor input  →  Prompt Interpreter  →  Enhanced Prompt  →  ExamSpec  →  generated exam
+Setup form  →  files read  →  Prompt Interpreter  →  Enhanced prompt + ExamSpec  →  approval
+            →  Generate full exam  or  Build with AI  →  exam editor  →  final review  →  PDF export
 ```
 
-It will fill `enhanced_prompt`, `exam_spec` and `generation_mode`, and read the uploaded files (parsing, and later course knowledge search with pgvector).
+Each step is described in [Assessment Agent](assessment-agent.md).
 
 ## Known limitations
 
 - **Deleting an account** deletes the professor's rows but not their Storage files. Deleting an assessment from the app does remove its files.
 - **The unsaved-changes prompt** appears when the page is reloaded or closed. Links inside the app leave without asking.
-- **File contents aren't inspected yet.** A renamed file passes the type check. Files are stored privately and never run.
+- **A renamed file passes the upload type check.** Files are stored privately and never run. When ProfPilot reads it, a document whose content doesn't match its type can't be parsed: it shows **Couldn't be read** with a reason, and the plan leaves it out and lists it under its warnings.
 - **No storage quota per professor**, beyond the 25 MB per-file limit.

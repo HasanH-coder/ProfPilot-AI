@@ -2,3 +2,14 @@ fastapi==0.142.2
 pydantic==2.13.5
 pydantic-settings==2.15.0
 uvicorn[standard]==0.54.0
+# OpenAI: Responses API (structured outputs, tools), embeddings, Realtime client secrets.
+openai==3.24.0
+# Verifies Supabase access tokens (ES256) against the project's public keys.
+pyjwt[crypto]==2.15.1
+# Reading uploaded files.
+pypdf==6.19.0
+python-pptx==1.0.2
+python-docx==1.2.0
+# Exam PDFs (and images inside them).
+reportlab==5.0.1
+pillow==12.3.0

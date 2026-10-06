@@ -19,7 +19,7 @@ How professors sign up and log in, and how ProfPilot AI keeps every professor's 
 | Server check | `frontend/src/lib/auth/current-professor.ts` | Every workspace page verifies the session token (`getClaims()`) before rendering, and redirects to `/login` if it is missing or invalid. |
 | Row Level Security | `supabase/migrations/` | Postgres itself only returns or changes rows owned by the signed-in professor (`auth.uid()`), even if someone sends a forged request. |
 
-The browser only ever receives the **publishable** key, which is designed to be public. The secret / `service_role` key bypasses Row Level Security and must never leave the server.
+The browser only ever receives the **publishable** key, which is designed to be public. The secret / `service_role` key bypasses Row Level Security and must never leave the server. ProfPilot doesn't use it at all: the FastAPI backend works with the professor's own access token (see [Protecting the FastAPI endpoints](#protecting-the-fastapi-endpoints)).
 
 ## Data model
 
@@ -27,8 +27,11 @@ The browser only ever receives the **publishable** key, which is designed to be 
 - `courses`: owned by a professor through `professor_id`.
 - `exam_projects`: owned by a professor through `professor_id`, optionally linked to one of their courses.
 - `documents`: one row per uploaded file, owned through `professor_id` and linked to an exam project. The files themselves are in the private `assessment-files` Storage bucket. See [Assessment setup](assessment-setup.md).
+- The AI workflow's tables, each owned through `professor_id` (see [Assessment Agent](assessment-agent.md#data-model)):
+  - per assessment: `document_chunks`, `assessment_style_profiles`, `exams` and their `exam_versions`, `exam_sections`, `exam_questions` and `question_revisions`, `ai_runs`, `exam_builder_messages`;
+  - per professor: `professor_preferences`, `preference_signals`.
 
-Deleting a professor's account deletes their profile, courses, exam projects and document rows. Deleting a course keeps its exam projects and documents but unlinks them. Deleting an exam project deletes its document rows.
+Deleting a professor's account deletes their profile, courses, exam projects and all the rows above. Deleting a course keeps its exam projects and documents but unlinks them. Deleting an exam project deletes its documents' rows and everything the AI workflow created for it.
 
 ## Row Level Security policies
 
@@ -41,12 +44,28 @@ Policies apply to signed-in users (`authenticated`) only. Signed-out visitors (`
 | `exam_projects` | own projects | for themselves, linked only to their own courses | own projects, linked only to their own courses | own projects |
 | `documents` | own documents | for themselves, in their own Storage folder, linked only to their own course and exam project | same rules as create | own documents |
 | Storage `assessment-files` | files in their own folder | into their own folder only | not allowed (files are never overwritten) | files in their own folder |
+| `document_chunks` | own chunks | for their own documents | not allowed | own chunks |
+| `assessment_style_profiles`, `ai_runs` | own rows | for their own exam projects | own rows | own rows |
+| `exams` | own exams | for their own exam projects | own exams | own exams |
+| `exam_versions`, `exam_sections` | own rows | in their own exams | own rows | own rows |
+| `exam_questions` | own questions | in their own exam, version and section (and an image from their own files) | same rules as create | own questions |
+| `question_revisions` | own revisions | for their own questions | not allowed (history is never rewritten) | own revisions |
+| `exam_builder_messages` | own messages | for their own exams | not allowed | own messages |
+| `professor_preferences` | own row | for themselves | own row | own row |
+| `preference_signals` | own signals | for themselves, linked only to their own exam projects | not allowed | own signals |
 
-"Own" means the row's `id` or `professor_id` equals `auth.uid()`. `professor_id` defaults to the signed-in professor, so the browser never needs to send it, and a forged value is rejected.
+"Own" means the row's `id` or `professor_id` equals `auth.uid()`. `professor_id` defaults to the signed-in professor, so the browser never needs to send it, and a forged value is rejected. For the AI tables, every parent row (exam project, exam, version, section, question, document) must belong to the same professor too, so one professor can't attach rows to another's data.
 
-## Later: protecting FastAPI endpoints
+The two database functions the backend calls, `match_document_chunks` (course-material search) and `reorder_exam_questions`, are `security invoker`: they run with the caller's permissions, so Row Level Security applies inside them.
 
-Once the frontend calls FastAPI for AI work, each request will carry the professor's Supabase access token (`Authorization: Bearer <token>`). A shared FastAPI dependency in `backend/app/api/` will verify the token before any protected route runs, and read the professor's id from its `sub` claim:
+## Protecting the FastAPI endpoints
 
-- With asymmetric JWT signing keys (recommended by Supabase), the token is verified locally against the project's public keys at `<SUPABASE_URL>/auth/v1/.well-known/jwks.json`. No secret is needed.
-- Otherwise, FastAPI can ask Supabase Auth to validate the token.
+The frontend calls FastAPI for AI work with the professor's Supabase access token (`Authorization: Bearer <token>`, from `frontend/src/lib/api/client.ts`). Every route except `GET /` and `GET /health` depends on `get_current_professor` (`backend/app/core/security.py`), which verifies the token before the route runs:
+
+- **Signature**: checked locally against the project's public keys at `<SUPABASE_URL>/auth/v1/.well-known/jwks.json` (asymmetric keys only: ES256, RS256 or EdDSA). No secret is needed. Keys are cached for 10 minutes and refetched when a token names an unknown key.
+- **Claims**: the issuer must be the project's `<SUPABASE_URL>/auth/v1`, the audience `authenticated`, the role `authenticated`; `exp`, `iat` and `sub` are required; anonymous users are refused; `sub` must be a UUID.
+- **Identity**: the professor's id comes only from the verified `sub` claim. The API never accepts a professor or user id from the request body or URL.
+
+The backend then calls Supabase's REST and Storage APIs **with that same token** and the publishable key (`backend/app/db/supabase.py`). Postgres sees the professor as `auth.uid()`, so every query and upload is subject to the policies above; the backend has no way around them. Rows that belong to someone else simply aren't found, and the API answers `404`, never revealing whether they exist. A missing, expired or invalid token gets `401`.
+
+The browser refreshes its session before starting a long AI job, so the token outlives the job in normal use. The OpenAI key is only in `backend/.env` and never sent to the browser; voice calls use short-lived client secrets ([details](assessment-agent.md#realtime-security)).

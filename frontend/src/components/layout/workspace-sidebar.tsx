@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, ClipboardCheck, House } from "lucide-react";
+import { BookOpen, ClipboardCheck, House, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { href: "/workspace", label: "Home", icon: House },
   { href: "/workspace/courses", label: "Courses", icon: BookOpen },
   { href: "/workspace/assessments", label: "Assessments", icon: ClipboardCheck },
+  { href: "/workspace/preferences", label: "Preferences", icon: SlidersHorizontal },
 ];
 
 type WorkspaceSidebarProps = {

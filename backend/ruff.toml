@@ -1,0 +1,8 @@
+# Python linting for the backend: `ruff check .` from backend/.
+line-length = 130
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# FastAPI's dependency injection relies on calls in argument defaults.
+ignore = ["B008"]

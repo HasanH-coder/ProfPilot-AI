@@ -1,13 +1,13 @@
-import { Info, Pencil } from "lucide-react";
+import { Pencil } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { AiWorkflowCard } from "@/components/assessment/ai-workflow-card";
 import { AssessmentOverview } from "@/components/assessment/assessment-overview";
 import { DeleteAssessmentDialog } from "@/components/assessment/delete-assessment-dialog";
 import { PageHeader } from "@/components/layout/page-header";
 import { LinkPendingIcon } from "@/components/link-pending-icon";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { assessmentTitle } from "@/lib/assessments/draft";
@@ -50,12 +50,12 @@ export default async function AssessmentPage({ params }: PageProps<"/workspace/a
         <DeleteAssessmentDialog assessmentId={id} examName={draft.examName} fileCount={files.length} />
       </PageHeader>
 
-      <Alert>
-        <Info />
-        <AlertDescription>
-          Your draft is saved. Generating the exam from it isn&apos;t available yet.
-        </AlertDescription>
-      </Alert>
+      <section aria-labelledby="ai-workflow" className="flex flex-col gap-4">
+        <h2 id="ai-workflow" className="border-b pb-3 text-base font-semibold tracking-tight">
+          AI assessment
+        </h2>
+        <AiWorkflowCard assessmentId={id} />
+      </section>
 
       <AssessmentOverview assessment={assessment} />
     </div>

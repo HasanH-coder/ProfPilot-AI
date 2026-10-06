@@ -1,1 +1,1 @@
-"""Database models. Added when the Supabase integration begins."""
+"""Reserved. Database access is in app.db; request, response and AI output models are in app.schemas."""
