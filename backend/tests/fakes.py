@@ -31,11 +31,14 @@ from app.ai.openai_service import ToolCall, ToolLoopResult, Usage
 from app.core.errors import AIServiceError, ConflictError, InvalidInputError, NotFoundError
 
 _clock = itertools.count()
+# Anchored at the real time, so a job started by a test is never older than the
+# 3-minute heartbeat window (a fixed date made every running job look interrupted).
+_START = datetime.now(UTC)
 
 
 def _now() -> str:
     # Strictly increasing timestamps, so "order by created_at" is deterministic.
-    return (datetime(2026, 10, 6, tzinfo=UTC) + timedelta(microseconds=next(_clock))).isoformat()
+    return (_START + timedelta(microseconds=next(_clock))).isoformat()
 
 
 OWNED = {
@@ -188,6 +191,8 @@ class FakeSupabase:
     def __init__(self) -> None:
         self.tables: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.storage: dict[str, bytes] = {}
+        # Every RPC called, by name (e.g. to count course-material searches).
+        self.rpc_calls: list[str] = []
 
     def connect(self, professor_id: str) -> "FakeDatabase":
         return FakeDatabase(self, professor_id)
@@ -284,6 +289,7 @@ class FakeDatabase:
         return [{"id": row.get("id")} for row in doomed]
 
     async def rpc(self, function, params):
+        self.supabase.rpc_calls.append(function)
         if function == "match_document_chunks":
             query = _vector(params["p_query_embedding"])
             scored = []
@@ -497,6 +503,7 @@ class FakeAI:
         self.tool_scripts: dict[str, Callable[[list[dict[str, Any]]], tuple[list[tuple[str, dict[str, Any]]], str]]] = {}
         self.calls: list[dict[str, Any]] = []
         self.embedded_texts: list[str] = []
+        self.embedding_calls = 0
         self.secrets: list[dict[str, Any]] = []
 
     def on(self, purpose: str, handler: Handler) -> None:
@@ -528,6 +535,7 @@ class FakeAI:
         candidates = result if isinstance(result, list) and result and not isinstance(result[0], dict) else [result]
         if usage is not None:
             usage.add(1000, 200)
+            usage.model_call(purpose)
         problems: list[str] = []
         # Like the real service: one first answer plus one repair attempt.
         for candidate in candidates[:2]:
@@ -548,12 +556,16 @@ class FakeAI:
 
     async def embed(self, texts, *, usage=None):
         self.embedded_texts.extend(texts)
+        self.embedding_calls += 1
         if usage is not None:
             usage.add(sum(len(t) // 4 for t in texts), 0)
+            usage.embedding_calls += 1
         return [embed_text(text) for text in texts]
 
     async def run_tool_loop(self, *, purpose, instructions, messages, tools, execute, effort="low", max_rounds=6, usage=None):
         self.calls.append({"purpose": purpose, "instructions": instructions, "messages": messages, "tools": tools})
+        if usage is not None:
+            usage.model_call(purpose)
         plan, reply = self.tool_scripts[purpose](messages)
         made: list[ToolCall] = []
         results = []

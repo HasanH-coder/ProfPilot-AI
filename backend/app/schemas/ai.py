@@ -191,6 +191,11 @@ class ExamPlan(BaseModel):
     rationale: str
     coverage_notes: str
     warnings: list[str]
+    # The order the professor explicitly asked for ("easy questions first",
+    # "lecture by lecture"), in brief; null when they didn't ask for one, and the
+    # questions are then mixed by difficulty and topic. (The default keeps plans
+    # saved before this field existed valid; the API still requires the field.)
+    ordering_request: str | None = None
 
 
 # =============================================================================

@@ -23,6 +23,7 @@ node_modules/
 out/
 build/
 coverage/
+.vitest-attachments/
 next-env.d.ts
 *.tsbuildinfo
 .vercel/

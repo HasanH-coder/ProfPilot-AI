@@ -249,6 +249,12 @@ export type BuilderMessage = {
 
 export type BuilderChatReply = { reply: string; changedQuestionIds: string[]; runId: string | null };
 
+/** One line of a streamed Build with AI chat reply. */
+export type BuilderChatEvent =
+  | { event: "tool"; name: string; arguments: Record<string, unknown> }
+  | ({ event: "done" } & BuilderChatReply)
+  | { event: "error"; code: string; message: string };
+
 export type ToolResult = Record<string, unknown> & {
   ok?: boolean;
   error?: string;
@@ -257,7 +263,14 @@ export type ToolResult = Record<string, unknown> & {
 };
 
 export type SetupToolResult = { setup: AssessmentDraft; result: ToolResult };
-export type SetupChatReply = { reply: string; setup: AssessmentDraft; changedFields: string[]; finished: boolean };
+export type SetupChatReply = {
+  reply: string;
+  setup: AssessmentDraft;
+  changedFields: string[];
+  finished: boolean;
+  /** Settings answered (set or skipped) in this conversation. */
+  addressed: string[];
+};
 
 export type RealtimeSecret = { clientSecret: string; expiresAt: number; model: string };
 

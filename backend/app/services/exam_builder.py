@@ -12,14 +12,17 @@ do; writing and revising questions is done by the reasoning model inside the
 tools.
 """
 
+import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.ai.openai_service import OpenAIService, Usage
 from app.ai.prompts import DataFramer, builder_chat_instructions, reviewer_instructions
 from app.ai.tools import function_tool
 from app.core.errors import AppError, ConflictError, InvalidInputError
+from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
 from app.schemas.ai import ReviewOutput
@@ -32,6 +35,9 @@ logger = logging.getLogger("profpilot.builder")
 
 _HISTORY_MESSAGES = 16
 
+# Called with a tool's name and arguments just before it runs (the text chat's live status).
+ToolStarted = Callable[[str, dict[str, Any]], Awaitable[None]]
+
 
 _NUMBER = {"type": "integer", "description": "The question's number as shown in the exam preview (1, 2, 3…)."}
 
@@ -39,13 +45,26 @@ BUILDER_TOOLS: list[dict[str, Any]] = [
     function_tool("get_exam_state", "Get the current exam: its questions, their status, and progress against the plan.", {}),
     function_tool(
         "generate_next_question",
-        "Write the next question and add it to the exam. Takes a little while.",
+        "Write the next question and add it to the exam. Takes a little while. Leave question_type, difficulty, "
+        "topic and points null unless the professor asked for them: ProfPilot then picks them so the exam keeps its "
+        "planned mix, with difficulties and topics interleaved.",
         {
             "instructions": {"type": ["string", "null"], "description": "What the professor asked for, if anything."},
-            "question_type": {"type": ["string", "null"], "enum": ["mcq", "short_answer", "long_answer", "problem", None]},
-            "difficulty": {"type": ["string", "null"], "enum": ["easy", "medium", "hard", None]},
-            "topic": {"type": ["string", "null"]},
-            "points": {"type": ["number", "null"]},
+            "question_type": {
+                "type": ["string", "null"],
+                "enum": ["mcq", "short_answer", "long_answer", "problem", None],
+                "description": "Only if the professor asked for this type.",
+            },
+            "difficulty": {
+                "type": ["string", "null"],
+                "enum": ["easy", "medium", "hard", None],
+                "description": "Only if the professor asked for this difficulty (e.g. 'three easy questions first').",
+            },
+            "topic": {
+                "type": ["string", "null"],
+                "description": "Only if the professor named a topic or lecture (e.g. 'finish Lecture 3 first').",
+            },
+            "points": {"type": ["number", "null"], "description": "Only if the professor gave the marks."},
         },
     ),
     function_tool(
@@ -137,7 +156,12 @@ class ExamBuilderService:
         )
         if spec:
             suggestion = suggest_next(spec, questions)
-            lines.append(f"Suggested next: a {suggestion['difficulty']} {suggestion['type'].replace('_', ' ')} question.")
+            topic = f" on {suggestion['topic']}" if suggestion["topic"] else ""
+            lines.append(
+                f"Suggested next (keeps the planned mix): a {suggestion['difficulty']} "
+                f"{suggestion['type'].replace('_', ' ')} question{topic}. ProfPilot uses this automatically when "
+                "generate_next_question gets no type, difficulty or topic."
+            )
         return "\n".join(lines)
 
     # -- Tools -----------------------------------------------------------------------------
@@ -153,7 +177,8 @@ class ExamBuilderService:
         if handler is None or name not in {tool["name"] for tool in BUILDER_TOOLS}:
             raise InvalidInputError("Unknown tool.")
         try:
-            return await handler(exam, arguments)
+            async with timed(f"builder_tool.{name}", self.usage):
+                return await handler(exam, arguments)
         except AppError as error:
             return {"ok": False, "error": error.message, "changedQuestionIds": []}
 
@@ -179,7 +204,10 @@ class ExamBuilderService:
         return {"ok": True, "state": await self.state_summary(exam["id"]), "changedQuestionIds": []}
 
     async def _tool_generate_next_question(self, exam: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
-        ctx = await load_generation_context(self.db, exam["exam_project_id"], require_approved=False)
+        # Only what one new question needs: the stored plan context and the exam so far.
+        ctx, full = await asyncio.gather(
+            load_generation_context(self.db, exam["exam_project_id"], require_approved=False), self.store.load(exam["id"])
+        )
         row = await ExamGenerationService(self.db, self.ai, self.usage).generate_one(
             ctx,
             exam["id"],
@@ -188,9 +216,9 @@ class ExamBuilderService:
             difficulty=arguments.get("difficulty"),
             topic=arguments.get("topic"),
             points=arguments.get("points"),
+            full=full,
         )
-        full = await self.store.load(exam["id"])
-        number = [q["id"] for q in full.version_questions(full.primary_version["id"])].index(row["id"]) + 1
+        number = await self.store.question_number(row)
         return {"ok": True, "question": self._brief(row, number), "changedQuestionIds": [row["id"]]}
 
     async def _tool_revise_question(self, exam: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
@@ -277,13 +305,26 @@ class ExamBuilderService:
 
     # -- Text chat -------------------------------------------------------------------------
 
-    async def chat(self, exam_id: str, message: str) -> dict[str, Any]:
+    async def check_chat(self, exam_id: str, message: str) -> str:
+        """The message to send, or a clear error, before any AI work starts."""
         exam = await self.store.get_exam(exam_id)
         if exam["mode"] != "interactive":
             raise ConflictError("This exam wasn't created with Build with AI.", code="not_interactive")
         message = message.strip()
         if not message:
             raise InvalidInputError("Type a message first.")
+        return message
+
+    async def chat(self, exam_id: str, message: str) -> dict[str, Any]:
+        return await self.run_chat(exam_id, await self.check_chat(exam_id, message))
+
+    async def run_chat(self, exam_id: str, message: str, on_tool: ToolStarted | None = None) -> dict[str, Any]:
+        """One text-chat turn, for a message check_chat accepted. `on_tool` is told as
+        soon as each tool starts, so the browser can show what is happening."""
+        async with timed("builder_chat", self.usage):
+            return await self._chat(exam_id, message, on_tool)
+
+    async def _chat(self, exam_id: str, message: str, on_tool: ToolStarted | None) -> dict[str, Any]:
         await self.add_message(exam_id, "professor", message[:8000], channel="text")
         history = await self.db.select(
             "exam_builder_messages",
@@ -300,6 +341,8 @@ class ExamBuilderService:
         run_ids: list[str] = []
 
         async def execute(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            if on_tool is not None:
+                await on_tool(name, arguments)
             result = await self.execute(exam_id, name, arguments)
             changed.extend(result.get("changedQuestionIds") or [])
             if result.get("runId"):

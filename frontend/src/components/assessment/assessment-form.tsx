@@ -7,7 +7,7 @@ import {
   CircleCheck,
   Save,
 } from "lucide-react";
-import { unstable_rethrow, useRouter } from "next/navigation";
+import { unstable_rethrow, useRouter, useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -20,7 +20,6 @@ import {
 import { flushSync } from "react-dom";
 
 import { AdditionalNotes } from "@/components/assessment/additional-notes";
-import { AssessmentHelp } from "@/components/assessment/assessment-help";
 import { AssessmentBasics } from "@/components/assessment/assessment-basics";
 import { AssessmentPrompt } from "@/components/assessment/assessment-prompt";
 import { AssessmentSummary } from "@/components/assessment/assessment-summary";
@@ -44,7 +43,7 @@ import {
   QuestionDistribution,
   type DistributionValue,
 } from "@/components/assessment/question-distribution";
-import { SetupAssistant } from "@/components/assessment/setup-assistant";
+import { SetupAssistant, SetupAssistantPrompt } from "@/components/assessment/setup-assistant";
 import { useAssessmentDraft } from "@/components/assessment/use-assessment-draft";
 import { useDocumentAnalysis } from "@/components/assessment/use-document-analysis";
 import { useDocumentUploads } from "@/components/assessment/use-document-uploads";
@@ -204,17 +203,15 @@ type AssessmentFormProps = {
   courses: Course[];
   /** The draft to edit. Left out when creating a new assessment. */
   saved?: SavedAssessment;
-  initialAssistantOpen?: boolean;
 };
 
-export function AssessmentForm({
-  courses,
-  saved,
-  initialAssistantOpen = false,
-}: AssessmentFormProps) {
+export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const openAssistantRef = useRef<HTMLButtonElement>(null);
+  // Set when the professor opens or closes Set up with AI, to move focus after.
+  const focusAfterToggle = useRef(false);
   const [values, setValues] = useState(() =>
     saved ? toFormValues(saved.draft) : EMPTY_FORM,
   );
@@ -229,7 +226,15 @@ export function AssessmentForm({
   const [savingFor, setSavingFor] = useState<"stay" | "continue">("stay");
   // Stops a quick second click from saving twice.
   const saveInProgress = useRef(false);
-  const [assistantOpen, setAssistantOpen] = useState(initialAssistantOpen);
+  // The sidebar's AI Assistant link opens Set up with AI (?assistant=setup),
+  // including when this page is already open.
+  const assistantRequested = useSearchParams().get("assistant") === "setup";
+  const [assistantOpen, setAssistantOpen] = useState(assistantRequested);
+  const [assistantRequestSeen, setAssistantRequestSeen] = useState(assistantRequested);
+  if (assistantRequested !== assistantRequestSeen) {
+    setAssistantRequestSeen(assistantRequested);
+    if (assistantRequested) setAssistantOpen(true);
+  }
   // While a voice call runs, saving must never reload the page (that would end the call).
   const callActive = useRef(false);
   const [highlighted, setHighlighted] = useState<Set<string>>(() => new Set());
@@ -435,6 +440,9 @@ export function AssessmentForm({
     changedFields: string[],
   ) {
     const fields = new Set(changedFields);
+    // Current right away: the next tool call in the same reply reads the form
+    // before React has re-rendered it.
+    latestValues.current = applyChanges(latestValues.current, setup, fields);
     setValues((current) => applyChanges(current, setup, fields));
     setSaveResult({});
     setHighlighted(
@@ -456,6 +464,32 @@ export function AssessmentForm({
         "ring-2 ring-primary/35 ring-offset-4 ring-offset-background",
     );
 
+  function openAssistant() {
+    focusAfterToggle.current = true;
+    setAssistantOpen(true);
+  }
+
+  function closeAssistant() {
+    focusAfterToggle.current = true;
+    setAssistantOpen(false);
+    // Forget the sidebar's request in the address, so its link opens the panel again.
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("assistant") === "setup") {
+      url.searchParams.delete("assistant");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+  }
+
+  // The panel and its card take each other's place: keyboard focus follows.
+  useEffect(() => {
+    if (!focusAfterToggle.current) return;
+    focusAfterToggle.current = false;
+    const target = assistantOpen
+      ? formRef.current?.querySelector<HTMLInputElement>("[data-setup-assistant] input")
+      : openAssistantRef.current;
+    target?.focus({ preventScroll: true });
+  }, [assistantOpen]);
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     // React also delivers the New course dialog's submit here, because events
     // bubble through portals. That form handles itself.
@@ -473,7 +507,7 @@ export function AssessmentForm({
       className="assessment-form"
     >
       <div className="assessment-fields">
-        {assistantOpen && (
+        {assistantOpen ? (
           <SetupAssistant
             getSetup={() => toDraft(latestValues.current)}
             onApply={applyAssistantChanges}
@@ -483,7 +517,12 @@ export function AssessmentForm({
             onCallActiveChange={(active) => {
               callActive.current = active;
             }}
-            onClose={() => setAssistantOpen(false)}
+            onClose={closeAssistant}
+          />
+        ) : (
+          <SetupAssistantPrompt
+            onOpen={openAssistant}
+            buttonRef={openAssistantRef}
           />
         )}
 
@@ -604,26 +643,6 @@ export function AssessmentForm({
             <AlertDescription>{saveResult.error}</AlertDescription>
           </Alert>
         )}
-        <AssessmentHelp
-          onOpenAssistant={() => {
-            setAssistantOpen(true);
-            requestAnimationFrame(() => {
-              const panel = formRef.current?.querySelector<HTMLElement>(
-                "[data-setup-assistant]",
-              );
-              panel?.scrollIntoView({
-                block: "center",
-                behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
-                  .matches
-                  ? "instant"
-                  : "smooth",
-              });
-              panel
-                ?.querySelector<HTMLInputElement>("input")
-                ?.focus({ preventScroll: true });
-            });
-          }}
-        />
       </div>
       <div className="assessment-action-bar">
         <div className="assessment-action-state">

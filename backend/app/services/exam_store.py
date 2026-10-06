@@ -6,6 +6,7 @@ Database connection, so Row Level Security and the table constraints (an MCQ's
 correct answer must be one of its choices, etc.) apply on top of the checks here.
 """
 
+import asyncio
 import difflib
 import re
 from dataclasses import dataclass, field
@@ -342,23 +343,26 @@ class ExamStore:
 
     async def load(self, exam_id: str) -> FullExam:
         exam = await self.get_exam(exam_id)
-        versions = await self.db.select(
-            "exam_versions",
-            columns="id, label, position",
-            filters=self._owned(("exam_id", "eq", exam["id"])),
-            order=[("position", "asc")],
-        )
-        sections = await self.db.select(
-            "exam_sections",
-            columns="id, position, title, instructions",
-            filters=self._owned(("exam_id", "eq", exam["id"])),
-            order=[("position", "asc")],
-        )
-        questions = await self.db.select(
-            "exam_questions",
-            columns=QUESTION_COLUMNS,
-            filters=self._owned(("exam_id", "eq", exam["id"])),
-            order=[("position", "asc")],
+        # Independent reads of the exam's parts, at once.
+        versions, sections, questions = await asyncio.gather(
+            self.db.select(
+                "exam_versions",
+                columns="id, label, position",
+                filters=self._owned(("exam_id", "eq", exam["id"])),
+                order=[("position", "asc")],
+            ),
+            self.db.select(
+                "exam_sections",
+                columns="id, position, title, instructions",
+                filters=self._owned(("exam_id", "eq", exam["id"])),
+                order=[("position", "asc")],
+            ),
+            self.db.select(
+                "exam_questions",
+                columns=QUESTION_COLUMNS,
+                filters=self._owned(("exam_id", "eq", exam["id"])),
+                order=[("position", "asc")],
+            ),
         )
         revisions = (
             await self.db.select(
@@ -442,6 +446,16 @@ class ExamStore:
 
     async def delete_question(self, question_id: str) -> None:
         await self.db.delete("exam_questions", filters=self._owned(("id", "eq", question_id)))
+
+    async def question_number(self, question: dict[str, Any]) -> int:
+        """The question's number in its version (numbering follows the order), without loading the exam."""
+        rows = await self.db.select(
+            "exam_questions",
+            columns="id, position",
+            filters=self._owned(("version_id", "eq", question["version_id"])),
+            order=[("position", "asc")],
+        )
+        return next((number for number, row in enumerate(rows, start=1) if row["id"] == question["id"]), len(rows))
 
     async def next_position(self, version_id: str) -> int:
         rows = await self.db.select(

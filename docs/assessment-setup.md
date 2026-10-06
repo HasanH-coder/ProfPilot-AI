@@ -19,7 +19,7 @@ How a professor sets up an assessment in ProfPilot AI, how drafts and uploaded f
    Everything is optional: a professor can leave every field blank, upload material, and describe the rest in **Tell ProfPilot what you want**. A live **Assessment summary** shows the current settings and how many files are in each category.
 
    With the backend running, the form also has:
-   - **Set up with AI** at the top: talk (or type) to ProfPilot, which fills in the form as you go, highlights each change, and saves it to the same draft;
+   - **Set up with AI** at the top, always offered (**Start with AI**): talk (or type) to ProfPilot, which fills in the form as you go, highlights each change, and saves it to the same draft. It asks about one setting at a time, any setting can be skipped and stays empty, and numbers you state (such as 30 / 40 / 30) are used exactly. The sidebar's **AI Assistant** opens this same page with the assistant already open (`/workspace/assessments/new?assistant=setup`);
    - a reading status on every uploaded file: **Being read…**, **Read by ProfPilot**, or **Couldn't be read** with the reason and **Read again**;
    - a note under **Previous assessments** once their style has been analysed;
    - **Improve with AI** under **Tell ProfPilot what you want**, which saves the draft and opens the plan (`/workspace/assessments/[id]/plan`).
@@ -128,7 +128,7 @@ See [Authentication and data security](authentication.md) for sign-up, sessions,
 
 ## How to test the flow
 
-Automated checks, from `frontend/`: `npm run lint`, `npx tsc --noEmit` and `npm run build`; from `backend/`: `pytest` and `ruff check .`.
+Automated checks, from `frontend/`: `npm run lint`, `npx tsc --noEmit`, `npm test` (component tests in Chromium; run `npx playwright install chromium` once first) and `npm run build`; from `backend/`: `pytest` and `ruff check .`.
 
 To try the flow by hand (about 10 minutes), use two accounts (A and B):
 

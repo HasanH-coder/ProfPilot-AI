@@ -1,7 +1,7 @@
 "use client";
 
-import { AudioLines, Send, X } from "lucide-react";
-import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { AudioLines, Send, Sparkles, X } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type Ref } from "react";
 
 import { ConversationLog, type ConversationEntry } from "@/components/ai/conversation-log";
 import { VoiceCallControls } from "@/components/ai/voice-call-controls";
@@ -28,6 +28,32 @@ type SetupAssistantProps = {
 let nextId = 0;
 const newId = () => `entry-${++nextId}`;
 
+/** Where Set up with AI starts: always on the Assessment Setup page, until it is opened. */
+export function SetupAssistantPrompt({ onOpen, buttonRef }: { onOpen: () => void; buttonRef?: Ref<HTMLButtonElement> }) {
+  const headingId = useId();
+  return (
+    <section
+      aria-labelledby={headingId}
+      className="flex flex-col gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6 sm:p-5"
+    >
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2 id={headingId} className="flex items-center gap-2 text-base font-semibold tracking-tight">
+          <Sparkles className="size-4 shrink-0 text-primary" />
+          Set up with AI
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Describe the assessment by voice or text, and ProfPilot fills in the form as you go. Every field stays
+          editable.
+        </p>
+      </div>
+      <Button ref={buttonRef} type="button" className="shrink-0 self-start sm:self-center" onClick={onOpen}>
+        <AudioLines />
+        Start with AI
+      </Button>
+    </section>
+  );
+}
+
 /**
  * "Set up with AI": the professor talks (or types) and ProfPilot fills in the
  * form, live. Everything stays editable by hand, and nothing is required.
@@ -40,7 +66,13 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
+  // Settings answered (set or skipped) in this conversation, so none is asked about twice.
+  const addressed = useRef<string[]>([]);
   const voiceSupported = useVoiceSupported();
+
+  function remember(result: Record<string, unknown>) {
+    if (Array.isArray(result.addressed)) addressed.current = result.addressed.map(String);
+  }
 
   function noteChanges(result: SetupToolResult["result"]) {
     const changed = (result.changedFields as string[] | undefined) ?? [];
@@ -54,15 +86,16 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
       const assessmentId = await ensureDraft();
       const secret = await apiRequest<RealtimeSecret>("/api/realtime/client-secrets", {
         method: "POST",
-        body: { purpose: "setup", assessmentId, setup: getSetup() },
+        body: { purpose: "setup", assessmentId, setup: getSetup(), addressed: addressed.current },
       });
       return secret.clientSecret;
     },
     onToolCall: async (name, args) => {
       const response = await apiRequest<SetupToolResult>(`/api/setup-assistant/tools/${encodeURIComponent(name)}`, {
         method: "POST",
-        body: { setup: getSetup(), arguments: args },
+        body: { setup: getSetup(), arguments: args, addressed: addressed.current },
       });
+      remember(response.result);
       const changed = (response.result.changedFields as string[] | undefined) ?? [];
       if (changed.length > 0) onApply(response.setup, changed);
       noteChanges(response.result);
@@ -110,9 +143,11 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
         method: "POST",
         body: {
           setup: getSetup(),
+          addressed: addressed.current,
           messages: history.slice(-16).map((entry) => ({ role: entry.role, content: entry.text })),
         },
       });
+      remember(reply);
       if (reply.changedFields.length > 0) {
         onApply(reply.setup, reply.changedFields);
         setLog((current) => [
@@ -128,10 +163,17 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
     }
   }
 
-  // Live captions that are still arriving.
-  const pending = call.transcript
-    .filter((entry) => !entry.final && entry.text.trim())
-    .map((entry): ConversationEntry => ({ id: entry.id, role: entry.role, text: entry.text, pending: true }));
+  // The conversation, plus live captions that are still arriving.
+  const transcript = call.transcript;
+  const entries = useMemo(
+    () => [
+      ...log,
+      ...transcript
+        .filter((entry) => !entry.final && entry.text.trim())
+        .map((entry): ConversationEntry => ({ id: entry.id, role: entry.role, text: entry.text, pending: true })),
+    ],
+    [log, transcript],
+  );
 
   return (
     <section
@@ -182,7 +224,7 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
       )}
 
       <ConversationLog
-        entries={[...log, ...pending]}
+        entries={entries}
         emptyText="For example: “A 90-minute midterm, about 30% easy, 40% medium and 30% hard, two versions, focused on lectures 3 to 5.”"
         className="max-h-72 min-h-16"
       />

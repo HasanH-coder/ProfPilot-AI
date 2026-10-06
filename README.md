@@ -106,7 +106,9 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. Other scripts: `npm run lint`, `npm run build`, and `npm start` (serves the production build). Type-check with `npx tsc --noEmit`.
+Open http://localhost:3000. Other scripts: `npm run lint`, `npm test`, `npm run build`, and `npm start` (serves the production build). Type-check with `npx tsc --noEmit`.
+
+`npm test` runs the component tests with Vitest in a real browser (Chromium, through Playwright); they need neither Supabase nor the backend. Install the browser once with `npx playwright install chromium`.
 
 The setup form, drafts and uploads work without the backend. The AI features (reading files, Set up with AI, Improve with AI, the plan, the exam editor and export) need the backend running.
 

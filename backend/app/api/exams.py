@@ -1,13 +1,18 @@
 """Exam editing: questions, AI revisions, the quality check, final review, export, and Build with AI."""
 
+import asyncio
+import json
+import logging
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 
 from app.ai.openai_service import OpenAIService
 from app.api.deps import get_ai, get_db
-from app.core.errors import ConflictError, InvalidInputError
+from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.db.supabase import Database
 from app.schemas.api import (
     ApprovalIn,
@@ -40,6 +45,7 @@ from app.services.question_revision import QuestionEdit, QuestionRevisionService
 from app.services.readiness import readiness
 
 router = APIRouter(prefix="/api", tags=["exams"])
+logger = logging.getLogger("profpilot.builder")
 
 
 async def _question_out(db: Database, row: dict[str, Any]) -> dict[str, Any]:
@@ -256,13 +262,60 @@ async def builder_messages(exam_id: str, db: Database = Depends(get_db), ai: Ope
     return [MessageOut.model_validate(message) for message in await ExamBuilderService(db, ai).messages(exam_id)]
 
 
-@router.post("/exams/{exam_id}/builder/messages")
+@router.post("/exams/{exam_id}/builder/messages", response_model=BuilderChatOut)
 async def builder_chat(
-    exam_id: str, body: BuilderMessageIn, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
-) -> BuilderChatOut:
-    """One text-chat turn with ProfPilot while building the exam."""
+    exam_id: str,
+    body: BuilderMessageIn,
+    request: Request,
+    db: Database = Depends(get_db),
+    ai: OpenAIService = Depends(get_ai),
+) -> Any:
+    """One text-chat turn with ProfPilot while building the exam.
+
+    With `Accept: application/x-ndjson`, the reply streams as JSON lines: a
+    `tool` event the moment each tool starts (so the page can say "Generating
+    the next question…" right away), then `done` with the reply, or `error`.
+    """
     exam_id = parse_id(exam_id, what="exam")
-    return BuilderChatOut.model_validate(await ExamBuilderService(db, ai).chat(exam_id, body.content))
+    builder = ExamBuilderService(db, ai)
+    # Problems with the request itself are normal error responses, before anything streams.
+    message = await builder.check_chat(exam_id, body.content)
+    if "application/x-ndjson" not in request.headers.get("accept", ""):
+        return BuilderChatOut.model_validate(await builder.run_chat(exam_id, message))
+    return StreamingResponse(
+        _chat_events(builder, exam_id, message),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+# Keeps streaming chat turns alive (and finishing) even if the browser goes away.
+_chat_tasks: set[asyncio.Task[None]] = set()
+
+
+async def _chat_events(builder: ExamBuilderService, exam_id: str, message: str) -> AsyncIterator[str]:
+    events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+    async def on_tool(name: str, arguments: dict[str, Any]) -> None:
+        await events.put({"event": "tool", "name": name, "arguments": arguments})
+
+    async def run() -> None:
+        try:
+            result = await builder.run_chat(exam_id, message, on_tool)
+            await events.put({"event": "done", **BuilderChatOut.model_validate(result).model_dump(by_alias=True)})
+        except AppError as error:
+            await events.put({"event": "error", "code": error.code, "message": error.message})
+        except Exception as error:  # the type only: messages can contain professor content
+            logger.error("Builder chat failed: %s", type(error).__name__)
+            await events.put({"event": "error", "code": "internal_error", "message": "Something went wrong. Please try again."})
+        finally:
+            await events.put(None)
+
+    task = asyncio.create_task(run())
+    _chat_tasks.add(task)
+    task.add_done_callback(_chat_tasks.discard)
+    while (event := await events.get()) is not None:
+        yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
 
 
 @router.post("/exams/{exam_id}/builder/tools/{tool_name}")

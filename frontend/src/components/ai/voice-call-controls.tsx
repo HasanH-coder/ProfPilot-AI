@@ -1,6 +1,7 @@
 "use client";
 
 import { Mic, MicOff, Phone, PhoneOff } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -31,6 +32,19 @@ export function callStatus(call: RealtimeCall): string {
 function formatElapsed(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/**
+ * The call's duration. It updates itself once a second, so only this small
+ * piece re-renders, not the conversation or the page around it.
+ */
+function CallTimer({ since }: { since: number }) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setSeconds(Math.max(0, Math.floor((Date.now() - since) / 1000))), 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+  return <span className="text-sm tabular-nums text-muted-foreground">· {formatElapsed(seconds)}</span>;
 }
 
 type VoiceCallControlsProps = {
@@ -72,18 +86,21 @@ export function VoiceCallControls({ call, onStart, startLabel = "Start voice cal
         </Button>
       )}
 
-      <p className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
-        <span
-          aria-hidden
-          className={cn(
-            "size-2 shrink-0 rounded-full",
-            active ? "bg-emerald-500" : call.state === "error" ? "bg-destructive" : "bg-muted-foreground/40",
-            active && (call.aiSpeaking || call.professorSpeaking) && "motion-safe:animate-pulse",
-          )}
-        />
-        <span>{status}</span>
-        {active && <span className="tabular-nums">· {formatElapsed(call.elapsed)}</span>}
-      </p>
+      <div className="flex min-w-0 items-center gap-2">
+        <p className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+          <span
+            aria-hidden
+            className={cn(
+              "size-2 shrink-0 rounded-full",
+              active ? "bg-emerald-500" : call.state === "error" ? "bg-destructive" : "bg-muted-foreground/40",
+              active && (call.aiSpeaking || call.professorSpeaking) && "motion-safe:animate-pulse",
+            )}
+          />
+          <span>{status}</span>
+        </p>
+        {/* Outside the live region, so screen readers aren't told the time every second. */}
+        {active && call.connectedAt !== null && <CallTimer since={call.connectedAt} />}
+      </div>
     </div>
   );
 }

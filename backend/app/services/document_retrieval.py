@@ -6,6 +6,7 @@ relevant chunks, within a size budget. The search runs in Postgres
 (match_document_chunks) as the professor, so it only ever sees their files.
 """
 
+import asyncio
 from dataclasses import dataclass
 
 from app.ai.openai_service import OpenAIService, Usage
@@ -52,11 +53,12 @@ class DocumentRetrievalService:
         queries = [query.strip()[:4000] for query in queries if query and query.strip()]
         if not queries:
             return []
+        self.usage.retrievals += 1
         vectors = await self.ai.embed(queries, usage=self.usage)
-        best: dict[str, Excerpt] = {}
-        for vector in vectors:
-            rows = (
-                await self.db.rpc(
+        # One similarity search per query, all at once (each is a read as the professor).
+        results = await asyncio.gather(
+            *(
+                self.db.rpc(
                     "match_document_chunks",
                     {
                         "p_exam_project_id": assessment_id,
@@ -65,9 +67,12 @@ class DocumentRetrievalService:
                         "p_match_count": per_query,
                     },
                 )
-                or []
+                for vector in vectors
             )
-            for row in rows:
+        )
+        best: dict[str, Excerpt] = {}
+        for rows in results:
+            for row in rows or []:
                 if exclude and row["id"] in exclude:
                     continue
                 similarity = float(row.get("similarity") or 0)
@@ -93,28 +98,39 @@ class DocumentRetrievalService:
         max_chars: int = 16_000,
     ) -> list[Excerpt]:
         """Evenly spaced chunks from each file, for a broad view of the material."""
-        excerpts: list[Excerpt] = []
-        for document_id in document_ids:
+
+        async def chosen_ids(document_id: str) -> list[str]:
+            # Only the ids first: a long file has hundreds of chunks, and only a few are used.
             rows = await self.db.select(
                 "document_chunks",
-                columns="id, document_id, chunk_index, content, location_label",
+                columns="id, chunk_index",
                 filters=[("document_id", "eq", document_id), ("professor_id", "eq", self.db.professor_id)],
                 order=[("chunk_index", "asc")],
             )
-            if not rows:
-                continue
             step = max(1, len(rows) // per_document)
-            for row in rows[::step][:per_document]:
-                excerpts.append(
-                    Excerpt(
-                        chunk_id=row["id"],
-                        document_id=row["document_id"],
-                        document_name=document_names.get(row["document_id"], "Uploaded file"),
-                        location=row.get("location_label"),
-                        content=row["content"],
-                        similarity=0.0,
-                    )
-                )
+            return [row["id"] for row in rows[::step][:per_document]]
+
+        picked = [chunk_id for ids in await asyncio.gather(*(chosen_ids(doc) for doc in document_ids)) for chunk_id in ids]
+        if not picked:
+            return []
+        rows = await self.db.select(
+            "document_chunks",
+            columns="id, document_id, chunk_index, content, location_label",
+            filters=[("id", "in", picked), ("professor_id", "eq", self.db.professor_id)],
+        )
+        by_id = {row["id"]: row for row in rows}
+        excerpts = [
+            Excerpt(
+                chunk_id=row["id"],
+                document_id=row["document_id"],
+                document_name=document_names.get(row["document_id"], "Uploaded file"),
+                location=row.get("location_label"),
+                content=row["content"],
+                similarity=0.0,
+            )
+            for row in (by_id.get(chunk_id) for chunk_id in picked)
+            if row is not None
+        ]
         return _fit(excerpts, len(excerpts), max_chars)
 
 

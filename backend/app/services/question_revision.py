@@ -5,17 +5,25 @@ the professor can see what changed and restore an earlier version. Approved
 questions are locked: nothing changes them until the professor unlocks them.
 """
 
+import asyncio
+import re
 from typing import Any
 
-from app.ai.openai_service import OpenAIService, Usage
+from app.ai.openai_service import Effort, OpenAIService, Usage
 from app.ai.prompts import DataFramer, reviser_instructions, solution_instructions
 from app.core.errors import ConflictError, InvalidInputError, NotFoundError
+from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
 from app.schemas.ai import QuestionContent, RevisedQuestion, SolutionKey
 from app.schemas.common import ApiModel, parse_id
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
-from app.services.exam_generation import GenerationContext, excerpt_ref_map, load_generation_context
+from app.services.exam_generation import (
+    GenerationContext,
+    excerpt_ref_map,
+    load_generation_context,
+    question_effort,
+)
 from app.services.exam_store import (
     SNAPSHOT_FIELDS,
     ExamStore,
@@ -106,6 +114,12 @@ class QuestionRevisionService:
     # -- AI revision -------------------------------------------------------------------
 
     async def revise(self, question_id: str, *, instruction: str | None, preset: str | None) -> dict[str, Any]:
+        async with timed("revise_question", self.usage):
+            return await self._revise(question_id, instruction=instruction, preset=preset)
+
+    async def _revise(self, question_id: str, *, instruction: str | None, preset: str | None) -> dict[str, Any]:
+        """Revises one question and its answer key. Only that question's context is
+        loaded: no file is read again, no other question changes, no exam review runs."""
         question = await self.store.get_question(question_id)
         exam = await self.store.require_editable(question)
         if question["status"] == "approved":
@@ -132,8 +146,9 @@ class QuestionRevisionService:
             parts.append("The professor's instruction: " + instruction)
         request = " ".join(parts)
 
-        ctx = await load_generation_context(self.db, exam["exam_project_id"], require_approved=False)
-        full = await self.store.load(exam["id"])
+        ctx, full = await asyncio.gather(
+            load_generation_context(self.db, exam["exam_project_id"], require_approved=False), self.store.load(exam["id"])
+        )
         number = _number_of(full, question)
         others = [q["prompt"] for q in full.version_questions(question["version_id"]) if q["id"] != question["id"]]
         framer = DataFramer()
@@ -163,7 +178,6 @@ class QuestionRevisionService:
                 found.append("The revised question duplicates another question in the exam.")
             return found
 
-        demanding = preset in (None, "harder", "alternative", "replace", "application")
         result = await self.ai.parse(
             purpose="revise_question",
             instructions=reviser_instructions(framer),
@@ -179,7 +193,7 @@ class QuestionRevisionService:
                 ]
             ),
             schema=RevisedQuestion,
-            effort="high" if demanding else "medium",
+            effort=_revision_effort(question["type"], target_difficulty, instruction),
             max_output_tokens=20_000,
             validate=problems,
             usage=self.usage,
@@ -248,7 +262,7 @@ class QuestionRevisionService:
                 ]
             ),
             schema=SolutionKey,
-            effort="high",
+            effort=question_effort(question["type"], question["difficulty"]),
             max_output_tokens=16_000,
             validate=problems,
             usage=self.usage,
@@ -462,6 +476,20 @@ class QuestionRevisionService:
         )
         summary = distribution.summarize(rows)
         return {"distribution": summary, "distributionWarnings": distribution.compare(summary, ctx.spec)}
+
+
+_DEMANDING = re.compile(
+    r"\b(hard|harder|hardest|difficult|challeng\w*|complex|multi[- ]?step|proof|prove|derive|derivation)\b", re.I
+)
+
+
+def _revision_effort(question_type: str, target_difficulty: str, instruction: str) -> Effort:
+    """Medium reasoning for a normal revision; high when the result is hard or a
+    multi-step problem, or the professor's own instruction asks for something demanding."""
+    effort = question_effort(question_type, target_difficulty)
+    if effort == "medium" and instruction and (_DEMANDING.search(instruction) or len(instruction) > 300):
+        return "high"
+    return effort
 
 
 def _number_of(full: Any, question: dict[str, Any]) -> int:

@@ -17,6 +17,7 @@ from app.ai.openai_service import OpenAIService, Usage
 from app.ai.prompts import DataFramer, interpreter_instructions
 from app.core.config import settings
 from app.core.errors import ConflictError
+from app.core.timing import timed
 from app.db.supabase import Database
 from app.schemas.ai import DifficultySpec, ExamSpec, FormatSpec, InterpretationOutput
 from app.services.assessment_context import (
@@ -76,6 +77,10 @@ class PromptInterpreterService:
         self.context = AssessmentContextService(db)
 
     async def interpret(self, assessment_id: str, run: RunContext | None = None) -> dict[str, Any]:
+        async with timed("interpretation", self.usage):
+            return await self._interpret(assessment_id, run)
+
+    async def _interpret(self, assessment_id: str, run: RunContext | None) -> dict[str, Any]:
         record = await self.context.get_assessment(assessment_id)
         fingerprint = record.setup.fingerprint()
 
@@ -236,14 +241,19 @@ class PromptInterpreterService:
         record = await self.context.get_assessment(assessment_id)
         if record.spec_status != "approved" or not record.exam_spec:
             raise ConflictError("Approve the assessment plan before generating the exam.", code="spec_not_approved")
-        documents = await self.context.list_documents(assessment_id)
+        return record, await self.approved_spec(record, await self.context.list_documents(record.id))
+
+    async def approved_spec(self, record: AssessmentRecord, documents: list[DocumentRecord]) -> ExamSpec:
+        """Like require_approved, for an assessment and files that are already loaded."""
+        if record.spec_status != "approved" or not record.exam_spec:
+            raise ConflictError("Approve the assessment plan before generating the exam.", code="spec_not_approved")
         if stale_reasons(record, documents):
-            await self._mark_stale(assessment_id)
+            await self._mark_stale(record.id)
             raise ConflictError(
                 "Your setup changed after the plan was approved. Review and approve the updated plan first.",
                 code="spec_stale",
             )
-        return record, ExamSpec.model_validate(record.exam_spec["spec"])
+        return ExamSpec.model_validate(record.exam_spec["spec"])
 
     async def _mark_stale(self, assessment_id: str) -> None:
         await self.db.update(

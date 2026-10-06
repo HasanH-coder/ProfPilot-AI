@@ -16,7 +16,7 @@ import {
   Trash2,
   Unlock,
 } from "lucide-react";
-import { useId, useState, type FormEvent } from "react";
+import { memo, useId, useState, type FormEvent } from "react";
 
 import { FigurePreview } from "@/components/exam/figure-preview";
 import { DIFFICULTY_LABELS, marks, QUICK_ACTIONS, TYPE_LABELS, type QuickAction } from "@/components/exam/labels";
@@ -65,8 +65,20 @@ type QuestionCardProps = {
 
 type Notice = { summary: string | null; warnings: DistributionWarning[] };
 
-/** One question, with everything the professor can do to it. */
-export function QuestionCard({ question, headingLevel = 2, showKey, multiVersion, onChanged, highlighted, move }: QuestionCardProps) {
+/**
+ * One question, with everything the professor can do to it. Memoized: with the
+ * same props (an unchanged question) it doesn't re-render while the rest of the
+ * page updates, e.g. during a voice call.
+ */
+export const QuestionCard = memo(function QuestionCard({
+  question,
+  headingLevel = 2,
+  showKey,
+  multiVersion,
+  onChanged,
+  highlighted,
+  move,
+}: QuestionCardProps) {
   const Heading = headingLevel === 3 ? "h3" : "h2";
   const headingId = useId();
   const askId = useId();
@@ -394,7 +406,7 @@ export function QuestionCard({ question, headingLevel = 2, showKey, multiVersion
       </AlertDialog>
     </article>
   );
-}
+});
 
 function AnswerKey({ question }: { question: Question }) {
   const hasRubric = question.rubric && question.rubric.length > 0;

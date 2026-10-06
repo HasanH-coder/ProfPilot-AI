@@ -39,16 +39,26 @@ _EMBED_BATCH_CHARS = 400_000
 
 @dataclass
 class Usage:
-    """Tokens used by one job, recorded in ai_runs (never the content)."""
+    """Tokens and calls used by one job or request, recorded in ai_runs and timing logs (never the content)."""
 
     input_tokens: int = 0
     output_tokens: int = 0
     calls: int = 0
+    # For timing logs (see app/core/timing.py): reasoning-model calls, embedding
+    # requests, course-material searches, and the purpose of each model call.
+    model_calls: int = 0
+    embedding_calls: int = 0
+    retrievals: int = 0
+    purposes: list[str] = field(default_factory=list)
 
     def add(self, input_tokens: int, output_tokens: int) -> None:
         self.input_tokens += max(0, input_tokens)
         self.output_tokens += max(0, output_tokens)
         self.calls += 1
+
+    def model_call(self, purpose: str) -> None:
+        self.model_calls += 1
+        self.purposes.append(purpose)
 
 
 @dataclass
@@ -299,8 +309,10 @@ class OpenAIService:
                 raise _translate_error(error, "embeddings") from error
             ordered = sorted(result.data, key=lambda item: item.index)
             vectors.extend(list(item.embedding) for item in ordered)
-            if usage is not None and result.usage is not None:
-                usage.add(result.usage.prompt_tokens, 0)
+            if usage is not None:
+                usage.embedding_calls += 1
+                if result.usage is not None:
+                    usage.add(result.usage.prompt_tokens, 0)
         return vectors
 
     # -- Realtime (voice) --------------------------------------------------------
@@ -328,6 +340,7 @@ class OpenAIService:
         output_tokens = getattr(response_usage, "output_tokens", 0) or 0
         if usage is not None:
             usage.add(input_tokens, output_tokens)
+            usage.model_call(purpose)
         # Purpose, size and time only: never prompts, files or answers.
         logger.info(
             "%s: %s in / %s out tokens, %.1fs",

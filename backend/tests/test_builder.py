@@ -66,8 +66,10 @@ def test_scenario_g_build_question_by_question(api, supabase, db_a, ai):
     first = say(api, exam["id"], "Let's start with the first question.")
     q1 = questions_a(api, exam["id"])
     assert len(q1) == 1 and first["changedQuestionIds"] == [q1[0]["id"]]
-    # The conversational model only chose the tool; the reasoning model wrote the question.
-    assert ai.calls_for("generate_question")[0]["effort"] == "high"
+    # The conversational model only chose the tool; the reasoning model wrote the question,
+    # with medium effort for a normal (non-hard) question.
+    written = ai.calls_for("generate_question")[0]
+    assert q1[0]["difficulty"] != "hard" and written["effort"] == "medium"
 
     revised = say(api, exam["id"], "Make it more practical.")
     after = questions_a(api, exam["id"])
@@ -154,6 +156,49 @@ def test_setup_assistant_text_chat_fills_the_form(api, db_a, ai):
     assert ai.calls[-1]["tool_results"][-1]["ok"] is False
 
 
+def test_setup_chat_skips_a_setting_and_moves_to_the_next_one(api, db_a, ai):
+    run(seed_course(db_a))
+    ai.tool_scripts["setup_chat"] = lambda messages: (
+        [("skip_setting", {"setting": "duration"})],
+        "Okay. Do you want to specify the question format?",
+    )
+    response = api.post(
+        "/api/setup-assistant/messages",
+        headers=auth(),
+        json={
+            "setup": {"examName": "Midterm"},
+            "addressed": ["course"],
+            "messages": [{"role": "professor", "content": "Skip the duration."}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Skipped means left empty, and remembered so it isn't asked again.
+    assert body["setup"]["durationMinutes"] is None and body["changedFields"] == []
+    assert body["addressed"] == ["course", "duration"]
+    call = ai.calls[-1]
+    assert (
+        "NEXT QUESTION, if the professor's message doesn't change the topic: Do you want to specify a duration?"
+        in (call["instructions"])
+    )
+    assert call["tool_results"][0]["nextQuestion"] == "Do you want to specify the question format?"
+
+
+def test_a_voice_setup_call_opens_with_one_question(api, db_a, ai):
+    run(seed_course(db_a))
+    response = api.post(
+        "/api/realtime/client-secrets",
+        headers=auth(),
+        json={"purpose": "setup", "setup": {"examName": "Midterm"}, "addressed": ["course"]},
+    )
+    assert response.status_code == 200, response.text
+    instructions = ai.secrets[-1]["session"]["instructions"]
+    assert "Open with a short greeting and the first question only, e.g. 'Hi. Do you want to specify a duration?'" in (
+        instructions
+    )
+    assert "ONE QUESTION AT A TIME" in instructions
+
+
 def test_setup_tool_endpoint_for_voice_calls(api, db_a):
     response = api.post(
         "/api/setup-assistant/tools/set_difficulty_distribution",
@@ -163,10 +208,13 @@ def test_setup_tool_endpoint_for_voice_calls(api, db_a):
             "arguments": {"easy_percent": 30, "medium_percent": 30, "hard_percent": 30},
         },
     )
+    # Not applied and not normalized: the assistant is told to ask about the missing 10%.
     assert response.status_code == 422
-    assert response.json()["error"]["message"] == "Difficulty percentages must total 100%."
+    message = response.json()["error"]["message"]
+    assert "adds up to 90%" in message and "remaining 10%" in message and "Don't change their numbers" in message
     ok = api.post("/api/setup-assistant/tools/set_duration", headers=auth(), json={"setup": {}, "arguments": {"minutes": 90}})
     assert ok.json()["setup"]["durationMinutes"] == 90
+    assert ok.json()["result"]["addressed"] == ["duration"]
 
 
 def test_voice_credentials_are_short_lived_and_configured_on_the_server(api, db_a, ai):

@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  BookOpen,
-  ClipboardCheck,
-  FileText,
-  House,
-  Settings,
-  Sparkles,
-} from "lucide-react";
+import { BookOpen, ClipboardCheck, House, Settings, Sparkles } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -74,28 +67,20 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
             </Link>
           );
         })}
+        {/* Opens Assessment Setup with Set up with AI already open. A normal
+            client navigation: the page shows at once (its loading state
+            first), and nothing is created until the professor saves, uploads
+            or starts a call. */}
         <Link
           href="/workspace/assessments/new?assistant=setup"
           onClick={onNavigate}
           className="workspace-nav-item"
         >
-          <Sparkles className="size-5" />
+          <LinkPendingIcon>
+            <Sparkles className="size-5" />
+          </LinkPendingIcon>
           AI Assistant
         </Link>
-        {[{ label: "Resources", icon: FileText }].map(
-          ({ label, icon: Icon }) => (
-            <span
-              key={label}
-              aria-disabled="true"
-              className="workspace-nav-item workspace-nav-upcoming"
-              title={`${label} is coming soon`}
-            >
-              <Icon className="size-5" aria-hidden="true" />
-              <span>{label}</span>
-              <span className="workspace-soon">Soon</span>
-            </span>
-          ),
-        )}
         <Link
           href="/workspace/preferences"
           onClick={onNavigate}

@@ -24,7 +24,7 @@ from app.db.supabase import Database
 from app.domain.setup import AssessmentSetup
 from app.services.assessment_context import AssessmentContextService
 from app.services.exam_builder import BUILDER_TOOLS, ExamBuilderService
-from app.services.setup_assistant import SETUP_TOOLS, describe_courses, describe_setup
+from app.services.setup_assistant import SETUP_TOOLS, describe_courses, describe_setup, next_setup_question
 
 Purpose = Literal["setup", "builder"]
 
@@ -83,6 +83,7 @@ class RealtimeSessionService:
         setup: AssessmentSetup | None = None,
         assessment_id: str | None = None,
         exam_id: str | None = None,
+        addressed: list[str] | None = None,
     ) -> dict[str, Any]:
         _check_rate_limit(self.db.professor_id)
         context = AssessmentContextService(self.db)
@@ -90,8 +91,11 @@ class RealtimeSessionService:
             if assessment_id:
                 await context.get_assessment(assessment_id)  # must be the professor's own
             courses = await context.list_courses()
+            current = setup or AssessmentSetup()
             instructions = setup_voice_instructions(
-                describe_setup(setup or AssessmentSetup(), courses), describe_courses(courses)
+                describe_setup(current, courses),
+                describe_courses(courses),
+                next_setup_question(current, courses, addressed),
             )
             tools = SETUP_TOOLS
         else:

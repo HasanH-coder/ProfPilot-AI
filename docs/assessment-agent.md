@@ -82,7 +82,7 @@ All model names are in `backend/app/core/config.py` and can be overridden with a
 | `REALTIME_VOICE` | `marin` | The assistant's voice |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` (1536 dimensions) | Searching course material. The dimension must match the `vector(1536)` column. |
 
-Reasoning calls use the **Responses API** with **Structured Outputs** (`responses.parse` with a Pydantic model), so every reply has exactly the expected shape. Each call sets a reasoning effort that suits it (low for file summaries and chat; medium for style analysis and versions; high for planning, question writing, answer keys and the quality check; the interpreter and AI revisions use high for complex requests and medium otherwise) and `store=False`. Tool use (Build with AI, the text chat) uses strict function tools, replaying reasoning items between rounds.
+Reasoning calls use the **Responses API** with **Structured Outputs** (`responses.parse` with a Pydantic model), so every reply has exactly the expected shape. Each call sets a reasoning effort that suits it, keeping high effort where it materially improves the result: high for planning, the final quality check, and writing, revising or re-keying a question that is hard or a multi-step problem (above easy); medium for other questions, normal revisions, answer keys of such questions, style analysis and versions; low for file summaries, tool routing and chat. The interpreter uses high for complex requests and medium otherwise. Every call uses `store=False`. Tool use (Build with AI, the text chat) uses strict function tools, replaying reasoning items between rounds.
 
 `OpenAIService` (`backend/app/ai/openai_service.py`) wraps every call:
 
@@ -184,10 +184,18 @@ A plan becomes **out of date** when the setup changes, a file is added or remove
 `POST /api/assessments/{id}/exam` with `mode: "full"` starts a job with visible stages:
 
 1. **Planning.** The reasoning model writes an exam plan: sections, and for each question its type, difficulty, points, topic, learning objective, cognitive level, source hint and estimated time. The plan is checked in code (counts, total points, format and difficulty split by marks within 6 percentage points, duration) and repaired once if needed.
-2. **Writing questions and answer keys.** Questions are written in batches of up to four per section, several batches at once, each grounded in retrieved course-material excerpts. Each batch is validated before it is saved: the planned type, difficulty and points; a valid answer for every MCQ; an answer, a worked solution and a rubric whose points add up; no near-duplicates of other questions.
-3. **Creating equivalent versions** (if more than one). Each question of version A gets an equivalent variant per version, with the same topic, type, difficulty and points; equivalents share a `slot_id`.
+2. **Writing questions and answer keys.** Questions are written in batches of up to four, enough batches to keep `MAX_CONCURRENT_GENERATION_CALLS` busy in as few rounds as possible, each grounded in retrieved course-material excerpts. Questions that need high effort are batched apart from the others and go first, and the batches are shared out so the slowest one finishes as early as possible; every question keeps its planned number, so the order never depends on timing. Each batch is validated before it is saved: the planned type, difficulty and points; a valid answer for every MCQ; an answer, a worked solution and a rubric whose points add up; no near-duplicates of other questions.
+3. **Creating equivalent versions** (if more than one). Each question of version A gets an equivalent variant per version, with the same topic, type, difficulty and points; equivalents share a `slot_id`. All versions are written at the same time.
 4. **Running the AI quality check** (below).
 5. **Finalizing.**
+
+The plan is made once, and the full quality check runs once, after every question is written.
+
+#### Question order
+
+Unless the professor asks for a particular order, an exam mixes difficulties and topics instead of following the course outline: not all the easy questions first, and not several questions in a row from the same lecture while others are available. The planner is told so, and the plan is then checked in code (`interleave_plan` in `exam_generation.py`): where every difficulty, or every lecture (from each question's source), forms one block, or a run of three or more could be broken up, the questions of that section are reordered so they spread evenly. Only the order changes (each question keeps its type, difficulty, points and topic, so the splits by marks stay exactly as planned), sections stay together, a section grouped by question type keeps that grouping, and questions are renumbered. No extra model call is needed. Small sections are left alone.
+
+An explicit request wins: when the professor asks for an order ("easy questions first", "lecture by lecture", "finish Lecture 3 first"), the planner reports it in `ordering_request` and the plan is kept as it is; the professor's own words are also checked for such requests.
 
 If a step fails, the questions already saved are kept and the exam shows **Continue generation**, which resumes where it stopped (`resume: true`). Replacing an existing exam requires an explicit confirmation (`replace: true`).
 
@@ -198,6 +206,10 @@ If a step fails, the questions already saved are kept and the exam shows **Conti
 `get_exam_state`, `generate_next_question`, `revise_question`, `approve_question`, `unlock_question`, `delete_question`, `move_question`, `review_question`, `regenerate_solution`, `finish_exam`.
 
 The assistant follows the approved plan, suggests the next question, and never changes an approved (locked) question. **Finish** creates the other versions and runs the quality check, then opens the exam editor.
+
+- **The next question keeps the mix.** Unless the professor asks for a type, difficulty or topic, ProfPilot picks them (`suggest_next`): whichever difficulty is furthest behind the plan's split by marks, without repeating the previous one while another is about as far behind, and the coverage topic furthest behind its share, avoiding the previous topic and lecture. So difficulties and lectures are interleaved from the start rather than all the easy questions first. "Give me three easy questions first" or "finish Lecture 3 first" is followed as asked.
+- **Only what one question needs.** Generating or revising a question loads the stored plan, the exam and a few excerpts (in parallel), makes one reasoning call, and changes only that question and its answer key: no file is read again, nothing is re-planned, and the full quality check doesn't run.
+- **Visible progress.** As soon as a tool starts, the conversation shows what is happening ("Generating the next question…", "Making Question 4 harder…", "Updating the answer key…"), as a status, not as a message from ProfPilot. A failure is replaced by a short error and **Retry**. In the text chat the reply streams (`Accept: application/x-ndjson`): a `tool` line as each tool starts, then `done` with the reply. In a call, the tool's result goes back to the model at once and the preview refreshes in the background; the assistant says at most a few words before a long tool and then waits quietly.
 
 ## The quality check
 
@@ -234,7 +246,11 @@ Versions are labelled A, B, C… Equivalent questions share a `slot_id` and are 
 3. The browser opens a **WebRTC** connection directly to OpenAI (`POST https://api.openai.com/v1/realtime/calls` with the SDP offer and the client secret), with the microphone as input and an `oai-events` data channel.
 4. When the model calls a tool, the browser sends it to FastAPI (`/api/setup-assistant/tools/{name}` or `/api/exams/{id}/builder/tools/{name}`), which validates the arguments, checks ownership, applies the change and returns the result. The browser passes the result back to the model. The browser never applies an AI change on its own authority.
 
-**Set up with AI** fills the form live. Each change is highlighted, listed in a change feed, and saved to the same draft as the form (an autosave). The assistant asks about missing settings, confirms what it changed, and never invents files or courses.
+**Set up with AI** fills the form live. Each change is highlighted, listed in a change feed, and saved to the same draft as the form (an autosave). It is always offered at the top of Assessment Setup; the sidebar's **AI Assistant** opens the same page with it open.
+
+- **Brief, one question at a time.** The assistant asks about one setting per turn (course, assessment type, duration, question format, difficulty mix, versions, coverage), in a few words, without filler or repeating back what the professor said. Every tool result names the next question (`nextQuestion`), skipping settings already filled in or answered.
+- **Everything optional.** "Skip", "I don't care" or "not now" calls `skip_setting`: the setting stays empty and isn't asked about again in that conversation. "That's enough" or "finish" ends the setup right away.
+- **Exact numbers.** Values the professor states are applied exactly: "30 percent easy, 40 percent medium and 30 percent hard" sets 30 / 40 / 30. A split that doesn't add up to 100 (30 / 30 / 30) is never adjusted; nothing changes and the assistant asks one short question ("That adds up to 90%. What should the remaining 10% be?"). A missing share is asked for, and without numbers ("mostly medium") a split is only offered as a suggestion and set once the professor agrees. Numbers sent as `"30"`, `30.0` or `0.3` are read as the same 30%.
 
 **Fallbacks.** If voice isn't supported, the microphone is blocked or missing, or the connection fails, the panel says why and offers the **text chat**, which uses the same tools through `POST /api/setup-assistant/messages` or `/api/exams/{id}/builder/messages`. The call has **Mute** / **Unmute** and **End call**, the call's duration, who is speaking, and live captions when transcription is available.
 
@@ -321,7 +337,7 @@ All routes except `GET /` and `GET /health` require `Authorization: Bearer <Supa
 | `PUT /api/questions/{id}/approval` | Approve / unlock |
 | `GET /api/questions/{id}/revisions` · `POST …/revisions/{revisionId}/restore` | History · restore |
 | `POST /api/questions/{id}/variants` | Update the other versions |
-| `GET/POST /api/exams/{id}/builder/messages` | Build with AI text chat |
+| `GET/POST /api/exams/{id}/builder/messages` | Build with AI text chat (streams progress with `Accept: application/x-ndjson`) |
 | `POST /api/exams/{id}/builder/tools/{name}` | Run a builder tool (voice) |
 | `POST /api/exams/{id}/builder/transcript` | Save a voice transcript line |
 | `POST /api/realtime/client-secrets` | A voice credential |
@@ -334,7 +350,9 @@ The interactive documentation is at http://localhost:8000/docs while the backend
 
 - Files are read once; identical files are reused by hash; the style profile is cached.
 - Retrieval sends only the most relevant excerpts, within a character budget.
-- Reasoning effort is set per task; verbosity is kept low where possible.
+- Reasoning effort is set per task (see [Models](#models)); verbosity is kept low where possible.
+- Independent reads (the assessment, its files, the style profile, preferences; the exam's parts; one similarity search per query) run in parallel.
+- Timing logs (`profpilot.timing`) record, per operation, only its name, elapsed time, and the number of model calls (with their purpose), embedding requests and searches, for example `builder_tool.generate_next_question: 8412 ms, 1 model call(s) [generate_question], 1 embedding call(s), 1 retrieval(s)`. No prompts or content.
 - Validation failures get one repair attempt, not open-ended retries.
 - Concurrency is bounded, and a failed batch cancels its siblings.
 - Automated tests never call OpenAI (see below).
@@ -344,7 +362,7 @@ The interactive documentation is at http://localhost:8000/docs while the backend
 From `backend/` with the virtual environment active:
 
 ```bash
-pytest                 # 100 tests, plus 2 live tests that are skipped by default; OpenAI and Supabase are replaced by fakes
+pytest                 # 157 tests, plus 2 live tests that are skipped by default; OpenAI and Supabase are replaced by fakes
 ruff check . && ruff format --check .
 ```
 
@@ -352,6 +370,9 @@ ruff check . && ruff format --check .
 - `tests/test_isolation.py` acts as a second professor and makes 30 requests against the first professor's assessment, exam, questions, job and voice credentials: every attempt gets `404`, the first professor's data is unchanged, their Storage files can't be read, and requests without a token get `401`.
 - `tests/test_security.py` covers token verification (expired, wrong audience, wrong issuer, `anon` role, anonymous users, a non-UUID subject, a token signed by another key, symmetric and unsigned tokens), protected endpoints without a valid bearer token, and error responses that never echo submitted values.
 - The other suites cover parsing, ingestion, the interpreter and staleness, generation and resume, the quality check and its safe fixes, revisions and history, the builder and setup tools, voice credentials and their rate limit, personalization, jobs, and export.
+- `tests/test_planning.py` covers question order (mixed plans, explicit orders kept, Build with AI's next question) and `tests/test_latency.py` checks that one-question operations make one model call and no heavy work, that batches and versions are written concurrently, and that the chat reports a tool before the AI returns.
+
+The frontend has component tests (from `frontend/`: `npm test`), run with Vitest in Chromium: Set up with AI on Create assessment and through the sidebar, the sidebar's links, the conversation log's scrolling, the builder's statuses, the builder page's height at 390–1440 px, and that captions during a call don't re-render the form or the exam preview.
 
 **Live smoke test.** `tests/test_live_smoke.py` makes two small real calls (one structured output, one Realtime client secret). It is skipped unless enabled explicitly:
 

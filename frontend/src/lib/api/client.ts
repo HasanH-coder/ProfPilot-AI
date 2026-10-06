@@ -47,7 +47,11 @@ type RequestOptions = {
   freshSession?: boolean;
 };
 
-async function send(path: string, { method = "GET", body, signal, freshSession = false }: RequestOptions) {
+async function send(
+  path: string,
+  { method = "GET", body, signal, freshSession = false }: RequestOptions,
+  accept?: string,
+) {
   const token = await accessToken(freshSession);
   try {
     return await fetch(`${API_URL}${path}`, {
@@ -56,6 +60,7 @@ async function send(path: string, { method = "GET", body, signal, freshSession =
       headers: {
         Authorization: `Bearer ${token}`,
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(accept ? { Accept: accept } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -81,6 +86,40 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (!response.ok) throw await errorFrom(response);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+/**
+ * A request whose reply streams as JSON lines (application/x-ndjson): each
+ * line is passed to `onEvent` as soon as it arrives. A plain JSON reply is
+ * passed on as a single `done` event.
+ */
+export async function apiStream<T extends { event: string }>(
+  path: string,
+  onEvent: (event: T) => void,
+  options: RequestOptions = {},
+): Promise<void> {
+  const response = await send(path, options, "application/x-ndjson");
+  if (!response.ok) throw await errorFrom(response);
+  if (!response.body || !response.headers.get("Content-Type")?.includes("ndjson")) {
+    onEvent({ event: "done", ...(await response.json()) } as T);
+    return;
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      buffered += value ?? "";
+      const lines = buffered.split("\n");
+      buffered = done ? "" : (lines.pop() ?? "");
+      for (const line of lines) if (line.trim()) onEvent(JSON.parse(line) as T);
+      if (done) return;
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    if (error instanceof SyntaxError) throw new ApiError("error", "ProfPilot's reply couldn't be read. Please try again.", 0);
+    throw new ApiError("network_error", UNREACHABLE, 0);
+  }
 }
 
 /** Downloads a file (e.g. an exam PDF) and saves it with the name the API gives it. */

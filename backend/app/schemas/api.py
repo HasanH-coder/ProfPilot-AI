@@ -272,6 +272,8 @@ class RealtimeSecretIn(ApiModel):
     assessment_id: str | None = None
     exam_id: str | None = None
     setup: AssessmentSetup | None = None
+    # Setup settings already answered (set or skipped) in this conversation.
+    addressed: list[str] = Field(default=[], max_length=20)
 
 
 class RealtimeSecretOut(ApiModel):
@@ -283,6 +285,8 @@ class RealtimeSecretOut(ApiModel):
 class SetupToolIn(ApiModel):
     setup: AssessmentSetup
     arguments: dict[str, Any] = {}
+    # Settings already answered (set or skipped) in this conversation.
+    addressed: list[str] = Field(default=[], max_length=20)
 
 
 class SetupToolOut(ApiModel):
@@ -298,6 +302,7 @@ class ChatMessageIn(ApiModel):
 class SetupChatIn(ApiModel):
     setup: AssessmentSetup
     messages: list[ChatMessageIn] = Field(min_length=1, max_length=40)
+    addressed: list[str] = Field(default=[], max_length=20)
 
 
 class SetupChatOut(ApiModel):
@@ -305,6 +310,7 @@ class SetupChatOut(ApiModel):
     setup: AssessmentSetup
     changed_fields: list[str]
     finished: bool
+    addressed: list[str]
 
 
 # -----------------------------------------------------------------------------

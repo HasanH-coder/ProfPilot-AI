@@ -7,10 +7,19 @@
 // model wants to change something (the form, the exam), it calls a tool; this
 // hook hands the call to `onToolCall`, which runs it through ProfPilot's API
 // (with the professor's own permissions) and sends the result back.
+//
+// Captions arrive many times a second. To keep the page smooth during a call,
+// only captions still arriving are kept in state, and their new words are
+// shown together at most every CAPTION_UPDATE_MS. Finished lines go to
+// `onTranscript`, and the call timer updates itself (see CallTimer), so the
+// component using this hook doesn't re-render for every word or every second.
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 const REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
+const CAPTION_UPDATE_MS = 100;
+// Lines already finished, so a late caption piece can't bring one back.
+const MAX_FINISHED_IDS = 500;
 
 export type CallState = "idle" | "requesting_microphone" | "connecting" | "connected" | "ended" | "error";
 
@@ -60,38 +69,64 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
   const [professorSpeaking, setProfessorSpeaking] = useState(false);
   const [working, setWorking] = useState(false);
   const [captionsUnavailable, setCaptionsUnavailable] = useState(false);
+  // Captions still arriving (finished lines go to onTranscript instead).
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [elapsed, setElapsed] = useState(0);
+  // When the call connected, for the call timer.
+  const [connectedAt, setConnectedAt] = useState<number | null>(null);
 
   const peer = useRef<RTCPeerConnection | null>(null);
   const channel = useRef<RTCDataChannel | null>(null);
   const microphone = useRef<MediaStream | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The captions as they are now, by item id, and when they are next shown.
+  const captions = useRef(new Map<string, TranscriptEntry>());
+  const captionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finished = useRef(new Set<string>());
   // Latest callbacks, so a long call always uses the current form or exam.
   const callbacks = useRef({ onToolCall, onTranscript, getClientSecret });
   useEffect(() => {
     callbacks.current = { onToolCall, onTranscript, getClientSecret };
   });
 
-  const upsert = useCallback((entry: TranscriptEntry) => {
-    setTranscript((current) => {
-      const index = current.findIndex((item) => item.id === entry.id);
-      if (index === -1) return [...current, entry];
-      const next = [...current];
-      next[index] = entry;
-      return next;
-    });
-    if (entry.final && entry.text.trim()) callbacks.current.onTranscript?.(entry);
+  const showCaptions = useCallback(() => {
+    if (captionTimer.current) clearTimeout(captionTimer.current);
+    captionTimer.current = null;
+    setTranscript([...captions.current.values()]);
   }, []);
+
+  /** Adds words to a caption that is still arriving; shown with the next update. */
+  const addCaption = useCallback(
+    (id: string, role: TranscriptEntry["role"], piece: string) => {
+      if (finished.current.has(id)) return;
+      const current = captions.current.get(id);
+      captions.current.set(id, { id, role, text: (current?.text ?? "") + piece, final: false });
+      captionTimer.current ??= setTimeout(showCaptions, CAPTION_UPDATE_MS);
+    },
+    [showCaptions],
+  );
+
+  /** A finished line: it leaves the captions and goes to onTranscript. */
+  const finish = useCallback(
+    (entry: TranscriptEntry) => {
+      finished.current.add(entry.id);
+      if (finished.current.size > MAX_FINISHED_IDS) {
+        finished.current.delete(finished.current.values().next().value as string);
+      }
+      if (captions.current.delete(entry.id)) showCaptions();
+      if (entry.text.trim()) callbacks.current.onTranscript?.(entry);
+    },
+    [showCaptions],
+  );
 
   const send = useCallback((event: Record<string, unknown>) => {
     if (channel.current?.readyState === "open") channel.current.send(JSON.stringify(event));
   }, []);
 
   const cleanUp = useCallback(() => {
-    if (timer.current) clearInterval(timer.current);
-    timer.current = null;
+    if (captionTimer.current) clearTimeout(captionTimer.current);
+    captionTimer.current = null;
+    captions.current.clear();
+    setTranscript([]);
     channel.current?.close();
     channel.current = null;
     microphone.current?.getTracks().forEach((track) => track.stop());
@@ -155,23 +190,23 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
           setAiSpeaking(false);
           break;
         case "conversation.item.input_audio_transcription.delta":
-          upsertDelta(event, "professor");
+          addCaption(String(event.item_id), "professor", String(event.delta ?? ""));
           break;
         case "conversation.item.input_audio_transcription.completed":
-          upsert({ id: String(event.item_id), role: "professor", text: String(event.transcript ?? ""), final: true });
+          finish({ id: String(event.item_id), role: "professor", text: String(event.transcript ?? ""), final: true });
           break;
         case "conversation.item.input_audio_transcription.failed":
           setCaptionsUnavailable(true);
           break;
         case "response.output_audio_transcript.delta":
         case "response.output_text.delta":
-          upsertDelta(event, "assistant");
+          addCaption(String(event.item_id), "assistant", String(event.delta ?? ""));
           break;
         case "response.output_audio_transcript.done":
-          upsert({ id: String(event.item_id), role: "assistant", text: String(event.transcript ?? ""), final: true });
+          finish({ id: String(event.item_id), role: "assistant", text: String(event.transcript ?? ""), final: true });
           break;
         case "response.output_text.done":
-          upsert({ id: String(event.item_id), role: "assistant", text: String(event.text ?? ""), final: true });
+          finish({ id: String(event.item_id), role: "assistant", text: String(event.text ?? ""), final: true });
           break;
         case "response.done": {
           const response = event.response as { output?: { type: string }[] } | undefined;
@@ -186,21 +221,8 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
           break;
         }
       }
-
-      function upsertDelta(delta: ServerEvent, role: TranscriptEntry["role"]) {
-        const id = String(delta.item_id);
-        const piece = String(delta.delta ?? "");
-        setTranscript((current) => {
-          const index = current.findIndex((item) => item.id === id);
-          if (index === -1) return [...current, { id, role, text: piece, final: false }];
-          if (current[index].final) return current;
-          const next = [...current];
-          next[index] = { ...next[index], text: next[index].text + piece };
-          return next;
-        });
-      }
     },
-    [runToolCalls, upsert],
+    [addCaption, finish, runToolCalls],
   );
 
   const start = useCallback(async () => {
@@ -208,8 +230,10 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
     setError(null);
     setMicrophoneBlocked(false);
     setCaptionsUnavailable(false);
+    captions.current.clear();
+    finished.current.clear();
     setTranscript([]);
-    setElapsed(0);
+    setConnectedAt(null);
     setMutedState(false);
 
     if (!isVoiceSupported()) {
@@ -265,7 +289,7 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
       };
       events.onopen = () => {
         setState("connected");
-        timer.current = setInterval(() => setElapsed((seconds) => seconds + 1), 1000);
+        setConnectedAt(Date.now());
         // Let ProfPilot open the conversation.
         send({ type: "response.create" });
       };
@@ -313,9 +337,9 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
         item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
       });
       send({ type: "response.create" });
-      upsert({ id, role: "professor", text, final: true });
+      finish({ id, role: "professor", text, final: true });
     },
-    [send, upsert],
+    [finish, send],
   );
 
   return {
@@ -329,7 +353,7 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
     working,
     captionsUnavailable,
     transcript,
-    elapsed,
+    connectedAt,
     start,
     end,
     sendText,
