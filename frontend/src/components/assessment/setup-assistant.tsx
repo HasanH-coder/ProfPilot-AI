@@ -3,7 +3,7 @@
 import { AudioLines, Send, Sparkles, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type Ref } from "react";
 
-import { ConversationLog, type ConversationEntry } from "@/components/ai/conversation-log";
+import { ConversationLog, type ConversationEntry, type ConversationStatus } from "@/components/ai/conversation-log";
 import { VoiceCallControls } from "@/components/ai/voice-call-controls";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -66,6 +66,8 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
+  // A change the call asked for that couldn't be made (shown briefly; the call goes on).
+  const [toolProblem, setToolProblem] = useState<string | null>(null);
   // Settings answered (set or skipped) in this conversation, so none is asked about twice.
   const addressed = useRef<string[]>([]);
   const voiceSupported = useVoiceSupported();
@@ -95,12 +97,15 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
         method: "POST",
         body: { setup: getSetup(), arguments: args, addressed: addressed.current },
       });
+      setToolProblem(null);
       remember(response.result);
       const changed = (response.result.changedFields as string[] | undefined) ?? [];
       if (changed.length > 0) onApply(response.setup, changed);
       noteChanges(response.result);
       return response.result;
     },
+    // Said on screen; the call is told too, so ProfPilot asks again.
+    onToolError: (name) => setToolProblem(`Couldn't update the ${TOOL_SETTINGS[name] ?? "setup"}. Try saying it again.`),
     onTranscript: (entry) => {
       setLog((current) => [
         ...current.filter((item) => item.id !== entry.id),
@@ -115,6 +120,7 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
   }, [callActive, onCallActiveChange]);
 
   async function startCall() {
+    setToolProblem(null);
     setPreparing(true);
     try {
       await call.start();
@@ -174,6 +180,10 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
     ],
     [log, transcript],
   );
+  const status = useMemo<ConversationStatus | null>(
+    () => (toolProblem ? { kind: "error", text: toolProblem } : null),
+    [toolProblem],
+  );
 
   return (
     <section
@@ -225,6 +235,7 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
 
       <ConversationLog
         entries={entries}
+        status={status}
         emptyText="For example: “A 90-minute midterm, about 30% easy, 40% medium and 30% hard, two versions, focused on lectures 3 to 5.”"
         className="max-h-72 min-h-16"
       />
@@ -268,6 +279,18 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
     </section>
   );
 }
+
+/** What each setup tool changes, for "Couldn't update the duration." */
+const TOOL_SETTINGS: Record<string, string> = {
+  set_course: "course",
+  set_assessment_name: "assessment name",
+  set_duration: "duration",
+  set_question_distribution: "question format",
+  set_difficulty_distribution: "difficulty mix",
+  set_versions: "number of versions",
+  update_notes: "notes",
+  update_professor_prompt: "instructions",
+};
 
 const FIELD_LABELS: Record<string, string> = {
   courseId: "course",

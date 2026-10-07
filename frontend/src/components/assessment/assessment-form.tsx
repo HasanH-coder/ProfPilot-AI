@@ -348,21 +348,14 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         }
         setSaveResult({});
         setSavedSnapshot(snapshot);
-        if (!saved) {
-          // A new assessment moves to its own edit address, so reloading the page reopens it.
-          if (callActive.current) {
-            // Mid-call: change the address only, without reloading the form.
-            window.history.replaceState(
-              null,
-              "",
-              `${assessmentPath(examProjectId)}/edit`,
-            );
-          } else {
-            refocusSaveButton = true;
-            router.replace(`${assessmentPath(examProjectId)}/edit`, {
-              scroll: false,
-            });
-          }
+        // A new assessment moves to its own edit address, so reloading the page
+        // reopens it. Not during a voice call: moving reloads the form, which
+        // would end the call (a later save moves instead). See persist().
+        if (!saved && !callActive.current) {
+          refocusSaveButton = true;
+          router.replace(`${assessmentPath(examProjectId)}/edit`, {
+            scroll: false,
+          });
         }
       });
     });
@@ -389,14 +382,11 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     }
     setSaveResult({});
     setSavedSnapshot(JSON.stringify(current));
-    // A new assessment gets its own address, so reloading reopens it (no reload now).
-    if (!saved && !window.location.pathname.endsWith("/edit")) {
-      window.history.replaceState(
-        null,
-        "",
-        `${assessmentPath(result.examProjectId)}/edit`,
-      );
-    }
+    // The address is left as it is. Rewriting it to the draft's edit address
+    // without navigating (history.replaceState) made the next Server Action's
+    // refresh() open the edit page instead: that remounted this form, which
+    // closed Set up with AI and ended its voice call (right after the second
+    // answer, at the duration question).
     return result.examProjectId;
   }
 

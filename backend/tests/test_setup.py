@@ -253,3 +253,116 @@ def test_setup_instructions_ask_one_short_question_and_keep_numbers_exact():
     assert "the first question only, e.g. 'Hi. What course is this for?'" in voice
     chat = setup_chat_instructions("- Course: not set", "- CMPS 297U: id c-1", "What course is this for?")
     assert "NEXT QUESTION, if the professor's message doesn't change the topic: What course is this for?" in chat
+
+
+# -- The voice flow at the duration step ---------------------------------------------------
+
+STEPS = [
+    "What course is this for?",
+    "What type of assessment is it?",
+    "Do you want to specify a duration?",
+    "Do you want to specify the question format?",
+]
+
+
+def run_steps(tools: list[tuple[str, dict]]) -> tuple[AssessmentSetup, list[str], list[str]]:
+    """Runs the tools one after another, each on the setup the previous one returned."""
+    setup, addressed = AssessmentSetup(), []
+    asked = [next_setup_question(setup, COURSES, addressed)]
+    for name, arguments in tools:
+        setup, result = execute_setup_tool(setup, name, arguments, COURSES, addressed)
+        addressed = result["addressed"]
+        asked.append(result["nextQuestion"])
+    return setup, addressed, asked
+
+
+def test_course_then_midterm_then_a_90_minute_duration():
+    setup, addressed, asked = run_steps(
+        [
+            ("set_course", {"course_id": "c-1"}),
+            ("set_assessment_name", {"name": "Midterm"}),
+            ("set_duration", {"minutes": 90}),
+        ]
+    )
+    assert asked == STEPS
+    assert (setup.course_id, setup.exam_name, setup.duration_minutes) == ("c-1", "Midterm", 90)
+    assert addressed == ["course", "name", "duration"]
+
+
+def test_skipping_the_duration_moves_on_to_the_question_format():
+    setup, addressed, asked = run_steps(
+        [
+            ("set_course", {"course_id": "c-1"}),
+            ("set_assessment_name", {"name": "Midterm"}),
+            ("skip_setting", {"setting": "duration"}),
+        ]
+    )
+    assert asked == STEPS
+    assert setup.duration_minutes is None and "duration" in addressed
+
+
+def test_asking_about_the_duration_does_not_answer_it():
+    # Only a tool answers a setting: after course and name, duration is still open.
+    _, addressed, asked = run_steps([("set_course", {"course_id": "c-1"}), ("set_assessment_name", {"name": "Midterm"})])
+    assert addressed == ["course", "name"] and asked[-1] == "Do you want to specify a duration?"
+
+
+@pytest.mark.parametrize(
+    ("spoken", "minutes"),
+    [
+        ("90 minutes", 90),
+        ("around 90 minutes", 90),
+        ("120 minutes", 120),
+        ("1 hour", 60),
+        ("one hour", 60),
+        ("an hour", 60),
+        ("hour and a half", 90),
+        ("an hour and a half", 90),
+        ("1.5 hours", 90),
+        ("2 hours", 120),
+        ("90", 90),
+    ],
+)
+def test_spoken_durations_become_minutes(spoken, minutes):
+    # The voice model usually sends a number; if it sends the words, they still work.
+    setup, result = execute_setup_tool(AssessmentSetup(), "set_duration", {"minutes": spoken}, COURSES, ["course", "name"])
+    assert setup.duration_minutes == minutes
+    assert result["nextQuestion"] == "Do you want to specify the question format?"
+
+
+@pytest.mark.parametrize(
+    "unclear", ["a while", "90 or 120 minutes", "ninety-ish", "maybe 90 minutes, not sure", "two hours, I'll confirm later"]
+)
+def test_an_unclear_duration_is_asked_about_once_not_guessed(unclear):
+    with pytest.raises(InvalidInputError) as raised:
+        execute_setup_tool(AssessmentSetup(), "set_duration", {"minutes": unclear}, COURSES)
+    assert raised.value.message == "Ask the professor how long it should be, in minutes or hours."
+
+
+@pytest.mark.parametrize("answer", ["skip", "I don't care", "leave it empty", "not now", "I don't know yet"])
+def test_leaving_the_duration_open_keeps_it_empty_and_moves_on(answer):
+    # Whether the model calls skip_setting or passes the words to set_duration.
+    for name, arguments in (("skip_setting", {"setting": "duration"}), ("set_duration", {"minutes": answer})):
+        setup, result = execute_setup_tool(AssessmentSetup(), name, arguments, COURSES, ["course", "name"])
+        assert setup.duration_minutes is None and result["changedFields"] == []
+        assert result["addressed"] == ["course", "name", "duration"]
+        assert result["nextQuestion"] == "Do you want to specify the question format?"
+
+
+def test_the_voice_tool_endpoint_takes_spoken_durations(api, db_a):
+    response = api.post(
+        "/api/setup-assistant/tools/set_duration",
+        headers={"Authorization": "Bearer token-a"},
+        json={"setup": {"examName": "Midterm"}, "arguments": {"minutes": "an hour and a half"}, "addressed": ["course", "name"]},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["setup"]["durationMinutes"] == 90
+    assert body["result"]["nextQuestion"] == "Do you want to specify the question format?"
+
+
+def test_setup_instructions_cover_durations_and_not_knowing_yet():
+    from app.ai.prompts import SETUP_GUIDE
+
+    assert "'I don't know yet'" in SETUP_GUIDE
+    assert "Give durations in minutes ('an hour' is 60, 'an hour and a half' 90, 'two hours' 120)" in SETUP_GUIDE

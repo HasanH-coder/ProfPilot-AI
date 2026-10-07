@@ -62,6 +62,10 @@ export function installFakeRealtime() {
     sent() {
       return channels.at(-1)?.sent ?? [];
     },
+    /** Whether the call's connection is still open (the page closes it when the call ends). */
+    connected() {
+      return channels.at(-1)?.readyState === "open";
+    },
   };
 }
 

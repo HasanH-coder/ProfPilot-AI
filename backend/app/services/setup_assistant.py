@@ -12,6 +12,7 @@ at a time; every result names the next setting to ask about, skipping those
 already filled in or answered (set or skipped) in this conversation.
 """
 
+import re
 from typing import Any
 
 from app.ai.openai_service import OpenAIService, Usage
@@ -62,7 +63,7 @@ SETUP_TOOLS: list[dict[str, Any]] = [
     ),
     function_tool(
         "set_duration",
-        "Set the duration in minutes, or null to clear it.",
+        "Set the duration in minutes (an hour = 60, an hour and a half = 90, two hours = 120), or null to clear it.",
         {"minutes": {"type": ["integer", "null"], "minimum": 1, "maximum": 1440}},
     ),
     function_tool(
@@ -182,6 +183,69 @@ def _as_percent(values: list[float | None]) -> list[float | None]:
     return values
 
 
+_ASK_DURATION = "Ask the professor how long it should be, in minutes or hours."
+# Ways of leaving the duration open ("skip", "not now", "I don't know yet"…).
+_LEAVE_OPEN = re.compile(
+    r"\b(skip|not now|not yet|later|leave (it )?(empty|blank|open|unspecified)|unspecified|no duration|none|n/?a|"
+    r"(i )?(don'?t|do not) (care|know|mind)|no idea|not sure)\b"
+)
+# An answer that still names a duration ("maybe 90 minutes, not sure") isn't left open: it's asked about.
+_NAMES_DURATION = re.compile(r"\d|\b(hours?|hrs?|minutes?|mins?)\b")
+_FILLER = re.compile(r"\b(around|about|approximately|roughly|maybe|exactly|just|some|or so)\b|~")
+_COUNT = r"\d+(?:\.\d+)?|an?|one|two|three|four|five|six"
+_SPOKEN = {"a": 1.0, "an": 1.0, "one": 1.0, "two": 2.0, "three": 3.0, "four": 4.0, "five": 5.0, "six": 6.0}
+# "90 minutes", "an hour", "one and a half hours", "an hour and a half", "2h"…
+_DURATION_PART = re.compile(
+    rf"(?:\b(?P<count>{_COUNT})\s*)?(?:(?P<half_before>and a half)\s+)?"
+    rf"(?:\b(?P<hours>hours?|hrs?)|(?<=\d)\s*(?P<short_hours>h)|(?P<minutes>(?<=\d)\s*m\b|\bminutes?|\bmins?))\b"
+    r"(?:\s+(?P<half_after>and a half))?"
+)
+
+
+def leaves_duration_open(value: Any) -> bool:
+    """Whether the professor's answer leaves the duration unspecified ("skip", "not now"…) without naming one."""
+    if not isinstance(value, str):
+        return False
+    text = value.lower().replace("’", "'")
+    return bool(_LEAVE_OPEN.search(text)) and not _NAMES_DURATION.search(text)
+
+
+def duration_minutes(value: Any) -> int | None:
+    """Minutes from what the model sent: 90, "90", "90 minutes", "an hour", "an hour and a half", "2 hours"…
+
+    Anything unclear (or more than one duration) is an error that tells the
+    assistant to ask once, never a guess.
+    """
+    if value is None or not isinstance(value, str):
+        number = _number(value, "duration")
+        return None if number is None else _whole(number, "duration")
+    text = " ".join(_FILLER.sub(" ", value.lower().replace("-", " ")).split()).strip(" .")
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return _whole(float(text), "duration")
+    if re.fullmatch(r"half (an? )?hour", text):
+        return 30
+    hours_and_minutes = re.fullmatch(r"(\d+)\s*h\s*(\d+)\s*(?:m|min|mins|minutes)?", text)  # "1h30"
+    if hours_and_minutes:
+        return int(hours_and_minutes.group(1)) * 60 + int(hours_and_minutes.group(2))
+    total = 0.0
+    for part in _DURATION_PART.finditer(text):
+        count = part.group("count")
+        if part.group("minutes"):
+            if count is None or count in _SPOKEN:
+                raise InvalidInputError(_ASK_DURATION)
+            total += float(count)
+        else:
+            amount = _SPOKEN.get(count, None) if count else 1.0
+            amount = float(count) if amount is None else amount
+            if part.group("half_before") or part.group("half_after"):
+                amount += 0.5
+            total += amount * 60
+    leftover = _DURATION_PART.sub(" ", text).replace("and", " ").replace(",", " ").strip()
+    if total <= 0 or leftover:
+        raise InvalidInputError(_ASK_DURATION)
+    return _whole(total, "duration")
+
+
 def difficulty_split(arguments: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
     """The professor's difficulty split, exactly as given, or an error the assistant asks about.
 
@@ -274,12 +338,15 @@ def execute_setup_tool(
             changes["course_id"] = None
             message = "Course cleared."
     elif name == "set_duration":
-        value = _number(arguments.get("minutes"), "duration")
-        minutes = None if value is None else _whole(value, "duration")
-        if minutes is not None and not 1 <= minutes <= LIMITS["duration_minutes"]:
-            raise InvalidInputError("The duration must be a whole number of minutes from 1 to 1,440.")
-        changes["duration_minutes"] = minutes
-        message = f"Duration set to {minutes} minutes." if minutes else "Duration cleared."
+        if leaves_duration_open(arguments.get("minutes")):
+            # "Not now", "I don't know yet": like skip_setting, nothing changes.
+            message = "Duration left unspecified. Don't ask about it again unless the professor brings it up."
+        else:
+            minutes = duration_minutes(arguments.get("minutes"))
+            if minutes is not None and not 1 <= minutes <= LIMITS["duration_minutes"]:
+                raise InvalidInputError("The duration must be a whole number of minutes from 1 to 1,440.")
+            changes["duration_minutes"] = minutes
+            message = f"Duration set to {minutes} minutes." if minutes else "Duration cleared."
     elif name == "set_question_distribution":
         value = _as_percent([_number(arguments.get("mcq_percent"), "multiple-choice share")])[0]
         if value is None:

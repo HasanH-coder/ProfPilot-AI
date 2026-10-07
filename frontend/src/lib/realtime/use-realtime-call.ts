@@ -36,6 +36,8 @@ type Options = {
   getClientSecret: () => Promise<string>;
   /** Runs a tool the model chose and returns its result for the model. */
   onToolCall: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  /** A tool call that couldn't be made (the model is told too, and the call goes on). */
+  onToolError?: (name: string) => void;
   /** Called with every finished line of the conversation (e.g. to keep a history). */
   onTranscript?: (entry: TranscriptEntry) => void;
 };
@@ -51,6 +53,20 @@ export function isVoiceSupported() {
   );
 }
 
+/**
+ * A diagnostic for developers when something in a call fails: the event type,
+ * the tool and the error's code and message only, never what was said.
+ */
+function reportProblem(problem: { event: string; tool?: string; code?: unknown; message?: unknown }) {
+  if (process.env.NODE_ENV !== "production") console.error("[voice call]", problem);
+}
+
+/** An error's message for reportProblem. Not a JSON error's: it quotes the text it couldn't read. */
+function problemMessage(cause: unknown) {
+  if (cause instanceof SyntaxError) return "Malformed JSON.";
+  return cause instanceof Error ? cause.message : "Unknown error.";
+}
+
 function subscribeNever() {
   return () => {};
 }
@@ -60,7 +76,7 @@ export function useVoiceSupported() {
   return useSyncExternalStore(subscribeNever, isVoiceSupported, () => true);
 }
 
-export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: Options) {
+export function useRealtimeCall({ getClientSecret, onToolCall, onToolError, onTranscript }: Options) {
   const [state, setState] = useState<CallState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [microphoneBlocked, setMicrophoneBlocked] = useState(false);
@@ -83,9 +99,9 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
   const captionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finished = useRef(new Set<string>());
   // Latest callbacks, so a long call always uses the current form or exam.
-  const callbacks = useRef({ onToolCall, onTranscript, getClientSecret });
+  const callbacks = useRef({ onToolCall, onToolError, onTranscript, getClientSecret });
   useEffect(() => {
-    callbacks.current = { onToolCall, onTranscript, getClientSecret };
+    callbacks.current = { onToolCall, onToolError, onTranscript, getClientSecret };
   });
 
   const showCaptions = useCallback(() => {
@@ -157,7 +173,14 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
             const args = call.arguments ? (JSON.parse(call.arguments) as Record<string, unknown>) : {};
             output = await callbacks.current.onToolCall(call.name, args);
           } catch (cause) {
-            output = { ok: false, error: cause instanceof Error ? cause.message : "The change couldn't be made." };
+            reportProblem({
+              event: "function_call",
+              tool: call.name,
+              code: (cause as { code?: unknown } | null)?.code,
+              message: problemMessage(cause),
+            });
+            callbacks.current.onToolError?.(call.name);
+            output ={ ok: false, error: cause instanceof Error ? cause.message : "The change couldn't be made." };
           }
           send({
             type: "conversation.item.create",
@@ -216,6 +239,7 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
         }
         case "error": {
           const detail = event.error as { message?: string; code?: string } | undefined;
+          reportProblem({ event: "error", code: detail?.code, message: detail?.message });
           // Most errors are about one event and the call continues; show the message briefly.
           setError(detail?.message ? "ProfPilot had a problem with the last request. You can keep talking." : null);
           break;
@@ -283,8 +307,9 @@ export function useRealtimeCall({ getClientSecret, onToolCall, onTranscript }: O
       events.onmessage = (message) => {
         try {
           handleEvent(JSON.parse(String(message.data)) as ServerEvent);
-        } catch {
-          // Ignore malformed events.
+        } catch (cause) {
+          // One bad event never ends the call, but it is reported.
+          reportProblem({ event: "message", message: problemMessage(cause) });
         }
       };
       events.onopen = () => {
