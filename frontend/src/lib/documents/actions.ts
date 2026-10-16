@@ -103,10 +103,12 @@ export async function removeDocument(documentId: string): Promise<{ error?: stri
   const supabase = await createClient();
 
   // Row Level Security only finds the document if it belongs to this professor.
+  // Only an assessment's own uploads: reusable course sources are removed from Sources.
   const { data: document } = await supabase
     .from("documents")
     .select("id, storage_path")
     .eq("id", documentId)
+    .not("exam_project_id", "is", null)
     .maybeSingle();
   if (!document) return {};
 

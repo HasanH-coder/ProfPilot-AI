@@ -17,7 +17,7 @@ ProfPilot-AI/
 │       ├── proxy.ts          Refreshes the login session and redirects on every request
 │       ├── app/              Pages: landing, /login, /signup, /auth/confirm, and the workspace:
 │       │                     /workspace, /courses, /preferences, /assessments (list, new, [id],
-│       │                     [id]/edit, [id]/plan, [id]/exam, [id]/builder)
+│       │                     [id]/edit, [id]/plan, [id]/exam, [id]/builder), and /sources
 │       ├── components/       Assessment form and uploads, Set up with AI, plan review, exam editor,
 │       │                     Build with AI, voice call controls, preferences, layout, shadcn/ui
 │       └── lib/
@@ -60,6 +60,7 @@ Browser ──(publishable key, session)─────────────�
 
 - [docs/assessment-agent.md](docs/assessment-agent.md): the AI workflow end to end, the models, voice, security, the API and how it is tested
 - [docs/assessment-setup.md](docs/assessment-setup.md): the assessment setup flow, drafts, uploaded files and the private bucket, and how to test it
+- [docs/course-sources.md](docs/course-sources.md): reusable course materials, selection, RLS, and assessment integration
 - [docs/authentication.md](docs/authentication.md): sign-up, login, data isolation, and how FastAPI verifies professors
 
 ## Frontend stack
@@ -167,6 +168,7 @@ Real `.env` files are ignored by git; never commit secrets or API keys.
 - A profile created automatically for every new professor
 - Protected Professor Workspace with a sidebar (Home, Courses, Assessments), showing the professor's name, email and institution
 - Course management: add, edit and delete courses
+- Reusable Course Sources: upload and index course materials once, view/manage them by course, and select canonical document ids for agent workflows
 - Assessment setup ([details](docs/assessment-setup.md)):
   - the full form: course, name, course material, previous assessments, exam design, notes, attachments, and instructions;
   - drafts that can be saved, reopened, edited and deleted;

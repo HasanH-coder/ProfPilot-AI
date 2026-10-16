@@ -70,6 +70,7 @@ class AssessmentRecord:
 class DocumentRecord:
     id: str
     exam_project_id: str | None
+    course_id: str | None
     category: str
     original_name: str
     mime_type: str | None
@@ -129,13 +130,31 @@ class AssessmentContextService:
         )
 
     async def list_documents(self, assessment_id: str) -> list[DocumentRecord]:
-        rows = await self.db.select(
+        direct_rows = await self.db.select(
             "documents",
             columns=DOCUMENT_COLUMNS,
             filters=[("exam_project_id", "eq", assessment_id), ("professor_id", "eq", self.db.professor_id)],
             order=[("created_at", "asc")],
         )
-        return [DocumentRecord.from_row(row) for row in rows]
+        links = await self.db.select(
+            "assessment_documents",
+            columns="document_id",
+            filters=[("exam_project_id", "eq", assessment_id), ("professor_id", "eq", self.db.professor_id)],
+            order=[("created_at", "asc")],
+        )
+        selected_ids = [link["document_id"] for link in links]
+        selected_rows = (
+            await self.db.select(
+                "documents",
+                columns=DOCUMENT_COLUMNS,
+                filters=[("id", "in", selected_ids), ("professor_id", "eq", self.db.professor_id)],
+                order=[("created_at", "asc")],
+            )
+            if selected_ids
+            else []
+        )
+        rows_by_id = {row["id"]: row for row in [*direct_rows, *selected_rows]}
+        return [DocumentRecord.from_row(row) for row in rows_by_id.values()]
 
     async def get_document(self, document_id: str) -> DocumentRecord:
         document_id = parse_id(document_id, what="file")

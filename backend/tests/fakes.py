@@ -47,6 +47,7 @@ OWNED = {
     "courses",
     "exam_projects",
     "documents",
+    "assessment_documents",
     "document_chunks",
     "assessment_style_profiles",
     "exams",
@@ -174,13 +175,18 @@ SETUP_COLUMNS = (
 # table -> [(child table, foreign key column, "cascade" | "set null")]
 CASCADES = {
     "exam_projects": [
+        ("assessment_documents", "exam_project_id", "cascade"),
         ("documents", "exam_project_id", "cascade"),
         ("exams", "exam_project_id", "cascade"),
         ("ai_runs", "exam_project_id", "cascade"),
         ("assessment_style_profiles", "exam_project_id", "cascade"),
         ("preference_signals", "exam_project_id", "set null"),
     ],
-    "documents": [("document_chunks", "document_id", "cascade"), ("exam_questions", "figure_document_id", "set null")],
+    "documents": [
+        ("assessment_documents", "document_id", "cascade"),
+        ("document_chunks", "document_id", "cascade"),
+        ("exam_questions", "figure_document_id", "set null"),
+    ],
     "exams": [
         ("exam_versions", "exam_id", "cascade"),
         ("exam_sections", "exam_id", "cascade"),
@@ -300,8 +306,14 @@ class FakeDatabase:
         if function == "match_document_chunks":
             query = _vector(params["p_query_embedding"])
             scored = []
+            selected_ids = {
+                link["document_id"]
+                for link in self._visible("assessment_documents")
+                if link["exam_project_id"] == params["p_exam_project_id"]
+            }
             for chunk in self._visible("document_chunks"):
-                if chunk["exam_project_id"] != params["p_exam_project_id"] or chunk["category"] not in params["p_categories"]:
+                in_scope = chunk["exam_project_id"] == params["p_exam_project_id"] or chunk["document_id"] in selected_ids
+                if not in_scope or chunk["category"] not in params["p_categories"]:
                     continue
                 if chunk.get("embedding") is None:
                     continue
@@ -364,9 +376,22 @@ class FakeDatabase:
                 raise NotFoundError()
             row["exam_project_id"] = document["exam_project_id"]
             row["category"] = document["category"]
+        if table == "assessment_documents":
+            assessment = self._owned("exam_projects", row["exam_project_id"])
+            document = self._owned("documents", row["document_id"])
+            if (
+                assessment is None
+                or document is None
+                or document.get("exam_project_id") is not None
+                or document.get("category") != "course_material"
+                or document.get("course_id") != assessment.get("course_id")
+            ):
+                raise NotFoundError()
 
     def _after_insert(self, table: str, row: dict[str, Any]) -> None:
         if table == "documents" and row.get("exam_project_id"):
+            _mark_stale(self.supabase, row["exam_project_id"])
+        if table == "assessment_documents":
             _mark_stale(self.supabase, row["exam_project_id"])
 
     def _check_constraints(self, table: str, row: dict[str, Any], replacing: dict[str, Any] | None = None) -> None:
@@ -384,6 +409,10 @@ class FakeDatabase:
             raise ConflictError("This already exists.")
         if table == "document_chunks" and any(
             r["document_id"] == row["document_id"] and r["chunk_index"] == row["chunk_index"] for r in others
+        ):
+            raise ConflictError("This already exists.")
+        if table == "assessment_documents" and any(
+            r["exam_project_id"] == row["exam_project_id"] and r["document_id"] == row["document_id"] for r in others
         ):
             raise ConflictError("This already exists.")
         if table == "question_revisions" and any(
@@ -411,6 +440,8 @@ class FakeDatabase:
                 else:
                     child_row[column] = None
         if table == "documents" and row.get("exam_project_id"):
+            _mark_stale(self.supabase, row["exam_project_id"])
+        if table == "assessment_documents":
             _mark_stale(self.supabase, row["exam_project_id"])
 
 
