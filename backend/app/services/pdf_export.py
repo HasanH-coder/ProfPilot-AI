@@ -41,7 +41,7 @@ from reportlab.platypus import (
 )
 
 from app.services.exam_store import FullExam
-from app.services.pdf_math import Equation, is_equation
+from app.services.pdf_math import Equation, inline_equation, is_equation
 
 RL_Codecs.register()
 
@@ -71,6 +71,25 @@ INK = colors.black
 MUTED = colors.HexColor("#5c5c5c")
 RULE = colors.black
 CODE_BACKGROUND = colors.HexColor("#f3f3f3")
+PAGE_CONTENT_HEIGHT = A4[1] - 4.1 * cm - 12
+
+
+class _PageSizedTable(Table):
+    """Move a table intact when it fits a page; split only oversized tables."""
+
+    def split(self, availWidth, availHeight):  # noqa: N803
+        if self._height <= PAGE_CONTENT_HEIGHT:
+            return []
+        return super().split(availWidth, availHeight)
+
+
+class _PageSizedQuestion(KeepTogether):
+    """Keep a whole question together whenever its measured height fits a page."""
+
+    def split(self, availWidth, availHeight):  # noqa: N803
+        if self._H > PAGE_CONTENT_HEIGHT:
+            return self._content[:]
+        return super().split(availWidth, availHeight)
 
 
 def _fallback_font() -> bool:
@@ -144,7 +163,7 @@ def markup(text: str, *, preserve_spaces: bool = False) -> str:
 # Styles
 # -----------------------------------------------------------------------------
 
-BODY = ParagraphStyle("body", fontName="ExamRoman", fontSize=12, leading=17, textColor=INK)
+BODY = ParagraphStyle("body", fontName="ExamRoman", fontSize=12, leading=17, autoLeading="max", textColor=INK)
 SMALL = ParagraphStyle("small", parent=BODY, fontSize=9.5, leading=12, textColor=MUTED)
 HEADER = ParagraphStyle("header", parent=BODY, fontName="ExamBold", leading=18, alignment=TA_RIGHT)
 META = ParagraphStyle("meta", parent=BODY, fontSize=10, leading=14, alignment=TA_RIGHT)
@@ -161,6 +180,19 @@ CODE = ParagraphStyle("code", parent=BODY, fontName="Courier", fontSize=9, leadi
 
 def inline_markup(text: str) -> str:
     """Readable legacy variable subscripts and exponent notation within prose."""
+    latex_tokens = re.split(r"(\\\([\s\S]*?\\\)|(?<!\\)\$(?!\$)[^$\n]+?(?<!\\)\$(?!\$))", text)
+    if len(latex_tokens) > 1:
+        result = []
+        for index, token in enumerate(latex_tokens):
+            if index % 2 == 0:
+                result.append(inline_markup(token))
+            else:
+                source = token[2:-2] if token.startswith(r"\(") else token[1:-1]
+                try:
+                    result.append(inline_equation(source))
+                except (ValueError, RuntimeError):
+                    result.append(markup(token))
+        return "".join(result)
     pattern = r"(?<![A-Za-z])([xwyzpGh])([0-9]+)|\b([xwyzpGh])_([A-Za-z0-9]+)|\^\(([^()]+)\)|\^([−-]?[0-9]+)"
     result = []
     last = 0
@@ -221,7 +253,7 @@ def _data_table(rows: list[list[str]], style: ParagraphStyle) -> Flowable:
         for i in range(count)
     ]
     width = A4[0] - 5.08 * cm - style.leftIndent
-    table = Table(
+    table = _PageSizedTable(
         [
             [Paragraph(("<b>" if r == 0 else "") + inline_markup(cell) + ("</b>" if r == 0 else ""), cell_style) for cell in row]
             for r, row in enumerate(rows)
@@ -255,10 +287,11 @@ def rich_text(text: str | None, style: ParagraphStyle = BODY) -> list[Flowable]:
     flowables: list[Flowable] = []
     if not text:
         return flowables
-    parts = re.split(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", text, flags=re.S)
-    for index, part in enumerate(parts):
-        if index % 2 == 1:  # code
-            code = markup(part.rstrip("\n"), preserve_spaces=True)
+    parts = re.split(r"(```[\s\S]*?```|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$)", text)
+    for part in parts:
+        if part.startswith("```"):
+            code = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", part).removesuffix("```")
+            code = markup(code.rstrip("\n"), preserve_spaces=True)
             table = Table([[Paragraph(code, CODE)]], colWidths=["100%"])
             table.setStyle(
                 TableStyle(
@@ -272,6 +305,12 @@ def rich_text(text: str | None, style: ParagraphStyle = BODY) -> list[Flowable]:
                 )
             )
             flowables.append(table)
+            continue
+        if part.startswith(r"\[") or part.startswith("$$"):
+            try:
+                flowables.append(Equation(part[2:-2].strip(), latex=True))
+            except (ValueError, RuntimeError):
+                flowables.append(Paragraph(markup(part), style))
             continue
         lines = part.strip().splitlines()
         prose: list[str] = []
@@ -448,9 +487,9 @@ class PdfExportService:
             block = self._question(question, number, answer_key=answer_key, figures=figures)
             # Leave room for a useful part of the stem, not just its opening line.
             story.append(CondPageBreak(100))
-            # A table or equation can be tall despite having few flowables.
-            # Let stems paginate naturally; the MCQ choices stay together.
-            story.extend(block)
+            # Measure the complete question, rather than counting its blocks.
+            # Only questions taller than a full page may split.
+            story.append(_PageSizedQuestion(block))
             story.append(Spacer(1, 24))
 
         buffer = io.BytesIO()
@@ -501,20 +540,21 @@ class PdfExportService:
                 text = f'<b>{text}</b>  <font name="ZapfDingbats">\u2714</font>'
             choice_block.append(Paragraph(text, CHOICE))
         if choice_block:
-            block.append(KeepTogether(choice_block))
+            block.extend(choice_block)
 
         for part in q.get("subparts") or []:
             block.append(Spacer(1, 3))
             block.append(
                 Paragraph(
-                    f"<b>({escape(str(part.get('label', '')))})</b>  {markup(str(part.get('prompt', '')))}  "
-                    f"<i>[{_marks(float(part.get('points', 0)))}]</i>",
+                    f"<b>({escape(str(part.get('label', '')))})</b>  <i>[{_marks(float(part.get('points', 0)))}]</i>",
                     SUBPART,
                 )
             )
+            block.extend(rich_text(str(part.get("prompt", "")), SUBPART))
             if answer_key:
                 if part.get("answer"):
-                    block.append(Paragraph("<b>Answer:</b> " + markup(str(part["answer"])), SUBPART))
+                    block.append(Paragraph("<b>Answer:</b>", SUBPART))
+                    block.extend(rich_text(str(part["answer"]), SUBPART))
                 if part.get("rubric"):
                     block.append(_rubric(part["rubric"], indent=True))
 
@@ -577,7 +617,7 @@ def _rubric(items: list[dict[str, Any]], *, indent: bool = False) -> Flowable:
             [Paragraph(markup(str(item.get("criterion", ""))), BODY), Paragraph(f"{float(item.get('points', 0)):g}", BODY)]
         )
     rows.append([Paragraph("<b>Total</b>", BODY), Paragraph(f"<b>{sum(float(i.get('points', 0)) for i in items):g}</b>", BODY)])
-    table = Table(rows, colWidths=["82%", "18%"], hAlign="LEFT")
+    table = _PageSizedTable(rows, colWidths=["82%", "18%"], hAlign="LEFT")
     table.setStyle(
         TableStyle(
             [

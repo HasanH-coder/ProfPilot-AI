@@ -1,13 +1,17 @@
 """Typeset conservative, standalone Unicode equations as selectable PDF glyphs."""
 
 import hashlib
+import io
 import re
+import tempfile
 import unicodedata
 from functools import lru_cache
+from pathlib import Path
 from threading import Lock
 
 from matplotlib.font_manager import FontProperties
-from matplotlib.mathtext import MathTextParser
+from matplotlib.mathtext import MathTextParser, math_to_image
+from PIL import Image as PILImage
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Flowable
@@ -15,6 +19,7 @@ from reportlab.platypus import Flowable
 _lock = Lock()
 _parser = MathTextParser("path")
 _property = FontProperties(size=12, math_fontfamily="cm")
+_inline_images = tempfile.TemporaryDirectory(prefix="profpilot-math-")
 _symbols = {
     "α": r"\alpha ",
     "β": r"\beta ",
@@ -110,17 +115,36 @@ def math_source(text: str) -> str:
 
 
 @lru_cache(maxsize=128)
-def _layout(text: str):
+def _layout(text: str, latex: bool = False):
     with _lock:
-        return _parser.parse("$" + math_source(text) + "$", dpi=72, prop=_property)
+        return _parser.parse("$" + (text if latex else math_source(text)) + "$", dpi=72, prop=_property)
+
+
+@lru_cache(maxsize=128)
+def inline_equation(source: str) -> str:
+    """High-resolution inline LaTeX, bounded and embedded directly in the PDF."""
+    if len(source) > 1000:
+        raise ValueError("Equation is too long")
+    buffer = io.BytesIO()
+    with _lock:
+        math_to_image("$" + source + "$", buffer, prop=_property, dpi=300, format="png", color="black")
+    data = buffer.getvalue()
+    with PILImage.open(io.BytesIO(data)) as image:
+        width, height = image.size
+    width, height = width * 72 / 300, height * 72 / 300
+    if width > 400 or height > 80:
+        raise ValueError("Use a display equation for this expression")
+    path = Path(_inline_images.name) / (hashlib.sha256(source.encode()).hexdigest() + ".png")
+    path.write_bytes(data)
+    return f'<img src="{path.as_posix()}" width="{width:.2f}" height="{height:.2f}" valign="middle"/>'
 
 
 class Equation(Flowable):
     """A centered vector equation, scaled to the available column width."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, *, latex: bool = False):
         super().__init__()
-        self.layout = _layout(text)
+        self.layout = _layout(text, latex)
         if self.layout.width > 650:
             raise ValueError("Use wrapped text rather than an unreadably small equation")
         self.spaceBefore = 5

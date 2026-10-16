@@ -921,3 +921,9 @@
     min-height: 36px;
   }
 }
+/* Match the exam preview's mathematical typography to its printed paper. */
+.exam-inline-math .katex { font-size: 1.1em; }
+.exam-display-math { display: block; }
+.exam-display-math .katex-display { margin: 0; }
+.exam-display-math .katex { font-size: 1.2em; }
+.exam-rich-text th { white-space: normal; }

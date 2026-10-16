@@ -80,3 +80,62 @@ def test_long_table_repeats_header_and_export_keeps_all_questions_and_cells():
     combined = "\n".join(pages)
     assert "179" in combined and "2) Calculate the score" in combined and "Explain your method" in combined
     assert "Measurement" in combined and "|" not in combined
+
+
+def test_question_and_small_table_move_together_to_next_page():
+    questions = [
+        dict(
+            id="q1",
+            version_id="v",
+            position=0,
+            type="problem",
+            points=5,
+            prompt="\n\n".join("Explain the first observation in detail." for _ in range(15)),
+        ),
+        dict(
+            id="q2",
+            version_id="v",
+            position=1,
+            type="mcq",
+            points=5,
+            prompt=(
+                "Select the threshold using the observations below.\n\n"
+                "Probability p | Actual disease present | Actual disease absent\n"
+                "0.82 | 3 | 0\n0.56 | 1 | 5\n0.34 | 1 | 6\n0.12 | 0 | 4\n\n"
+                r"\[\mathrm{Recall} = \frac{TP}{TP + FN}\]"
+            ),
+            choices=[dict(id="A", text="Select threshold 0.50."), dict(id="B", text="Select threshold 0.70.")],
+        ),
+    ]
+    full = FullExam(exam={}, versions=[dict(id="v", label="A")], sections=[], questions=questions)
+    data = PdfExportService().build(full, ExportHeader("CMPS 261", "Midterm", 60), "A", answer_key=False, figures={})
+    pages = [page.extract_text() for page in PdfReader(io.BytesIO(data)).pages]
+    assert len(pages) >= 2
+    question_page = next(text for text in pages if "2) Select the threshold" in text)
+    for marker in ("Probability", "0.82", "0.56", "0.34", "0.12", "Select threshold 0.70."):
+        assert marker in question_page
+    assert sum("Actual disease present" in text for text in pages) == 1
+
+
+def test_explicit_latex_in_pdf_prompt_choices_and_subparts():
+    full = FullExam(
+        exam={},
+        versions=[dict(id="v", label="A")],
+        sections=[],
+        questions=[
+            dict(
+                id="q",
+                version_id="v",
+                position=0,
+                type="problem",
+                points=5,
+                prompt=r"Use \(x_1^2\) and calculate:" + "\n\n" + r"\[J = \frac{1}{4}\sum_{i=1}^{4} y_i\ln p_i\]",
+                subparts=[dict(label="a", points=5, prompt=r"Evaluate \(\frac{1}{2}\).", answer=r"\[x = \sqrt{4}\]")],
+            ),
+        ],
+    )
+    data = PdfExportService().build(full, ExportHeader("CMPS 261", "Midterm", 60), "A", answer_key=True, figures={})
+    page = PdfReader(io.BytesIO(data)).pages[0]
+    assert "Evaluate" in page.extract_text()
+    assert len(page.images) >= 2  # Inline equations embedded at print resolution.
+    assert Equation(r"J = \frac{1}{4}\sum_{i=1}^{4} y_i\ln p_i", latex=True).layout.rects

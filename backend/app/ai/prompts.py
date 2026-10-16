@@ -90,7 +90,10 @@ PREVIOUS_EXAMS = (
 
 FORMATTING = (
     "TEXT FORMAT. Write plain text that reads well on screen and in a printed exam. Use line "
-    "breaks for structure. Write mathematics with Unicode (x², √x, ≤, ≥, Σ, π, θ, →), never LaTeX. "
+    "breaks for structure. Write mathematics in LaTeX: use \\( ... \\) for inline math and "
+    "\\[ ... \\] for display equations. Use explicit subscripts, exponents, \\frac, \\sqrt, "
+    "and \\sum with appropriate bounds. Use standard mathematical commands only; no custom "
+    "macros, packages, document commands, HTML, images, or aligned/matrix environments. "
     "Put standalone equations on their own lines, with a blank line before and after. "
     "Separate paragraphs with blank lines. Format all data tables with pipe-separated columns, "
     "a header row and a Markdown separator row; never align tables with spaces. "

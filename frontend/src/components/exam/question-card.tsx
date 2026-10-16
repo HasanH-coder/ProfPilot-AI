@@ -282,7 +282,7 @@ export const QuestionCard = memo(function QuestionCard({
                 )}
               >
                 <span className="font-medium">{choice.id}.</span>
-                <span className="min-w-0 flex-1 break-words whitespace-pre-wrap">{choice.text}</span>
+                <QuestionText text={choice.text} className="min-w-0 flex-1" />
                 {correct && (
                   <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
                     <CircleCheck className="size-3.5" />
@@ -300,13 +300,15 @@ export const QuestionCard = memo(function QuestionCard({
           {question.subparts.map((part) => (
             <li key={part.label} className="flex flex-col gap-1 border-l-2 pl-3">
               <p className="text-sm">
-                <span className="font-medium">({part.label})</span> {part.prompt}{" "}
+                <span className="font-medium">({part.label})</span>{" "}
                 <span className="text-muted-foreground">[{marks(part.points)}]</span>
               </p>
+              <QuestionText text={part.prompt} />
               {showKey && part.answer && (
-                <p className="text-sm text-muted-foreground">
-                  <span className="font-medium text-foreground">Answer:</span> {part.answer}
-                </p>
+                <div className="text-sm text-muted-foreground">
+                  <span className="font-medium text-foreground">Answer:</span>
+                  <QuestionText text={part.answer} />
+                </div>
               )}
             </li>
           ))}
