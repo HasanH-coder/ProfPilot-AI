@@ -4,9 +4,9 @@ import { ChevronDown, CircleAlert, CircleCheck, Lightbulb, RotateCcw } from "luc
 import { useId, useState } from "react";
 
 import { BloomChart, BloomSwatch } from "@/components/assessment/bloom-chart";
-import { FormSection } from "@/components/assessment/form-section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { FieldDescription, FieldLegend, FieldSet } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -108,7 +108,9 @@ export function LearningFocus({ value, onChange, recommendation = null, error }:
   }
 
   return (
-    <FormSection title="Exam Learning Focus" description="Choose how your exam assesses thinking skills using Bloom's Taxonomy.">
+    <FieldSet data-invalid={problem ? true : undefined}>
+      <FieldLegend variant="label">Exam Learning Focus</FieldLegend>
+      <FieldDescription>Choose how your exam assesses thinking skills using Bloom&apos;s Taxonomy.</FieldDescription>
       <div role="radiogroup" aria-label="Learning focus" className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
         {OPTIONS.map((option) => {
           const checked = value.focus === option.focus;
@@ -238,7 +240,7 @@ export function LearningFocus({ value, onChange, recommendation = null, error }:
           </div>
         )}
       </div>
-    </FormSection>
+    </FieldSet>
   );
 }
 

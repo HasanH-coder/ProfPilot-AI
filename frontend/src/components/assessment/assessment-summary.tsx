@@ -3,7 +3,7 @@
 import { ClipboardList } from "lucide-react";
 import { useId, type ReactNode } from "react";
 
-import type { UploadItem } from "@/components/assessment/use-document-uploads";
+import { uploadedCount, type UploadItem } from "@/components/assessment/use-document-uploads";
 import {
   describeSettings,
   type AssessmentDraft,
@@ -34,9 +34,7 @@ export function AssessmentSummary({
   const settings = describeSettings(draft);
 
   function fileCount(category: DocumentCategory) {
-    const count = files.filter(
-      (file) => file.category === category && file.documentId,
-    ).length;
+    const count = uploadedCount(files, category);
     return count > 0 ? `${count} ${count === 1 ? "file" : "files"}` : undefined;
   }
 

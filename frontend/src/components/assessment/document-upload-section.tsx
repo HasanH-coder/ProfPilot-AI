@@ -3,7 +3,7 @@
 import { useId, type ReactNode } from "react";
 
 import { FileDropzone } from "@/components/assessment/file-dropzone";
-import { FormSection } from "@/components/assessment/form-section";
+import { FormSection, type SectionState } from "@/components/assessment/form-section";
 import { UploadList } from "@/components/assessment/upload-list";
 import type { DocumentAnalysis } from "@/components/assessment/use-document-analysis";
 import type { DocumentUploads } from "@/components/assessment/use-document-uploads";
@@ -20,6 +20,7 @@ type DocumentUploadSectionProps = {
   onRetryAnalysis?: (documentId: string) => void;
   /** Shown under the files, e.g. a note about analysed previous exams. */
   footer?: ReactNode;
+  section: SectionState;
 };
 
 /** A section of the Create assessment form where the professor adds one kind of file. */
@@ -31,6 +32,7 @@ export function DocumentUploadSection({
   analysis,
   onRetryAnalysis,
   footer,
+  section,
 }: DocumentUploadSectionProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -38,6 +40,7 @@ export function DocumentUploadSection({
 
   return (
     <FormSection
+      {...section}
       title={title}
       titleId={titleId}
       description={description}

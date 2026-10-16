@@ -56,7 +56,10 @@ test("the rules match the backend's: six whole numbers totalling 100, only for c
 
 test("a new assessment starts on Automatic, with the advanced panel collapsed", async () => {
   const screen = await render(<AssessmentForm courses={courses} />);
-  await expect.element(screen.getByRole("heading", { name: "Exam Learning Focus" })).toBeVisible();
+  // Part of Exam design, not a card of its own.
+  await expect
+    .element(screen.getByRole("region", { name: "Exam design" }).getByRole("group", { name: "Exam Learning Focus" }))
+    .toBeVisible();
   await expect.element(screen.getByRole("radio", { name: /^Automatic/ })).toBeChecked();
   await expect.element(screen.getByRole("button", { name: /Advanced: Bloom's Taxonomy/ })).toHaveAttribute("aria-expanded", "false");
   expect(screen.getByRole("slider").query()).toBeNull();
@@ -222,7 +225,7 @@ test("the section fits a phone screen", async () => {
   const screen = await render(<AssessmentForm courses={courses} />);
   await screen.getByRole("button", { name: /Advanced: Bloom's Taxonomy/ }).click();
   await screen.getByRole("button", { name: "Set the percentages yourself" }).click();
-  const section = screen.getByRole("heading", { name: "Exam Learning Focus" }).element().closest("section")!;
+  const section = screen.getByRole("group", { name: "Exam Learning Focus" }).element().closest("section")!;
   expect(section.scrollWidth).toBeLessThanOrEqual(section.clientWidth + 1);
   await page.viewport(1280, 900);
 });

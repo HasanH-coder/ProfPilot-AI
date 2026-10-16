@@ -2,7 +2,7 @@
 
 import { useId } from "react";
 
-import { FormSection } from "@/components/assessment/form-section";
+import { FormSection, type SectionState } from "@/components/assessment/form-section";
 import { Field, FieldError } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { LIMITS } from "@/lib/assessments/draft";
@@ -15,16 +15,18 @@ type AssessmentPromptProps = {
   value: string;
   onChange: (value: string) => void;
   error?: string;
+  section: SectionState;
 };
 
 /** The professor's instructions in their own words, saved exactly as written. */
-export function AssessmentPrompt({ value, onChange, error }: AssessmentPromptProps) {
+export function AssessmentPrompt({ value, onChange, error, section }: AssessmentPromptProps) {
   const textareaId = useId();
   const descriptionId = useId();
   const errorId = useId();
 
   return (
     <FormSection
+      {...section}
       title="Tell ProfPilot what you want"
       description="Optional. Write naturally. Anything you leave unspecified above can be described here."
       descriptionId={descriptionId}

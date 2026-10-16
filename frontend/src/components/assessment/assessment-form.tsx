@@ -37,7 +37,7 @@ import {
   ExamDuration,
   type DurationValue,
 } from "@/components/assessment/exam-duration";
-import { FormSection } from "@/components/assessment/form-section";
+import { FormSection, type SectionState } from "@/components/assessment/form-section";
 import { ImproveWithAi } from "@/components/assessment/improve-with-ai";
 import {
   LEARNING_FOCUS_DEFAULT,
@@ -53,7 +53,7 @@ import {
 import { SetupAssistant, SetupAssistantPrompt } from "@/components/assessment/setup-assistant";
 import { useAssessmentDraft } from "@/components/assessment/use-assessment-draft";
 import { useDocumentAnalysis } from "@/components/assessment/use-document-analysis";
-import { useDocumentUploads } from "@/components/assessment/use-document-uploads";
+import { uploadedCount, useDocumentUploads } from "@/components/assessment/use-document-uploads";
 import {
   versionCount,
   VersionSelector,
@@ -71,12 +71,14 @@ import {
   type SaveDraftResult,
 } from "@/lib/assessments/actions";
 import {
+  describeSettings,
   validateAssessmentDraft,
   type AssessmentDraft,
+  type AssessmentDraftErrors,
   type BloomDistribution,
 } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
-import type { DocumentFile } from "@/lib/documents/files";
+import type { DocumentCategory, DocumentFile } from "@/lib/documents/files";
 import { cn } from "@/lib/utils";
 
 /** Everything the professor has entered, including UI choices such as "Custom". */
@@ -158,6 +160,38 @@ const FIELD_GROUPS: Record<string, string> = {
   additionalNotes: "notes",
   professorPrompt: "prompt",
 };
+
+/** The form's cards, which the professor can close and open independently. */
+type SectionId =
+  | "basics"
+  | "courseMaterial"
+  | "previousExams"
+  | "examDesign"
+  | "notes"
+  | "attachments"
+  | "prompt";
+
+/** Open at first: what most assessments need. The optional extras start closed. */
+const INITIALLY_OPEN: readonly SectionId[] = ["basics", "courseMaterial", "examDesign", "prompt"];
+
+/** The card each field error is shown in, so a closed card can be opened to reveal it. */
+const ERROR_SECTIONS: Record<keyof AssessmentDraftErrors, SectionId> = {
+  courseId: "basics",
+  examName: "basics",
+  durationMinutes: "examDesign",
+  distribution: "examDesign",
+  numberOfVersions: "examDesign",
+  difficultyDistribution: "examDesign",
+  bloomDistribution: "examDesign",
+  additionalNotes: "notes",
+  professorPrompt: "prompt",
+};
+
+const sectionsWithErrors = (errors: AssessmentDraftErrors) =>
+  (Object.keys(errors) as (keyof AssessmentDraftErrors)[]).map((field) => ERROR_SECTIONS[field]);
+
+const filesSummary = (count: number, none: string) =>
+  count === 0 ? none : `${count} ${count === 1 ? "file" : "files"} uploaded`;
 
 /**
  * Puts changes from the AI assistant into the form, one part at a time, so
@@ -253,6 +287,9 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     setAssistantRequestSeen(assistantRequested);
     if (assistantRequested) setAssistantOpen(true);
   }
+  // Which cards are open: presentation only. The assessment itself lives in
+  // `values` and `uploads`, and a closed card's content stays mounted.
+  const [openSections, setOpenSections] = useState<ReadonlySet<SectionId>>(() => new Set(INITIALLY_OPEN));
   // While a voice call runs, saving must never reload the page (that would end the call).
   const callActive = useRef(false);
   const [highlighted, setHighlighted] = useState<Set<string>>(() => new Set());
@@ -292,6 +329,10 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   const hasUnsavedChanges =
     JSON.stringify(draft) !== (savedSnapshot ?? EMPTY_SNAPSHOT);
   const saveFailed = Boolean(saveResult.error || saveResult.fieldErrors);
+  // What closed cards show, derived from the form (never stored separately).
+  const settings = describeSettings(draft);
+  const fileCount = (category: DocumentCategory) => uploadedCount(uploads.items, category);
+  const attachments = fileCount("additional_attachment");
 
   useEffect(() => {
     if (!refocusSaveButton) return;
@@ -313,6 +354,41 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     setValues((current) => ({ ...current, ...changes }));
     // A problem reported by the last save no longer applies once something changes.
     setSaveResult({});
+  }
+
+  function setSectionOpen(id: SectionId, open: boolean) {
+    setOpenSections((current) => {
+      const next = new Set(current);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  /** Opens every card that holds one of these errors, leaving the others as they are. */
+  function openSectionsWithErrors(found: AssessmentDraftErrors) {
+    const ids = sectionsWithErrors(found);
+    if (ids.length > 0) setOpenSections((current) => new Set([...current, ...ids]));
+  }
+
+  /** Shows the errors (opening the cards they are in), then focuses the first field to fix. */
+  function revealErrors(found: AssessmentDraftErrors) {
+    flushSync(() => {
+      setShowErrors(true);
+      openSectionsWithErrors(found);
+    });
+    formRef.current
+      ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
+      ?.focus();
+  }
+
+  function section(id: SectionId, summary: string): SectionState {
+    return {
+      open: openSections.has(id),
+      onOpenChange: (open) => setSectionOpen(id, open),
+      summary,
+      hasError: sectionsWithErrors(errors).includes(id),
+    };
   }
 
   /** Saves the form, creating the draft first if this is a new assessment. */
@@ -343,11 +419,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     if (saveInProgress.current || uploads.isBusy) return;
 
     if (Object.keys(clientErrors).length > 0) {
-      // Show the errors now, then move focus to the first field that needs attention.
-      flushSync(() => setShowErrors(true));
-      formRef.current
-        ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
-        ?.focus();
+      revealErrors(clientErrors);
       return;
     }
     setShowErrors(true);
@@ -362,6 +434,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         const { examProjectId } = result;
         if (!examProjectId) {
           setSaveResult(result);
+          if (result.fieldErrors) openSectionsWithErrors(result.fieldErrors);
           return;
         }
         setSaveResult({});
@@ -385,17 +458,16 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
    */
   async function persist(): Promise<string | null> {
     const current = toDraft(latestValues.current);
-    if (Object.keys(validateAssessmentDraft(current)).length > 0) {
-      flushSync(() => setShowErrors(true));
-      formRef.current
-        ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
-        ?.focus();
+    const currentErrors = validateAssessmentDraft(current);
+    if (Object.keys(currentErrors).length > 0) {
+      revealErrors(currentErrors);
       return null;
     }
     const result = await saveDraft(current);
     if (!result.examProjectId) {
       setShowErrors(true);
       setSaveResult(result);
+      if (result.fieldErrors) openSectionsWithErrors(result.fieldErrors);
       return null;
     }
     setSaveResult({});
@@ -535,7 +607,13 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         )}
 
         <div className={changedBy("basics")}>
-          <FormSection title="Course & Assessment Details">
+          <FormSection
+            title="Course & Assessment Details"
+            {...section(
+              "basics",
+              [course?.code, values.examName.trim()].filter(Boolean).join(" · ") || "No course or name yet",
+            )}
+          >
             <AssessmentBasics
               courses={courses}
               courseId={values.courseId}
@@ -554,9 +632,11 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           uploads={uploads}
           analysis={analysis.documents}
           onRetryAnalysis={analysis.retry}
+          section={section("courseMaterial", filesSummary(fileCount("course_material"), "No files uploaded"))}
         />
         <DocumentUploadSection
           title="Previous assessments"
+          section={section("previousExams", filesSummary(fileCount("previous_exam"), "No previous assessments"))}
           description="Optional. Upload previous exams, quizzes, or answer keys so ProfPilot can learn your assessment style and difficulty. They guide the style; they aren't copied."
           category="previous_exam"
           uploads={uploads}
@@ -576,6 +656,16 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         <FormSection
           title="Exam design"
           description="Optional. Set only what you already know."
+          {...section(
+            "examDesign",
+            [
+              settings.duration,
+              settings.versions && `${settings.versions} ${settings.versions === "1" ? "version" : "versions"}`,
+              `${settings.learningFocus} learning focus`,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          )}
         >
           <div className={changedBy("duration")}>
             <ExamDuration
@@ -605,22 +695,23 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
               error={errors.difficultyDistribution}
             />
           </div>
+          <div id="learning-focus" className={changedBy("learningFocus")}>
+            <LearningFocus
+              value={values.learningFocus}
+              onChange={(learningFocus) => update({ learningFocus })}
+              recommendation={saved?.bloomRecommendation}
+              error={errors.bloomDistribution}
+            />
+          </div>
         </FormSection>
-
-        <div id="learning-focus" className={changedBy("learningFocus")}>
-          <LearningFocus
-            value={values.learningFocus}
-            onChange={(learningFocus) => update({ learningFocus })}
-            recommendation={saved?.bloomRecommendation}
-            error={errors.bloomDistribution}
-          />
-        </div>
 
         <div className={changedBy("notes")}>
           <AdditionalNotes
             value={values.additionalNotes}
             onChange={(additionalNotes) => update({ additionalNotes })}
             error={errors.additionalNotes}
+            // Only that notes exist: their text can be long or private.
+            section={section("notes", values.additionalNotes.trim() ? "Notes added" : "No additional notes")}
           />
         </div>
 
@@ -631,6 +722,10 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           uploads={uploads}
           analysis={analysis.documents}
           onRetryAnalysis={analysis.retry}
+          section={section(
+            "attachments",
+            attachments === 0 ? "No attachments" : `${attachments} ${attachments === 1 ? "attachment" : "attachments"}`,
+          )}
         />
 
         <div
@@ -642,6 +737,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
             value={values.professorPrompt}
             onChange={(professorPrompt) => update({ professorPrompt })}
             error={errors.professorPrompt}
+            section={section("prompt", values.professorPrompt.trim() ? "Instructions written" : "No instructions yet")}
           />
           <ImproveWithAi
             ensureSaved={persist}

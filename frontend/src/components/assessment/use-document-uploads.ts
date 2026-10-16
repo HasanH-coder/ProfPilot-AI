@@ -43,6 +43,11 @@ export type UploadItem = {
 
 export type DocumentUploads = ReturnType<typeof useDocumentUploads>;
 
+/** How many files of a category Supabase has confirmed (in-progress and failed uploads don't count). */
+export function uploadedCount(items: UploadItem[], category: DocumentCategory) {
+  return items.filter((item) => item.category === category && item.documentId).length;
+}
+
 const UPLOAD_FAILED = "The upload failed. Check your connection and try again.";
 const REMOVE_FAILED = "The file couldn't be removed. Please try again.";
 
