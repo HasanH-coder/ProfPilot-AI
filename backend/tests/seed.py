@@ -71,3 +71,30 @@ async def seed_document(
             },
         )
     )[0]
+
+
+async def seed_course_source(
+    supabase: FakeSupabase,
+    db: FakeDatabase,
+    course_id: str,
+    *,
+    name: str = "Reusable lecture.pdf",
+    data: bytes | None = None,
+) -> dict[str, Any]:
+    data = data if data is not None else pdf_bytes(["Neural networks learn layered representations from examples."])
+    path = f"{db.professor_id}/{course_id}/sources/{uuid.uuid4()}-{name.replace(' ', '-')}"
+    supabase.storage[path] = data
+    return (
+        await db.insert(
+            "documents",
+            {
+                "course_id": course_id,
+                "exam_project_id": None,
+                "category": "course_material",
+                "original_name": name,
+                "storage_path": path,
+                "mime_type": PDF,
+                "size_bytes": len(data),
+            },
+        )
+    )[0]

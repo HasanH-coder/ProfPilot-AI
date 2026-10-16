@@ -72,6 +72,16 @@ export async function deleteCourse(courseId: string): Promise<{ error?: string }
   await getCurrentProfessor();
 
   const supabase = await createClient();
+  // Keep source records and private Storage objects from becoming detached.
+  // Source removal is explicit because assessments may currently reference them.
+  const { count, error: sourcesError } = await supabase
+    .from("documents")
+    .select("id", { count: "exact", head: true })
+    .eq("course_id", courseId)
+    .is("exam_project_id", null)
+    .eq("category", "course_material");
+  if (sourcesError) return failure("delete", sourcesError);
+  if (count) return { error: "Remove this course's sources before deleting the course." };
   // Assessments linked to this course are kept; the database unlinks them.
   const { data, error } = await supabase
     .from("courses")

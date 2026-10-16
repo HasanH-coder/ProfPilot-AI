@@ -44,6 +44,11 @@ class DocumentStatusOut(ApiModel):
     title: str | None
 
 
+class DocumentProcessingOut(ApiModel):
+    id: str
+    status: Literal["pending", "processing", "ready", "failed"]
+
+
 class StyleStatusOut(ApiModel):
     exams_analyzed: int
     summary: str

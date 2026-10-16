@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, ClipboardCheck, House, Settings, Sparkles } from "lucide-react";
+import { BookOpen, ClipboardCheck, FolderOpen, House, Settings, Sparkles } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { href: "/workspace", label: "Home", icon: House },
   { href: "/workspace/courses", label: "Courses", icon: BookOpen },
+  { href: "/workspace/sources", label: "Sources", icon: FolderOpen },
   {
     href: "/workspace/assessments",
     label: "Assessments",

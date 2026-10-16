@@ -59,7 +59,8 @@ export function DeleteCourseDialog({ course }: { course: Course }) {
           <AlertDialogTitle>Delete {course.code}?</AlertDialogTitle>
           <AlertDialogDescription>
             This removes the course from your workspace. Assessments created for
-            it are kept, but they will no longer be linked to a course.
+            it are kept, but they will no longer be linked to a course. Remove
+            any saved Sources first.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && (

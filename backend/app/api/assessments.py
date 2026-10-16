@@ -7,7 +7,7 @@ here. Long work starts a background job and returns it immediately (202).
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 
 from app.ai.openai_service import OpenAIService
 from app.api.deps import get_ai, get_db
@@ -17,6 +17,8 @@ from app.schemas.api import (
     AiStatusOut,
     CreateExamIn,
     CreateExamOut,
+    DocumentProcessingOut,
+    DocumentStatusOut,
     ExamOut,
     InterpretationEditIn,
     InterpretationOut,
@@ -124,6 +126,47 @@ async def process_documents(
 
     run = await job_runner.start(db, assessment_id=record.id, kind="document_processing", work=work)
     return StartedRunOut(run=RunOut.model_validate(public_run(run)))
+
+
+@router.get("/documents/{document_id}/status")
+async def document_status(document_id: str, db: Database = Depends(get_db)) -> DocumentStatusOut:
+    """Returns processing state for one owned document, including a reusable course source."""
+    document = await AssessmentContextService(db).get_document(document_id)
+    return DocumentStatusOut(
+        id=document.id,
+        name=document.original_name,
+        category=document.category,
+        status=document.processing_status,
+        error=document.processing_error,
+        page_count=document.page_count,
+        title=(document.summary or {}).get("title"),
+    )
+
+
+@router.post("/documents/{document_id}/processing", status_code=status.HTTP_202_ACCEPTED)
+async def process_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    db: Database = Depends(get_db),
+    ai: OpenAIService = Depends(get_ai),
+) -> DocumentProcessingOut:
+    """Starts ingestion for one owned source without requiring an assessment."""
+    document = await AssessmentContextService(db).get_document(document_id)
+    # Claimed in one conditional update, so two requests never process the same file twice.
+    claimed = await db.update(
+        "documents",
+        {"processing_status": "processing", "processing_error": None},
+        filters=[
+            ("id", "eq", document.id),
+            ("professor_id", "eq", db.professor_id),
+            ("processing_status", "in", ["pending", "failed"]),
+        ],
+        columns="id",
+    )
+    if not claimed:
+        return DocumentProcessingOut(id=document.id, status=document.processing_status)
+    background_tasks.add_task(DocumentIngestionService(db, ai).process, document)
+    return DocumentProcessingOut(id=document.id, status="processing")
 
 
 @router.post("/assessments/{assessment_id}/interpretation", status_code=status.HTTP_202_ACCEPTED)

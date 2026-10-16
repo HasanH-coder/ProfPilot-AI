@@ -6,7 +6,7 @@ from app.services.assessment_context import AssessmentContextService, DocumentRe
 from app.services.document_ingestion import DocumentIngestionService, TranscribedPage, Transcription
 from app.services.document_retrieval import DocumentRetrievalService
 from tests.helpers import auth, wait_for_run
-from tests.seed import pdf_bytes, seed_assessment, seed_document
+from tests.seed import pdf_bytes, seed_assessment, seed_course, seed_course_source, seed_document
 
 
 def run(coroutine):
@@ -50,6 +50,63 @@ def test_processed_files_are_never_processed_again(supabase, db_a, ai):
     embedded, summaries = len(ai.embedded_texts), len(ai.calls_for("summarize_document"))
     run(process_all(db_a, ai, assessment["id"]))
     assert len(ai.embedded_texts) == embedded and len(ai.calls_for("summarize_document")) == summaries
+
+
+def test_only_selected_course_sources_are_available_to_an_assessment(supabase, db_a, ai):
+    course = run(seed_course(db_a))
+    selected_assessment = run(seed_assessment(db_a, course_id=course["id"]))
+    other_assessment = run(seed_assessment(db_a, course_id=course["id"]))
+    source = run(seed_course_source(supabase, db_a, course["id"]))
+    record = run(AssessmentContextService(db_a).get_document(source["id"]))
+    run(DocumentIngestionService(db_a, ai).process(record))
+    run(
+        db_a.insert(
+            "assessment_documents",
+            {"exam_project_id": selected_assessment["id"], "document_id": source["id"]},
+        )
+    )
+
+    selected_documents = run(AssessmentContextService(db_a).list_documents(selected_assessment["id"]))
+    assert [document.id for document in selected_documents] == [source["id"]]
+    assert run(AssessmentContextService(db_a).list_documents(other_assessment["id"])) == []
+
+    found = run(
+        DocumentRetrievalService(db_a, ai).search(
+            selected_assessment["id"],
+            ["layered representations"],
+            document_names={source["id"]: source["original_name"]},
+        )
+    )
+    not_found = run(
+        DocumentRetrievalService(db_a, ai).search(
+            other_assessment["id"],
+            ["layered representations"],
+            document_names={source["id"]: source["original_name"]},
+        )
+    )
+    assert found and found[0].document_id == source["id"]
+    assert not_found == []
+
+
+def test_course_source_processing_endpoint_is_owned_and_reuses_ingestion(api, supabase, db_a):
+    course = run(seed_course(db_a))
+    source = run(seed_course_source(supabase, db_a, course["id"]))
+
+    assert api.get(f"/api/documents/{source['id']}/status", headers=auth("token-b")).status_code == 404
+    started = api.post(f"/api/documents/{source['id']}/processing", headers=auth())
+    assert started.status_code == 202
+    status = api.get(f"/api/documents/{source['id']}/status", headers=auth()).json()
+    assert status["status"] == "ready" and status["title"]
+
+
+def test_a_source_already_being_read_is_not_started_again(api, supabase, db_a, ai):
+    course = run(seed_course(db_a))
+    source = run(seed_course_source(supabase, db_a, course["id"]))
+    run(db_a.update("documents", {"processing_status": "processing"}, filters=[("id", "eq", source["id"])]))
+
+    reply = api.post(f"/api/documents/{source['id']}/processing", headers=auth())
+    assert reply.status_code == 202 and reply.json()["status"] == "processing"
+    assert ai.embedded_texts == [] and ai.calls_for("summarize_document") == []
 
 
 def test_an_identical_file_elsewhere_is_copied_not_paid_for_again(supabase, db_a, ai):
