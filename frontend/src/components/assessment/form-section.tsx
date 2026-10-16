@@ -6,6 +6,7 @@ import {
   Paperclip,
   Settings2,
   Sparkles,
+  Target,
   type LucideIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -15,6 +16,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   "Course material": FileText,
   "Previous assessments": Database,
   "Exam design": Settings2,
+  "Exam Learning Focus": Target,
   "Additional notes": MessageSquareText,
   "Additional images or attachments": Paperclip,
   "Tell ProfPilot what you want": Sparkles,

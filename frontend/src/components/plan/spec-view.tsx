@@ -1,8 +1,11 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { BloomChart } from "@/components/assessment/bloom-chart";
 import { DifficultyBar } from "@/components/assessment/difficulty-bar";
 import { Badge } from "@/components/ui/badge";
 import type { ExamSpec, Provenance, SpecItem } from "@/lib/api/types";
+import { LEARNING_FOCUS_LABELS, specBloomDistribution } from "@/lib/assessments/draft";
 import { cn } from "@/lib/utils";
 
 const PROVENANCE: Record<Provenance, { label: string; title: string; className: string }> = {
@@ -61,8 +64,24 @@ function ItemList({ items }: { items: SpecItem[] }) {
 
 const EMPHASIS_LABELS = { high: "High emphasis", normal: "Normal", low: "Light" } as const;
 
+const FOCUS_NOTES = {
+  automatic: "Recommended by ProfPilot for this assessment",
+  balanced: "Your choice: the Balanced preset",
+  practical: "Your choice: the Practical & Problem-Solving preset",
+  critical: "Your choice: the Critical Thinking preset",
+  custom: "Your own distribution",
+} as const;
+
+type SpecViewProps = {
+  spec: ExamSpec;
+  /** Where the professor changes the setup (the learning focus links to its section). */
+  editHref?: string;
+  className?: string;
+};
+
 /** The structured assessment plan, with where each decision came from. */
-export function SpecView({ spec, className }: { spec: ExamSpec; className?: string }) {
+export function SpecView({ spec, editHref, className }: SpecViewProps) {
+  const bloom = specBloomDistribution(spec.bloom);
   const count =
     spec.question_count_min && spec.question_count_max
       ? spec.question_count_min === spec.question_count_max
@@ -108,6 +127,27 @@ export function SpecView({ spec, className }: { spec: ExamSpec; className?: stri
                 hard: spec.difficulty.hard_percent,
               }}
             />
+          </span>
+        ) : (
+          <NotSpecified />
+        )}
+      </Row>
+      <Row term="Learning focus" source={spec.bloom?.source}>
+        {spec.bloom && bloom ? (
+          <span className="flex flex-col gap-3">
+            <span>
+              {LEARNING_FOCUS_LABELS[spec.bloom.focus]} · Bloom&apos;s levels by marks.{" "}
+              <span className="text-muted-foreground">{FOCUS_NOTES[spec.bloom.focus]}.</span>
+              {editHref && (
+                <>
+                  {" "}
+                  <Link href={`${editHref}#learning-focus`} className="text-primary underline underline-offset-4">
+                    Adjust
+                  </Link>
+                </>
+              )}
+            </span>
+            <BloomChart distribution={bloom} compact className="max-w-md" />
           </span>
         ) : (
           <NotSpecified />

@@ -69,9 +69,23 @@ DIFFICULTY_GUIDE = (
 )
 
 DISTRIBUTION_GUIDE = (
-    "PERCENTAGES. A question-format split (MCQ vs subjective) and a difficulty split describe "
-    "shares of the assessment's MARKS (points), not shares of the question count. For example, "
-    "30% easy means easy questions carry about 30% of the total points."
+    "PERCENTAGES. A question-format split (MCQ vs subjective), a difficulty split and a Bloom's "
+    "split describe shares of the assessment's MARKS (points), not shares of the question count. "
+    "For example, 30% easy means easy questions carry about 30% of the total points."
+)
+
+BLOOM_GUIDE = (
+    "BLOOM'S LEVELS (cognitive_level) name the thinking a question genuinely requires. "
+    "remember: recall or identify facts, terms, definitions. "
+    "understand: explain, interpret, summarise or classify a concept in one's own words. "
+    "apply: use a concept, procedure, algorithm or method in a specific situation. "
+    "analyze: break down, relate parts, compare, find an error, or reason about why something holds. "
+    "evaluate: make and justify a judgement or choice against explicit criteria. "
+    "create: construct, design, propose or develop a valid solution or artefact. "
+    "A level is set by the reasoning a student must do, never by the verb in the stem: 'Analyze "
+    "the definition of X' is still remember. The level is independent of difficulty: an apply "
+    "question can be hard and an analyze question medium; respect both. Multiple-choice questions "
+    "can't assess create."
 )
 
 GROUNDING = (
@@ -187,6 +201,12 @@ def interpreter_instructions(framer: DataFramer) -> str:
         "MCQ/subjective split and the easy/medium/hard split, each with source 'professor'. "
         "If the written instructions contradict a setting, keep the setting and add a warning "
         "describing the conflict. Splits must add up to 100.",
+        "LEARNING FOCUS. Always fill bloom, the split of marks across the six Bloom's levels. If the "
+        "settings give a split (a preset or the professor's own), copy it exactly. If the focus is "
+        "automatic, recommend a split that suits the course material, its learning objectives, the "
+        "question formats and the assessment type (e.g. more remember/understand for an early quiz, "
+        "more apply/analyze for a problem-based midterm), mark it 'ai_inferred', and state the "
+        "reasoning in one assumption. Mention the cognitive emphasis in the enhanced prompt.",
         "COVERAGE. Derive coverage topics from the course material overview and excerpts, "
         "weighted by what the professor asked for (e.g. 'focus on lectures 3–5'). Name the "
         "source files. If there is no course material, say so in warnings and keep coverage "
@@ -198,6 +218,7 @@ def interpreter_instructions(framer: DataFramer) -> str:
         "(e.g. 'Each hard question must require combining at least two concepts').",
         DISTRIBUTION_GUIDE,
         DIFFICULTY_GUIDE,
+        BLOOM_GUIDE,
         GROUNDING,
         PREVIOUS_EXAMS,
     )
@@ -214,13 +235,21 @@ def planner_instructions(framer: DataFramer) -> str:
         "TASK. Plan the exam before any question is written. Follow the approved ExamSpec and "
         "enhanced prompt exactly. Choose sections, then list every question with its number "
         "(1, 2, 3… in exam order), section_index (0-based into your sections), type, difficulty, "
-        "points, topic, learning objective, cognitive level, the source material it should draw "
-        "on, and a realistic estimate of the minutes a prepared student needs.",
-        "The plan must satisfy the spec: format and difficulty splits by points (within a few "
-        "percentage points), the total time within the duration (leave about 10% for reading and "
+        "points, topic, learning objective, Bloom's level (cognitive_level), the source material it "
+        "should draw on, and a realistic estimate of the minutes a prepared student needs.",
+        "The plan must satisfy the spec: format, difficulty and Bloom's splits by points (within a "
+        "few percentage points), the total time within the duration (leave about 10% for reading and "
         "checking), coverage proportional to emphasis, and the question count range if given. "
         "Questions of the same section should be consecutive. Use whole or half points. "
         "Avoid two questions testing the same thing.",
+        "BLOOM'S PLANNING. Give each question the level its learning objective really needs, then "
+        "adjust levels and points until the marks per level match spec.bloom; difficulty is planned "
+        "separately and both must hold. Match levels to types: remember/understand suit MCQ and "
+        "short answers; analyze and evaluate suit problems, short or long answers (an MCQ only when "
+        "the choices require real reasoning); create needs a written answer. Write the learning "
+        "objective so it names the expected thinking (e.g. 'Compare two scheduling policies for a "
+        "given workload'). If the split can't be met with the formats, marks or material, keep the "
+        "closest plan and say why in warnings.",
         "ORDER. Unless the professor explicitly asks for a particular order, write a natural exam, "
         "not a copy of the course outline: within each section, mix difficulties (never all the easy "
         "questions first, then medium, then hard) and interleave topics and lectures (never several "
@@ -236,6 +265,7 @@ def planner_instructions(framer: DataFramer) -> str:
         "If an image attachment is listed and suits a question, set figure_document_id to its id; otherwise null.",
         DISTRIBUTION_GUIDE,
         DIFFICULTY_GUIDE,
+        BLOOM_GUIDE,
         GROUNDING,
     )
 
@@ -244,24 +274,38 @@ def generator_instructions(framer: DataFramer) -> str:
     return preamble(
         framer,
         "TASK. Write the planned questions, each with a complete, correct answer key. Follow "
-        "the plan exactly for each question's number, type, difficulty and points, and follow "
-        "the ExamSpec and enhanced prompt.",
+        "the plan exactly for each question's number, type, difficulty, Bloom's level "
+        "(cognitive_level) and points, and follow the ExamSpec and enhanced prompt.",
+        "COGNITIVE TARGET. Before writing, decide what a student must do to answer at the planned "
+        "level, then write a question that can't be answered without doing it: a remember question "
+        "asks for a fact; an apply question gives a concrete situation to work through; an analyze "
+        "question gives something to take apart, compare or debug; an evaluate question asks for a "
+        "justified judgement against stated criteria; a create question asks for a design or "
+        "construction. Set cognitive_level to the planned level only if the question truly meets it. "
+        "Keep difficulty as planned too. Work the solution out in full before you settle the answer "
+        "key.",
+        "QUALITY. Put the whole problem in the stem; avoid negative stems ('which is NOT') unless "
+        "essential; use realistic, specific scenarios and clean numbers with units; no trivial or "
+        "artificially complicated questions, and no repeated stem patterns across the exam.",
         "MULTIPLE CHOICE: exactly 4 choices with ids A, B, C, D; exactly one is correct "
-        "(correct_choice). Distractors must be plausible and reflect real misconceptions; avoid "
-        "'all of the above' and 'none of the above'; vary the position of the correct answer "
-        "across questions. 'answer' states the correct choice and why; 'explanation' says why "
-        "each distractor is wrong. choices and correct_choice are null for every other type, and "
-        "MCQs have no subparts.",
+        "(correct_choice). Distractors must be plausible, parallel in length and form to the correct "
+        "choice, and reflect real misconceptions or likely slips; avoid 'all of the above' and 'none "
+        "of the above'; vary the position of the correct answer across questions. 'answer' states "
+        "the correct choice and why; 'explanation' says why each distractor is wrong. choices and "
+        "correct_choice are null for every other type, and MCQs have no subparts.",
         "SUBJECTIVE: give a model answer in 'answer', a worked solution a marker can follow in "
-        "'solution', and a marking rubric whose points add up exactly to the question's points. "
-        "If you use subparts (labels a, b, c…), their points must add up to the question's points "
-        "and each subpart has its own answer and rubric; the question-level rubric may then be "
-        "null or summarise the subparts.",
+        "'solution', and a marking rubric whose points add up exactly to the question's points, "
+        "with criteria a marker can check and that reward the planned thinking (e.g. the "
+        "justification in an evaluate question). If you use subparts (labels a, b, c…), their "
+        "points must add up to the question's points and each subpart has its own answer and "
+        "rubric; the question-level rubric may then be null or summarise the subparts. Subparts may "
+        "build from lower to higher levels; cognitive_level is the highest level the question needs.",
         "Each question must be self-contained, unambiguous and answerable from the course "
         "material within its estimated time. Reference the excerpts you used by their ids in "
         "source_excerpt_ids (e.g. 'S3'). Do not mention excerpts, files or ProfPilot in the "
         "question text itself. Use figure_document_id only as given in the plan.",
         DIFFICULTY_GUIDE,
+        BLOOM_GUIDE,
         GROUNDING,
         PREVIOUS_EXAMS,
         FORMATTING,
@@ -273,13 +317,15 @@ def variant_instructions(framer: DataFramer) -> str:
         framer,
         "TASK. Write an equivalent version of each given question for another version of the "
         "same exam. Equivalent means the same learning objective, topic, type, difficulty, "
-        "points, cognitive demand and expected time, but different surface details: other "
-        "values, a changed scenario or context, reworded stems, reordered or rewritten MCQ "
-        "choices. A student who saw one version must not gain an advantage on the other, and "
-        "neither version may be harder. Recompute every answer, solution and rubric for the new "
-        "details. Set source_number to the number of the question you are varying, and describe "
-        "the variation briefly.",
+        "Bloom's level (cognitive_level), points and expected time, but different surface "
+        "details: other values, a changed scenario or context, reworded stems, reordered or "
+        "rewritten MCQ choices. Not a trivial renaming: a student who memorised one version's "
+        "answer must still have to do the same thinking on the other. A student who saw one "
+        "version must not gain an advantage on the other, and neither version may be harder. "
+        "Recompute every answer, solution and rubric for the new details. Set source_number to the "
+        "number of the question you are varying, and describe the variation briefly.",
         DIFFICULTY_GUIDE,
+        BLOOM_GUIDE,
         GROUNDING,
         FORMATTING,
     )
@@ -295,17 +341,24 @@ def reviewer_instructions(framer: DataFramer) -> str:
         "the spec, an infeasible total time, unclear wording, solutions or rubrics that don't "
         "match the question (rubric points must equal question points), and versions that are "
         "not equivalent.",
+        "COGNITIVE ALIGNMENT. Each question shows its intended Bloom's level; don't take the label "
+        "as proof. Judge the thinking a student actually needs to answer it. If it assesses a "
+        "different level (e.g. labelled analyze but answerable by recall), report it with category "
+        "'cognitive_level' and propose 'relabel_cognitive_level' with the real level. Also report "
+        "when the exam's marks per level miss spec.bloom by a wide margin.",
         "SEVERITY. critical: the exam can't be used as is (a wrong answer key, an impossible "
         "question). warning: should be fixed. info: a suggestion.",
         "FIXES. Propose a fix only for small, safe repairs, and fill only the fields that the "
         "fix changes: 'correct_answer_key' (set correct_choice, and answer if needed), "
         "'fix_solution' (corrected answer and/or solution), 'fix_rubric' (a corrected rubric "
         "summing to the question's points), 'clarify_wording' (a minimally reworded prompt with "
-        "the same meaning and difficulty). Never propose a fix that changes what a question "
-        "tests; describe such problems in the message instead.",
+        "the same meaning and difficulty), 'relabel_cognitive_level' (cognitive_level only). Never "
+        "propose a fix that changes what a question tests; describe such problems in the message "
+        "instead.",
         "Refer to questions by their number and version label. Be specific and brief.",
         DISTRIBUTION_GUIDE,
         DIFFICULTY_GUIDE,
+        BLOOM_GUIDE,
         GROUNDING,
     )
 
@@ -315,13 +368,15 @@ def reviser_instructions(framer: DataFramer) -> str:
         framer,
         "TASK. Revise ONE exam question as the professor asks, and nothing else. Keep "
         "everything the instruction doesn't ask to change (topic, type, points, difficulty, "
-        "subparts) unless the instruction requires changing it. Then make the answer key match "
-        "the revised question exactly: correct_choice must be one of the choices, the answer "
-        "and solution must solve the new question, and rubric points must add up to the "
-        "question's points (subpart points too). Summarise what changed in change_summary.",
+        "Bloom's level, subparts) unless the instruction requires changing it. Then make the answer "
+        "key match the revised question exactly: correct_choice must be one of the choices, the "
+        "answer and solution must solve the new question, and rubric points must add up to the "
+        "question's points (subpart points too). Set cognitive_level to the level the revised "
+        "question genuinely assesses. Summarise what changed in change_summary.",
         "If the instruction asks for something impossible or unsafe for an exam, make the "
         "closest reasonable change and explain it in change_summary.",
         DIFFICULTY_GUIDE,
+        BLOOM_GUIDE,
         GROUNDING,
         PREVIOUS_EXAMS,
         FORMATTING,
@@ -359,11 +414,11 @@ BUILDER_GUIDE = (
     "Approved questions are locked: unlock one before changing it, and only if the "
     "professor asks. When all planned questions are done, suggest finishing, which creates the "
     "other versions and runs the quality check.\n"
-    "MIX. For generate_next_question, leave question_type, difficulty, topic and points null "
-    "unless the professor asked for them: ProfPilot then picks the question that keeps the planned "
-    "mix, interleaving difficulties and topics (not all the easy ones first, not one lecture at a "
-    "time). When the professor does ask ('three easy questions first', 'finish Lecture 3 first'), "
-    "pass exactly what they asked for.\n"
+    "MIX. For generate_next_question, leave question_type, difficulty, cognitive_level, topic and "
+    "points null unless the professor asked for them: ProfPilot then picks the question that keeps "
+    "the planned mix, interleaving difficulties, Bloom's levels and topics (not all the easy ones "
+    "first, not one lecture at a time). When the professor does ask ('three easy questions first', "
+    "'an evaluation question', 'finish Lecture 3 first'), pass exactly what they asked for.\n"
     "LONG TOOLS. Generating, revising and reviewing take a little while and the page shows that "
     "it is working. Before such a tool, say at most a few words, once ('Generating that now.'), "
     "then wait quietly for the result: no 'please wait' or 'still working'.\n"

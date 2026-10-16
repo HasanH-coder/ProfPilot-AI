@@ -8,19 +8,36 @@ add up to 100, an answer key that matches a choice, points that add up) are
 checked in code before anything is saved.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 QuestionType = Literal["mcq", "short_answer", "long_answer", "problem"]
 Difficulty = Literal["easy", "medium", "hard"]
 # Where a setting came from, so the professor can see what they decided and what
 # the AI added.
 Provenance = Literal["professor", "ai_inferred", "ai_assumption"]
-CognitiveLevel = Literal["recall", "understanding", "application", "analysis", "evaluation", "creation"]
+# Bloom's taxonomy: the thinking a question asks for. Independent of difficulty
+# (an Analyze question can be medium; an Apply question can be hard).
+CognitiveLevel = Literal["remember", "understand", "apply", "analyze", "evaluate", "create"]
+# How the professor chose the cognitive mix: ProfPilot recommends it (automatic),
+# a preset, or their own percentages (custom). See app/domain/setup.py.
+LearningFocus = Literal["automatic", "balanced", "practical", "critical", "custom"]
 
 QUESTION_TYPES: tuple[QuestionType, ...] = ("mcq", "short_answer", "long_answer", "problem")
 DIFFICULTIES: tuple[Difficulty, ...] = ("easy", "medium", "hard")
+COGNITIVE_LEVELS: tuple[CognitiveLevel, ...] = ("remember", "understand", "apply", "analyze", "evaluate", "create")
+
+# Plans saved before Bloom's own names were used have these labels.
+_LEGACY_LEVELS = {
+    "recall": "remember",
+    "understanding": "understand",
+    "application": "apply",
+    "analysis": "analyze",
+    "evaluation": "evaluate",
+    "creation": "create",
+}
+PlannedLevel = Annotated[CognitiveLevel, BeforeValidator(lambda value: _LEGACY_LEVELS.get(value, value))]
 QUESTION_TYPE_LABELS: dict[str, str] = {
     "mcq": "Multiple choice",
     "short_answer": "Short answer",
@@ -58,6 +75,22 @@ class DifficultySpec(BaseModel):
     source: Provenance
 
 
+class BloomSpec(BaseModel):
+    """Share of the assessment's marks at each Bloom's level, and the learning focus it follows."""
+
+    focus: LearningFocus
+    remember_percent: int = Field(ge=0, le=100)
+    understand_percent: int = Field(ge=0, le=100)
+    apply_percent: int = Field(ge=0, le=100)
+    analyze_percent: int = Field(ge=0, le=100)
+    evaluate_percent: int = Field(ge=0, le=100)
+    create_percent: int = Field(ge=0, le=100)
+    source: Provenance
+
+    def shares(self) -> dict[str, int]:
+        return {level: getattr(self, f"{level}_percent") for level in COGNITIVE_LEVELS}
+
+
 class CoverageTopic(BaseModel):
     topic: str
     emphasis: Literal["high", "normal", "low"]
@@ -90,6 +123,9 @@ class ExamSpec(BaseModel):
     question_count_source: Provenance | None
     question_format: FormatSpec | None
     difficulty: DifficultySpec | None
+    # The cognitive mix by marks. (The default keeps specs saved before this
+    # field existed valid; the API still requires the field.)
+    bloom: BloomSpec | None = None
     sections: list[SectionSpec]
     # Content
     coverage: list[CoverageTopic]
@@ -177,7 +213,7 @@ class PlannedQuestion(BaseModel):
     points: float = Field(gt=0, le=1000)
     topic: str
     learning_objective: str
-    cognitive_level: CognitiveLevel
+    cognitive_level: PlannedLevel
     # Which uploaded material it should draw on (file name and pages/slides).
     source_hint: str | None
     estimated_minutes: float = Field(gt=0, le=600)
@@ -226,6 +262,9 @@ class QuestionContent(BaseModel):
 
     type: QuestionType
     difficulty: Difficulty
+    # The Bloom's level the question genuinely assesses (null only for questions
+    # stored before levels were recorded).
+    cognitive_level: CognitiveLevel | None
     points: float = Field(gt=0, le=1000)
     prompt: str
     choices: list[ChoiceOut] | None
@@ -303,6 +342,7 @@ IssueCategory = Literal[
     "version_consistency",
     "solution",
     "rubric",
+    "cognitive_level",
     "other",
 ]
 
@@ -310,7 +350,9 @@ IssueCategory = Literal[
 class QuestionFix(BaseModel):
     """A small, safe repair the reviewer proposes. Applied only when it passes validation."""
 
-    kind: Literal["correct_answer_key", "clarify_wording", "fix_solution", "fix_rubric"]
+    kind: Literal["correct_answer_key", "clarify_wording", "fix_solution", "fix_rubric", "relabel_cognitive_level"]
+    # relabel_cognitive_level: the level the question actually assesses.
+    cognitive_level: CognitiveLevel | None
     correct_choice: str | None
     prompt: str | None
     answer: str | None

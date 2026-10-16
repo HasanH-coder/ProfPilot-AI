@@ -88,6 +88,7 @@ class QuestionEdit(ApiModel):
     prompt: str | None = None
     type: str | None = None
     difficulty: str | None = None
+    cognitive_level: str | None = None
     points: float | None = None
     choices: list[dict[str, Any]] | None = None
     correct_choice: str | None = None
@@ -160,10 +161,16 @@ class QuestionRevisionService:
         )
         keeps_type = bool(preset)
         keeps_points = bool(preset)
+        # Quick actions that don't change what the question tests keep its Bloom's level.
+        kept_level = question.get("cognitive_level") if preset in ("clearer", "shorter", "alternative", "replace") else None
 
         def problems(result: RevisedQuestion) -> list[str]:
             content = normalize_content(result.question)
             found = question_problems(content)
+            if content.cognitive_level is None:
+                found.append("Set cognitive_level to the Bloom's level the revised question genuinely assesses.")
+            elif kept_level and content.cognitive_level != kept_level:
+                found.append(f"Keep the Bloom's level {kept_level}.")
             if keeps_type and content.type != question["type"]:
                 found.append(f"Keep the question type {question['type']}.")
             if keeps_points and abs(content.points - float(question["points"])) > 0.01:
@@ -318,7 +325,17 @@ class QuestionRevisionService:
                     **row_to_content(question).model_dump(),
                     **{
                         key: merged.get(key)
-                        for key in ("type", "difficulty", "points", "prompt", "choices", "correct_choice", "subparts", "rubric")
+                        for key in (
+                            "type",
+                            "difficulty",
+                            "cognitive_level",
+                            "points",
+                            "prompt",
+                            "choices",
+                            "correct_choice",
+                            "subparts",
+                            "rubric",
+                        )
                     },
                     "answer": merged.get("answer") or "",
                     "solution": merged.get("solution") or "",
@@ -344,6 +361,7 @@ class QuestionRevisionService:
         values: dict[str, Any] = {
             "type": content.type,
             "difficulty": content.difficulty,
+            "cognitive_level": content.cognitive_level,
             "points": content.points,
             "prompt": content.prompt,
             "choices": [choice.model_dump() for choice in content.choices] if content.choices else None,
@@ -471,7 +489,7 @@ class QuestionRevisionService:
     async def _version_warnings(self, question: dict[str, Any], ctx: GenerationContext) -> dict[str, Any]:
         rows = await self.db.select(
             "exam_questions",
-            columns="type, difficulty, points, estimated_minutes",
+            columns="type, difficulty, cognitive_level, points, estimated_minutes",
             filters=[("version_id", "eq", question["version_id"]), ("professor_id", "eq", self.db.professor_id)],
         )
         summary = distribution.summarize(rows)

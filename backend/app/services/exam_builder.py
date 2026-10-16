@@ -25,7 +25,7 @@ from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
-from app.schemas.ai import ReviewOutput
+from app.schemas.ai import COGNITIVE_LEVELS, ReviewOutput
 from app.services.exam_generation import ExamGenerationService, load_generation_context, suggest_next
 from app.services.exam_store import ExamStore, FullExam, render_question
 from app.services.jobs import RunContext, job_runner
@@ -46,8 +46,8 @@ BUILDER_TOOLS: list[dict[str, Any]] = [
     function_tool(
         "generate_next_question",
         "Write the next question and add it to the exam. Takes a little while. Leave question_type, difficulty, "
-        "topic and points null unless the professor asked for them: ProfPilot then picks them so the exam keeps its "
-        "planned mix, with difficulties and topics interleaved.",
+        "cognitive_level, topic and points null unless the professor asked for them: ProfPilot then picks them so "
+        "the exam keeps its planned mix, with difficulties, Bloom's levels and topics interleaved.",
         {
             "instructions": {"type": ["string", "null"], "description": "What the professor asked for, if anything."},
             "question_type": {
@@ -59,6 +59,11 @@ BUILDER_TOOLS: list[dict[str, Any]] = [
                 "type": ["string", "null"],
                 "enum": ["easy", "medium", "hard", None],
                 "description": "Only if the professor asked for this difficulty (e.g. 'three easy questions first').",
+            },
+            "cognitive_level": {
+                "type": ["string", "null"],
+                "enum": [*COGNITIVE_LEVELS, None],
+                "description": "Only if the professor asked for this Bloom's level (e.g. 'an analysis question').",
             },
             "topic": {
                 "type": ["string", "null"],
@@ -91,7 +96,9 @@ BUILDER_TOOLS: list[dict[str, Any]] = [
         {"question_number": _NUMBER, "new_position": {"type": "integer"}},
     ),
     function_tool(
-        "review_question", "Check one question for problems (answer key, clarity, difficulty).", {"question_number": _NUMBER}
+        "review_question",
+        "Check one question for problems (answer key, clarity, difficulty, Bloom's level).",
+        {"question_number": _NUMBER},
     ),
     function_tool("regenerate_solution", "Rewrite a question's answer key for its current text.", {"question_number": _NUMBER}),
     function_tool(
@@ -132,6 +139,11 @@ class ExamBuilderService:
                     if spec.difficulty
                     else None
                 ),
+                (
+                    "Bloom's " + "/".join(f"{share}% {level}" for level, share in spec.bloom.shares().items())
+                    if spec.bloom
+                    else None
+                ),
                 f"{spec.duration_minutes} minutes" if spec.duration_minutes else None,
                 (
                     f"{spec.question_count_min}–{spec.question_count_max} questions"
@@ -146,7 +158,8 @@ class ExamBuilderService:
         for number, row in enumerate(questions, start=1):
             state = "approved" if row["status"] == "approved" else "draft"
             text = " ".join(row["prompt"].split())[:160]
-            lines.append(f"{number}. [{row['type']}, {row['difficulty']}, {float(row['points']):g} pts, {state}] {text}")
+            level = f", {row['cognitive_level']}" if row.get("cognitive_level") else ""
+            lines.append(f"{number}. [{row['type']}, {row['difficulty']}{level}, {float(row['points']):g} pts, {state}] {text}")
         if not questions:
             lines.append("(none yet)")
         lines.append(
@@ -195,6 +208,7 @@ class ExamBuilderService:
             "number": number,
             "type": row["type"],
             "difficulty": row["difficulty"],
+            "cognitiveLevel": row.get("cognitive_level"),
             "points": float(row["points"]),
             "status": row["status"],
             "text": render_question(row, number, include_key=False)[:1200],
@@ -216,6 +230,7 @@ class ExamBuilderService:
             difficulty=arguments.get("difficulty"),
             topic=arguments.get("topic"),
             points=arguments.get("points"),
+            cognitive_level=arguments.get("cognitive_level"),
             full=full,
         )
         number = await self.store.question_number(row)

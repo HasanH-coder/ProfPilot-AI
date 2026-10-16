@@ -62,6 +62,7 @@ export function AssessmentSummary({
     { term: "Format", value: settings.distribution },
     { term: "Versions", value: settings.versions },
     { term: "Difficulty", value: settings.difficulty },
+    { term: "Learning focus", value: settings.learningFocus, detail: settings.bloom },
     {
       term: "Attachments",
       value: fileCount("additional_attachment"),

@@ -1,6 +1,6 @@
 // Shapes the AI API returns (see backend/app/schemas/api.py).
 
-import type { AssessmentDraft } from "@/lib/assessments/draft";
+import type { AssessmentDraft, BloomDistribution, BloomLevel, LearningFocus } from "@/lib/assessments/draft";
 
 export type RunStatus = "running" | "succeeded" | "failed";
 
@@ -64,6 +64,8 @@ export type ExamSpec = {
   question_count_source: Provenance | null;
   question_format: { mcq_percent: number; subjective_percent: number; source: Provenance } | null;
   difficulty: { easy_percent: number; medium_percent: number; hard_percent: number; source: Provenance } | null;
+  /** Missing in plans made before the learning focus existed. */
+  bloom?: ({ focus: LearningFocus; source: Provenance } & Record<`${BloomLevel}_percent`, number>) | null;
   sections: { title: string; question_types: string[]; weight_percent: number | null; notes: string | null }[];
   coverage: { topic: string; emphasis: "high" | "normal" | "low"; source_documents: string[]; source: Provenance }[];
   learning_emphasis: SpecItem[];
@@ -119,6 +121,8 @@ export type Question = {
   position: number;
   type: QuestionType;
   difficulty: QuestionDifficulty;
+  /** null for questions written before levels were recorded. */
+  cognitiveLevel: BloomLevel | null;
   points: number;
   prompt: string;
   choices: Choice[] | null;
@@ -148,10 +152,12 @@ export type DistributionSummary = {
   easyPercent: number;
   mediumPercent: number;
   hardPercent: number;
+  /** Share of marks per Bloom's level; null while any question has no level. */
+  bloom: BloomDistribution | null;
 };
 
 export type DistributionWarning = {
-  dimension: "format" | "difficulty" | "duration";
+  dimension: "format" | "difficulty" | "bloom" | "duration";
   label: string;
   actual: number;
   target: number;

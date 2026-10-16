@@ -100,6 +100,8 @@ export async function saveAssessmentDraft(
       easy_percentage: draft.easyPercentage,
       medium_percentage: draft.mediumPercentage,
       hard_percentage: draft.hardPercentage,
+      learning_focus: draft.learningFocus,
+      bloom_distribution: draft.bloomDistribution,
       additional_notes: textOrNull(draft.additionalNotes),
       professor_prompt: textOrNull(draft.professorPrompt),
     })

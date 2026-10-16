@@ -102,8 +102,9 @@ Migration `supabase/migrations/20261005203838_assessment_ai_workflow.sql` adds:
 | `match_document_chunks(...)` | Similarity search (`security invoker`, so Row Level Security applies) |
 | `exam_projects.spec_status`, `spec_generated_at`, `spec_approved_at` | The plan's state: `none`, `draft`, `approved`, `stale` |
 | `assessment_style_profiles` | The cached previous-exam style profile, keyed by a hash of the files it came from |
+| `exam_projects.learning_focus`, `bloom_distribution` | The Exam Learning Focus (migration `20261016120000_bloom_learning_focus.sql`); see [Bloom's taxonomy](#blooms-taxonomy-exam-learning-focus) |
 | `exams` | One per assessment: mode, status, the approved spec it was built from, the plan, the quality-check result, `finalized_at` |
-| `exam_versions`, `exam_sections`, `exam_questions` | The exam. Equivalent questions in different versions share a `slot_id`. |
+| `exam_versions`, `exam_sections`, `exam_questions` | The exam. Equivalent questions in different versions share a `slot_id`. `exam_questions.cognitive_level` is the Bloom's level a question assesses (`null` for questions written before levels were recorded). |
 | `question_revisions` | Every earlier state of a question, with what changed it |
 | `ai_runs` | Background jobs. A partial unique index allows only one running job of each kind per assessment. |
 | `professor_preferences`, `preference_signals` | Explicit preferences and the accepted work they are learned from |
@@ -161,7 +162,7 @@ It returns an **enhanced prompt** (a clear, complete brief the professor can edi
 | Group | Fields |
 | --- | --- |
 | Identity | `assessment_title`, `course`, `assessment_type` |
-| Format | `duration_minutes`, `versions`, `total_points`, `question_count_min/max`, `question_format` (MCQ / subjective %), `difficulty` (easy / medium / hard %), `sections` |
+| Format | `duration_minutes`, `versions`, `total_points`, `question_count_min/max`, `question_format` (MCQ / subjective %), `difficulty` (easy / medium / hard %), `bloom` (learning focus and % per Bloom's level), `sections` |
 | Content | `coverage` (topics with emphasis and source files), `learning_emphasis`, `question_style`, `professor_notes`, `professor_preferences_applied`, `source_material_guidance`, `previous_exam_style_guidance`, `constraints` |
 | Transparency | `assumptions`, `warnings`, `generation_instructions` |
 
@@ -176,6 +177,23 @@ The plan page (`[id]/plan`) shows the spec with provenance badges, the assumptio
 - **Approve & continue**; generation only starts from an approved plan.
 
 A plan becomes **out of date** when the setup changes, a file is added or removed, or a file that failed to read is now ready. The page then explains what changed and asks for a new plan; an out-of-date plan can't be approved. The staleness check runs both in the database (triggers) and in the API (`stale_reasons`).
+
+## Bloom's taxonomy (Exam Learning Focus)
+
+The professor chooses how the exam's **marks** are spread across Bloom's six levels: remember, understand, apply, analyze, evaluate, create. It is independent of difficulty, and both are respected (an analyze question can be medium; an apply question can be hard).
+
+| Focus | Stored | In the ExamSpec (`bloom`) |
+| --- | --- | --- |
+| Automatic (default) | `learning_focus = 'automatic'` | Recommended by the Prompt Interpreter from the material, objectives, formats and assessment type, in the same call (`source: ai_inferred`, `focus: automatic`) |
+| Balanced, Practical, Critical Thinking | the choice only | The preset's split, re-applied in code (`source: professor`, `focus` names the preset) |
+| Custom | `learning_focus = 'custom'` and `bloom_distribution` | The professor's six percentages, exactly (`source: professor`) |
+
+- **Feasibility is checked in code, not left to the model.** If more marks are at Create than the subjective share allows (multiple-choice questions can't assess creating), a warning on the plan page asks the professor to adjust; nothing is changed silently (`distribution.bloom_conflicts`). A plan with a multiple-choice question at Create is rejected and repaired.
+- **Planning.** Every planned question has a `cognitive_level`. The split of marks per level is compared with `spec.bloom` like the format and difficulty splits (within 6 percentage points), with the same single repair call. Plans saved earlier with the old labels (`recall`, `application`, …) still load.
+- **Writing.** Each batch is told every question's planned level, with one shared guide to what each level requires (`BLOOM_GUIDE` in `prompts.py`): a level comes from the reasoning a student must do, never from the verb in the stem. A question whose `cognitive_level` doesn't match its plan is sent back. Equivalent versions must keep the level. In Build with AI, the next level is the one furthest behind the split (`suggest_level`), or the one the professor asks for.
+- **Review.** The quality check judges whether each question really needs its labelled level. If not, it may only **relabel** it to the level it actually assesses (a safe fix, in the revision history); rewriting it to reach another level is left to the professor. The split per version is checked deterministically too, and versions whose equivalent questions differ in level are reported.
+- **Editing.** Questions show their level. AI revisions set the level of the revised question; quick actions that keep what a question tests (clearer, shorter, alternative, replace) must keep it. The professor can change it in **Edit manually**.
+- **Where it shows.** The setup form (cards, an advanced panel with six sliders and a doughnut chart), the summary, the plan page (with an **Adjust** link back to the form), question cards and the exam's **At a glance** panel.
 
 ## Generating the exam
 
@@ -362,7 +380,7 @@ The interactive documentation is at http://localhost:8000/docs while the backend
 From `backend/` with the virtual environment active:
 
 ```bash
-pytest                 # 157 tests, plus 2 live tests that are skipped by default; OpenAI and Supabase are replaced by fakes
+pytest                 # 214 tests, plus 2 live tests that are skipped by default; OpenAI and Supabase are replaced by fakes
 ruff check . && ruff format --check .
 ```
 
@@ -370,9 +388,10 @@ ruff check . && ruff format --check .
 - `tests/test_isolation.py` acts as a second professor and makes 30 requests against the first professor's assessment, exam, questions, job and voice credentials: every attempt gets `404`, the first professor's data is unchanged, their Storage files can't be read, and requests without a token get `401`.
 - `tests/test_security.py` covers token verification (expired, wrong audience, wrong issuer, `anon` role, anonymous users, a non-UUID subject, a token signed by another key, symmetric and unsigned tokens), protected endpoints without a valid bearer token, and error responses that never echo submitted values.
 - The other suites cover parsing, ingestion, the interpreter and staleness, generation and resume, the quality check and its safe fixes, revisions and history, the builder and setup tools, voice credentials and their rate limit, personalization, jobs, and export.
+- `tests/test_bloom.py` covers the learning focus: its rules, older records, provenance (custom, presets, automatic), conflicts, staleness, the split by marks, plans, generation, versions, Build with AI and editing.
 - `tests/test_planning.py` covers question order (mixed plans, explicit orders kept, Build with AI's next question) and `tests/test_latency.py` checks that one-question operations make one model call and no heavy work, that batches and versions are written concurrently, and that the chat reports a tool before the AI returns.
 
-The frontend has component tests (from `frontend/`: `npm test`), run with Vitest in Chromium: Set up with AI on Create assessment and through the sidebar, the sidebar's links, the conversation log's scrolling, the builder's statuses, the builder page's height at 390–1440 px, and that captions during a call don't re-render the form or the exam preview.
+The frontend has component tests (from `frontend/`: `npm test`), run with Vitest in Chromium: Set up with AI on Create assessment and through the sidebar, the Exam Learning Focus (choices, sliders and boxes, validation, save and reopen, the plan page, phone width), the sidebar's links, the conversation log's scrolling, the builder's statuses, the builder page's height at 390–1440 px, and that captions during a call don't re-render the form or the exam preview.
 
 **Live smoke test.** `tests/test_live_smoke.py` makes two small real calls (one structured output, one Realtime client secret). It is skipped unless enabled explicitly:
 
@@ -397,5 +416,6 @@ Automated tests can't use a real microphone. Before a demo, in Chrome or Safari:
 - Jobs run inside the FastAPI process. A restart interrupts running jobs, which then show as interrupted and can be started again. A production deployment would use a job queue.
 - Jobs act with the professor's access token, which lasts about an hour. The browser refreshes the session before starting a job, which covers normal generation times.
 - Only voice credentials are rate-limited. AI revisions and other endpoints are not.
+- Bloom's levels are recorded per question, not per subpart (a question's level is the highest it needs). Set up with AI doesn't set the learning focus by voice or chat yet, the PDFs don't print levels, and personalization doesn't learn a cognitive mix. Adjusting the split on the plan page means editing the setup, which asks for a new plan.
 - Live captions depend on the transcription model. If they don't appear, set `REALTIME_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe`.
 - PDF support for non-Latin scripts depends on the fallback font.

@@ -15,6 +15,7 @@ import {
 import Link from "next/link";
 import { useEffect, useId, useState, type ReactNode } from "react";
 
+import { BloomSwatch } from "@/components/assessment/bloom-chart";
 import { DifficultyBar } from "@/components/assessment/difficulty-bar";
 import {
   AlertDialog,
@@ -34,6 +35,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { apiDownload, apiRequest, errorMessage } from "@/lib/api/client";
 import type { Exam, ExamVersion, Readiness, ReadinessCheck } from "@/lib/api/types";
+import { BLOOM_LABELS, BLOOM_LEVELS } from "@/lib/assessments/draft";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -96,6 +98,23 @@ export function DistributionPanel({ exam, version }: { exam: Exam; version: Exam
             ` (target ${spec.difficulty.easy_percent}/${spec.difficulty.medium_percent}/${spec.difficulty.hard_percent})`}
         </p>
       </div>
+      {summary.bloom && (
+        <div className="flex flex-col gap-1.5 text-sm">
+          <p className="text-muted-foreground">Bloom&apos;s levels by marks</p>
+          <ul className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
+            {BLOOM_LEVELS.map((level) => (
+              <li key={level} className="flex items-center gap-1.5">
+                <BloomSwatch level={level} />
+                <span className="flex-1">{BLOOM_LABELS[level]}</span>
+                <span className="tabular-nums">
+                  {summary.bloom?.[level]}%
+                  {spec?.bloom && <span className="text-muted-foreground"> / {spec.bloom[`${level}_percent`]}%</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {warnings.length > 0 && (
         <ul className="flex flex-col gap-1.5 text-sm">
           {warnings.map((warning) => (

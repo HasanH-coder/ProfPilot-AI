@@ -27,11 +27,13 @@ from typing import Any
 from app.ai.openai_service import Effort, OpenAIService, Usage, gather_limited, get_openai_service
 from app.ai.prompts import DataFramer, generator_instructions, planner_instructions, variant_instructions
 from app.core.config import settings
-from app.core.errors import AppError, ConflictError
+from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
+from app.domain.setup import BLOOM_PRESETS
 from app.schemas.ai import (
+    COGNITIVE_LEVELS,
     QUESTION_TYPES,
     ExamPlan,
     ExamSpec,
@@ -340,6 +342,8 @@ def plan_problems(plan: ExamPlan, spec: ExamSpec, figure_ids: set[str]) -> tuple
     for q in questions:
         if q.section_index >= len(plan.sections):
             hard.append(f"Question {q.number} points to a section that doesn't exist.")
+        if q.type == "mcq" and q.cognitive_level == "create":
+            hard.append(f"Question {q.number} is multiple choice, which can't assess Create; change its type or level.")
         if q.section_index < previous_section:
             hard.append("Keep each section's questions together, in section order.")
             break
@@ -347,14 +351,9 @@ def plan_problems(plan: ExamPlan, spec: ExamSpec, figure_ids: set[str]) -> tuple
         if q.figure_document_id and q.figure_document_id not in figure_ids:
             hard.append(f"Question {q.number} uses figure id {q.figure_document_id}, which isn't an image attachment.")
 
-    summary = distribution.summarize(
-        [
-            {"type": q.type, "difficulty": q.difficulty, "points": q.points, "estimated_minutes": q.estimated_minutes}
-            for q in questions
-        ]
-    )
+    summary = distribution.summarize(questions)
     for warning in distribution.compare(summary, spec, tolerance=_PLAN_TOLERANCE):
-        soft.append(warning["message"] + " Adjust question types, difficulties or points.")
+        soft.append(warning["message"] + " Adjust question types, difficulties, Bloom's levels or points.")
     if spec.duration_minutes and summary["estimatedMinutes"] > spec.duration_minutes:
         soft.append(
             f"The questions need about {summary['estimatedMinutes']:g} minutes, more than the "
@@ -460,6 +459,8 @@ def batch_problems(batch: QuestionBatch, planned: list[PlannedQuestion], others:
         content = normalize_content(question)
         if content.type != slot.type or content.difficulty != slot.difficulty:
             problems.append(f"{label} must be type {slot.type} and difficulty {slot.difficulty}, as planned.")
+        if content.cognitive_level != slot.cognitive_level:
+            problems.append(f"{label} must assess the {slot.cognitive_level} level, as planned.")
         if abs(content.points - slot.points) > 0.01:
             problems.append(f"{label} must be worth {slot.points:g} points, as planned.")
         if (content.figure_document_id or None) != (slot.figure_document_id or None):
@@ -485,6 +486,8 @@ def variant_problems(batch: VariantBatch, sources: dict[int, dict[str, Any]]) ->
         content = normalize_content(variant.question)
         if content.type != source["type"] or content.difficulty != source["difficulty"]:
             problems.append(f"{label} must keep type {source['type']} and difficulty {source['difficulty']}.")
+        if source.get("cognitive_level") and content.cognitive_level != source["cognitive_level"]:
+            problems.append(f"{label} must assess the same Bloom's level ({source['cognitive_level']}).")
         if abs(content.points - float(source["points"])) > 0.01:
             problems.append(f"{label} must keep {float(source['points']):g} points.")
         if similar(content.prompt, source["prompt"]) > 0.95:
@@ -592,7 +595,7 @@ class ExamGenerationService:
         plan_lines = [
             f"{q.number}. [{plan.sections[q.section_index].title if q.section_index < len(plan.sections) else ''}] "
             f"{q.type}, {q.difficulty}, {q.points:g} pts, ~{q.estimated_minutes:g} min — {q.topic}: {q.learning_objective}"
-            f" (level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'})"
+            f" (Bloom's level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'})"
             for q in plan.questions
         ]
         targets = [line for line in plan_lines if int(line.split(".", 1)[0]) in {slot.number for slot in batch}]
@@ -707,6 +710,7 @@ class ExamGenerationService:
         difficulty: str | None,
         topic: str | None,
         points: float | None,
+        cognitive_level: str | None = None,
         full: FullExam | None = None,
     ) -> dict[str, Any]:
         """Writes the next Build with AI question. Only what one question needs is
@@ -720,6 +724,12 @@ class ExamGenerationService:
         slot_type = question_type if question_type in QUESTION_TYPES else suggestion["type"]
         slot_difficulty = difficulty if difficulty in ("easy", "medium", "hard") else suggestion["difficulty"]
         slot_points = points if points and points > 0 else suggestion["points"]
+        slot_level = cognitive_level if cognitive_level in COGNITIVE_LEVELS else suggest_level(ctx.spec, existing, slot_type)
+        if slot_type == "mcq" and slot_level == "create":
+            if question_type == "mcq":
+                raise InvalidInputError("A multiple-choice question can't assess the Create level. Choose another type or level.")
+            slot_type = "short_answer"
+            slot_points = points if points and points > 0 else _POINTS[slot_type]
         # The suggested topic only when the professor named none (their request may imply one).
         topic = topic or (None if instructions else suggestion["topic"])
         framer = DataFramer()
@@ -739,14 +749,15 @@ class ExamGenerationService:
             points=slot_points,
             topic=topic or "the next most useful topic from the coverage list",
             learning_objective="as the professor asks, consistent with the spec",
-            cognitive_level="application",
+            cognitive_level=slot_level,  # type: ignore[arg-type]
             source_hint=None,
             estimated_minutes=max(1.0, slot_points * 1.5),
             figure_document_id=None,
         )
         others = [q["prompt"] for q in existing]
         request = [
-            f"Write question {number}: type {slot_type}, difficulty {slot_difficulty}, {slot_points:g} points.",
+            f"Write question {number}: type {slot_type}, difficulty {slot_difficulty}, Bloom's level {slot_level}, "
+            f"{slot_points:g} points.",
             f"Topic: {topic}" if topic else "Topic: choose the most useful topic not yet covered, following the coverage list.",
             f"The professor's request: {instructions}" if instructions else "",
             "Concepts already covered: " + (", ".join(dict.fromkeys(covered)) if covered else "none yet"),
@@ -789,6 +800,8 @@ def _single_problems(batch: QuestionBatch, slot: PlannedQuestion, others: list[s
     problems = []
     if question.type != slot.type or question.difficulty != slot.difficulty:
         problems.append(f"The question must be type {slot.type} and difficulty {slot.difficulty}.")
+    if question.cognitive_level != slot.cognitive_level:
+        problems.append(f"The question must assess the {slot.cognitive_level} level.")
     if abs(question.points - slot.points) > 0.01:
         problems.append(f"The question must be worth {slot.points:g} points.")
     if question.figure_document_id and question.figure_document_id not in figure_ids:
@@ -867,6 +880,23 @@ def suggest_next(spec: ExamSpec, existing: list[dict[str, Any]]) -> dict[str, An
         "points": _POINTS[question_type],
         "topic": _next_topic(spec, existing),
     }
+
+
+def suggest_level(spec: ExamSpec, existing: list[dict[str, Any]], question_type: str) -> str:
+    """The Bloom's level furthest behind the plan's split by marks (the Balanced preset
+    when the plan has none), avoiding the previous question's level while another
+    is about as far behind. Multiple choice never gets Create."""
+    targets = spec.bloom.shares() if spec.bloom else BLOOM_PRESETS["balanced"]
+    shares = distribution.summarize(existing)["bloom"] or dict.fromkeys(COGNITIVE_LEVELS, 0.0)
+    levels = [level for level in COGNITIVE_LEVELS if targets[level] > 0 and not (question_type == "mcq" and level == "create")]
+    if not levels:
+        return "apply"
+    deficits = {level: targets[level] - shares[level] for level in levels}
+    ranked = sorted(levels, key=lambda level: deficits[level], reverse=True)
+    previous = existing[-1].get("cognitive_level") if existing else None
+    if ranked[0] == previous and len(ranked) > 1 and deficits[ranked[0]] - deficits[ranked[1]] <= 10:
+        return ranked[1]
+    return ranked[0]
 
 
 def _words(text: str) -> set[str]:

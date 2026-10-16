@@ -21,11 +21,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, errorMessage } from "@/lib/api/client";
 import type { Choice, Question, QuestionDifficulty, QuestionResult, QuestionType, RubricItem } from "@/lib/api/types";
+import { BLOOM_LABELS, type BloomLevel } from "@/lib/assessments/draft";
 
 type EditState = {
   prompt: string;
   type: QuestionType;
   difficulty: QuestionDifficulty;
+  cognitiveLevel: BloomLevel | null;
   points: string;
   choices: Choice[];
   correctChoice: string | null;
@@ -43,6 +45,7 @@ function fromQuestion(question: Question): EditState {
     prompt: question.prompt,
     type: question.type,
     difficulty: question.difficulty,
+    cognitiveLevel: question.cognitiveLevel,
     points: String(question.points),
     choices: question.choices ?? [],
     correctChoice: question.correctChoice,
@@ -71,7 +74,16 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
   const [state, setState] = useState<EditState>(() => fromQuestion(question));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ids = { prompt: useId(), type: useId(), difficulty: useId(), points: useId(), answer: useId(), solution: useId(), explanation: useId() };
+  const ids = {
+    prompt: useId(),
+    type: useId(),
+    difficulty: useId(),
+    level: useId(),
+    points: useId(),
+    answer: useId(),
+    solution: useId(),
+    explanation: useId(),
+  };
 
   function reset(next: boolean) {
     if (next) {
@@ -103,6 +115,7 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
     if (state.prompt.trim() !== original.prompt.trim()) changes.prompt = state.prompt.trim();
     if (state.type !== original.type) changes.type = state.type;
     if (state.difficulty !== original.difficulty) changes.difficulty = state.difficulty;
+    if (state.cognitiveLevel !== original.cognitiveLevel) changes.cognitiveLevel = state.cognitiveLevel;
     if (points !== question.points) changes.points = points;
 
     if (state.type === "mcq") {
@@ -193,7 +206,7 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
             <Textarea id={ids.prompt} className="min-h-28" value={state.prompt} onChange={(event) => set("prompt", event.target.value)} />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
             <div className="flex flex-col gap-2">
               <Label htmlFor={ids.type}>Type</Label>
               <Select items={TYPE_LABELS} value={state.type} onValueChange={(value) => value && changeType(value as QuestionType)}>
@@ -221,6 +234,25 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
                 </SelectTrigger>
                 <SelectContent className="workspace-theme">
                   {Object.entries(DIFFICULTY_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor={ids.level}>Bloom&apos;s level</Label>
+              <Select
+                items={BLOOM_LABELS}
+                value={state.cognitiveLevel}
+                onValueChange={(value) => value && set("cognitiveLevel", value as BloomLevel)}
+              >
+                <SelectTrigger id={ids.level} className="w-full">
+                  <SelectValue placeholder="Not set" />
+                </SelectTrigger>
+                <SelectContent className="workspace-theme">
+                  {Object.entries(BLOOM_LABELS).map(([value, label]) => (
                     <SelectItem key={value} value={value}>
                       {label}
                     </SelectItem>

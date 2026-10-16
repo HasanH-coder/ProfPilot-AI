@@ -122,6 +122,7 @@ class QuestionOut(ApiModel):
     position: int
     type: str
     difficulty: str
+    cognitive_level: str | None
     points: float
     prompt: str
     choices: list[dict[str, Any]] | None

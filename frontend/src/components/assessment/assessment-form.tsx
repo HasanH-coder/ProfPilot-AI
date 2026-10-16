@@ -40,6 +40,13 @@ import {
 import { FormSection } from "@/components/assessment/form-section";
 import { ImproveWithAi } from "@/components/assessment/improve-with-ai";
 import {
+  LEARNING_FOCUS_DEFAULT,
+  LearningFocus,
+  learningFocusDraft,
+  learningFocusValue,
+  type LearningFocusValue,
+} from "@/components/assessment/learning-focus";
+import {
   QuestionDistribution,
   type DistributionValue,
 } from "@/components/assessment/question-distribution";
@@ -66,6 +73,7 @@ import {
 import {
   validateAssessmentDraft,
   type AssessmentDraft,
+  type BloomDistribution,
 } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
 import type { DocumentFile } from "@/lib/documents/files";
@@ -79,6 +87,7 @@ type FormValues = {
   distribution: DistributionValue;
   versions: VersionValue;
   difficulty: DifficultyDistributionValue;
+  learningFocus: LearningFocusValue;
   additionalNotes: string;
   professorPrompt: string;
 };
@@ -90,6 +99,7 @@ const EMPTY_FORM: FormValues = {
   distribution: { enabled: false, mcqPercentage: 50 },
   versions: { choice: "1", customCount: "" },
   difficulty: DIFFICULTY_NOT_SPECIFIED,
+  learningFocus: LEARNING_FOCUS_DEFAULT,
   additionalNotes: "",
   professorPrompt: "",
 };
@@ -107,6 +117,7 @@ function toDraft(values: FormValues): AssessmentDraft {
       : null,
     numberOfVersions: versionCount(values.versions),
     ...difficultyPercentages(values.difficulty),
+    ...learningFocusDraft(values.learningFocus),
     additionalNotes: values.additionalNotes,
     professorPrompt: values.professorPrompt,
   };
@@ -125,6 +136,7 @@ function toFormValues(draft: AssessmentDraft): FormValues {
         : { enabled: true, mcqPercentage: draft.mcqPercentage },
     versions: versionValue(draft.numberOfVersions),
     difficulty: difficultyDistributionValue(draft),
+    learningFocus: learningFocusValue(draft),
     additionalNotes: draft.additionalNotes,
     professorPrompt: draft.professorPrompt,
   };
@@ -141,6 +153,8 @@ const FIELD_GROUPS: Record<string, string> = {
   easyPercentage: "difficulty",
   mediumPercentage: "difficulty",
   hardPercentage: "difficulty",
+  learningFocus: "learningFocus",
+  bloomDistribution: "learningFocus",
   additionalNotes: "notes",
   professorPrompt: "prompt",
 };
@@ -177,6 +191,8 @@ function applyChanges(
         ? { ...current.difficulty, enabled: false }
         : difficultyDistributionValue(setup);
   }
+  if (fields.has("learningFocus") || fields.has("bloomDistribution"))
+    next.learningFocus = learningFocusValue(setup);
   if (fields.has("additionalNotes"))
     next.additionalNotes = setup.additionalNotes;
   if (fields.has("professorPrompt"))
@@ -188,6 +204,8 @@ function applyChanges(
 export type SavedAssessment = DraftLocation & {
   draft: AssessmentDraft;
   files: DocumentFile[];
+  /** ProfPilot's Bloom's split from the latest plan, shown while the focus is Automatic. */
+  bloomRecommendation?: BloomDistribution | null;
 };
 
 // A new, untouched form has nothing to save.
@@ -588,6 +606,15 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
             />
           </div>
         </FormSection>
+
+        <div id="learning-focus" className={changedBy("learningFocus")}>
+          <LearningFocus
+            value={values.learningFocus}
+            onChange={(learningFocus) => update({ learningFocus })}
+            recommendation={saved?.bloomRecommendation}
+            error={errors.bloomDistribution}
+          />
+        </div>
 
         <div className={changedBy("notes")}>
           <AdditionalNotes

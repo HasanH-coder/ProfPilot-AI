@@ -12,6 +12,7 @@ How a professor sets up an assessment in ProfPilot AI, how drafts and uploaded f
    - **Course material**: lectures, notes, readings, assignments.
    - **Previous assessments**: past exams, quizzes, answer keys.
    - **Exam design**: duration, question distribution (MCQ / subjective, always adding up to 100%), number of versions, difficulty distribution (easy / medium / hard percentages that must add up to 100%).
+   - **Exam Learning Focus**: how the marks are spread across Bloom's six levels (Remember, Understand, Apply, Analyze, Evaluate, Create). **Automatic** (the default) lets ProfPilot recommend a split when it prepares the plan; **Balanced**, **Practical & Problem-Solving** and **Critical Thinking** are presets; changing any percentage under **Advanced: Bloom's Taxonomy** makes the split **Custom** (six whole numbers that must add up to 100%). Bloom's levels are independent of difficulty.
    - **Additional notes**: specific requests or constraints.
    - **Additional images or attachments**: screenshots, diagrams, graphs, tables.
    - **Tell ProfPilot what you want**: the professor's instructions in their own words.
@@ -41,6 +42,8 @@ Unspecified options are stored as `null`; `number_of_versions` defaults to 1. A 
 - **Legacy `difficulty`.** The old single `difficulty` column (`easy` / `medium` / `hard`) is deprecated. The app no longer reads or writes it, so new assessments leave it `null`, and drafts saved before the change keep their old value but show the difficulty distribution as **Not specified**. It is kept only so that old value isn't lost; a later migration can convert or drop it.
 
 These changes are in migration `supabase/migrations/20261005194656_optional_assessment_name_and_difficulty_distribution.sql`.
+
+- **Learning focus.** `learning_focus` (`text`, default `automatic`) is `automatic`, `balanced`, `practical`, `critical` or `custom`. `bloom_distribution` (`jsonb`) is set only for `custom`: `{"remember": 10, "understand": 15, …}`, six whole numbers from 0 to 100 adding up to 100 (checked by `is_bloom_distribution`). Presets store only the choice; their splits live in code (`BLOOM_PRESETS` in `frontend/src/lib/assessments/draft.ts`, mirrored in `backend/app/domain/setup.py`). Older drafts read as Automatic. Migration `20261016120000_bloom_learning_focus.sql`.
 
 **One assessment is always one draft.** A new assessment gets its `exam_projects` row the first time the professor uploads a file or saves, whichever comes first (`createAssessmentDraft`), even if no course or name has been given yet. Every later upload and save reuses that row; saving only ever updates it (`saveAssessmentDraft`). Double clicks and parallel uploads share the same request, so they can't create a second draft.
 

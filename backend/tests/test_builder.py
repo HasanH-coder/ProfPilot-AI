@@ -110,10 +110,10 @@ def test_voice_tools_use_the_same_executor(api, supabase, db_a):
     done = api.get(f"/api/exams/{exam['id']}", headers=auth()).json()
     assert done["status"] == "ready"
     assert [v["summary"]["questionCount"] for v in done["versions"]] == [1, 1]  # Version B created
-    # One question can't meet a 40/60 format and 30/40/30 difficulty target: the
-    # quality check says so (and only that; nothing is structurally wrong).
+    # One question can't meet a 40/60 format, a 30/40/30 difficulty target or a
+    # Bloom's split: the quality check says so (and only that; nothing is structurally wrong).
     assert done["reviewStatus"] == "needs_attention"
-    assert {issue["category"] for issue in done["review"]["issues"]} == {"format", "difficulty"}
+    assert {issue["category"] for issue in done["review"]["issues"]} == {"format", "difficulty", "cognitive_level"}
 
 
 def test_setup_assistant_text_chat_fills_the_form(api, db_a, ai):

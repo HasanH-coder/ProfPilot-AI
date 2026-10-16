@@ -18,7 +18,7 @@ from app.schemas.common import parse_id
 ASSESSMENT_COLUMNS = (
     "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, "
     "subjective_percentage, number_of_versions, easy_percentage, medium_percentage, "
-    "hard_percentage, additional_notes, professor_prompt, enhanced_prompt, exam_spec, "
+    "hard_percentage, learning_focus, bloom_distribution, additional_notes, professor_prompt, enhanced_prompt, exam_spec, "
     "spec_status, spec_generated_at, spec_approved_at, generation_mode, "
     "course:courses(id, code, name)"
 )
@@ -200,6 +200,7 @@ def render_settings(record: AssessmentRecord) -> str:
         f"- Duration: {setup.duration_text or missing}",
         f"- Question format (share of marks): {setup.format_text or missing}",
         f"- Difficulty (share of marks): {setup.difficulty_text or missing}",
+        f"- Learning focus (Bloom's levels, share of marks): {setup.learning_focus_text}",
         f"- Number of versions: {setup.number_of_versions}",
     ]
     return "\n".join(lines)

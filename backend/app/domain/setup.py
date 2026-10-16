@@ -9,6 +9,7 @@ import hashlib
 import json
 from typing import Any
 
+from app.schemas.ai import COGNITIVE_LEVELS
 from app.schemas.common import ApiModel
 
 LIMITS = {
@@ -22,8 +23,24 @@ LIMITS = {
 SETUP_COLUMNS = (
     "course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, "
     "number_of_versions, easy_percentage, medium_percentage, hard_percentage, "
-    "additional_notes, professor_prompt"
+    "learning_focus, bloom_distribution, additional_notes, professor_prompt"
 )
+
+LEARNING_FOCUSES = ("automatic", "balanced", "practical", "critical", "custom")
+LEARNING_FOCUS_LABELS = {
+    "automatic": "Automatic",
+    "balanced": "Balanced",
+    "practical": "Practical & Problem-Solving",
+    "critical": "Critical Thinking",
+    "custom": "Custom",
+}
+# The splits (by marks) the presets stand for. Suggested starting points, not
+# pedagogical standards. Mirrored in frontend/src/lib/assessments/draft.ts.
+BLOOM_PRESETS: dict[str, dict[str, int]] = {
+    "balanced": {"remember": 15, "understand": 20, "apply": 25, "analyze": 20, "evaluate": 10, "create": 10},
+    "practical": {"remember": 5, "understand": 15, "apply": 40, "analyze": 25, "evaluate": 10, "create": 5},
+    "critical": {"remember": 5, "understand": 10, "apply": 20, "analyze": 30, "evaluate": 25, "create": 10},
+}
 
 
 class AssessmentSetup(ApiModel):
@@ -41,6 +58,9 @@ class AssessmentSetup(ApiModel):
     easy_percentage: int | None = None
     medium_percentage: int | None = None
     hard_percentage: int | None = None
+    # One of LEARNING_FOCUSES. Only "custom" has its own percentages (by Bloom's level).
+    learning_focus: str = "automatic"
+    bloom_distribution: dict[str, int] | None = None
     additional_notes: str = ""
     professor_prompt: str = ""
 
@@ -56,6 +76,8 @@ class AssessmentSetup(ApiModel):
             easy_percentage=row.get("easy_percentage"),
             medium_percentage=row.get("medium_percentage"),
             hard_percentage=row.get("hard_percentage"),
+            learning_focus=row.get("learning_focus") or "automatic",
+            bloom_distribution=row.get("bloom_distribution"),
             additional_notes=row.get("additional_notes") or "",
             professor_prompt=row.get("professor_prompt") or "",
         )
@@ -72,6 +94,8 @@ class AssessmentSetup(ApiModel):
             "easy_percentage": self.easy_percentage,
             "medium_percentage": self.medium_percentage,
             "hard_percentage": self.hard_percentage,
+            "learning_focus": self.learning_focus,
+            "bloom_distribution": self.bloom_distribution,
             "additional_notes": self.additional_notes if self.additional_notes.strip() else None,
             "professor_prompt": self.professor_prompt if self.professor_prompt.strip() else None,
         }
@@ -92,6 +116,9 @@ class AssessmentSetup(ApiModel):
         difficulty = check_difficulty_distribution(self.easy_percentage, self.medium_percentage, self.hard_percentage)
         if difficulty:
             errors["difficultyDistribution"] = difficulty
+        bloom = check_bloom_distribution(self.learning_focus, self.bloom_distribution)
+        if bloom:
+            errors["bloomDistribution"] = bloom
         if len(self.additional_notes) > LIMITS["additional_notes"]:
             errors["additionalNotes"] = "Use 2,000 characters or fewer."
         if len(self.professor_prompt) > LIMITS["professor_prompt"]:
@@ -100,8 +127,19 @@ class AssessmentSetup(ApiModel):
 
     def fingerprint(self) -> str:
         """Changes whenever anything an interpretation depends on changes."""
-        payload = json.dumps(self.to_row(), sort_keys=True, ensure_ascii=False)
+        row = self.to_row()
+        # The default learning focus is left out, so interpretations made before
+        # the setting existed keep matching their unchanged assessments.
+        if row["learning_focus"] == "automatic" and row["bloom_distribution"] is None:
+            del row["learning_focus"], row["bloom_distribution"]
+        payload = json.dumps(row, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(payload.encode()).hexdigest()
+
+    def resolved_bloom(self) -> dict[str, int] | None:
+        """The split by Bloom's level the professor chose (a preset or their own); None for automatic."""
+        if self.learning_focus == "custom":
+            return self.bloom_distribution
+        return BLOOM_PRESETS.get(self.learning_focus)
 
     # -- Readable text, for prompts and summaries --------------------------------
 
@@ -120,6 +158,34 @@ class AssessmentSetup(ApiModel):
         if self.easy_percentage is None or self.medium_percentage is None or self.hard_percentage is None:
             return None
         return f"{self.easy_percentage}% easy / {self.medium_percentage}% medium / {self.hard_percentage}% hard"
+
+    @property
+    def learning_focus_text(self) -> str:
+        label = LEARNING_FOCUS_LABELS.get(self.learning_focus, self.learning_focus)
+        shares = self.resolved_bloom()
+        if shares is None:
+            return f"{label} (no split given: recommend one that suits the material, objectives and formats)"
+        split = " / ".join(f"{shares[level]}% {level}" for level in COGNITIVE_LEVELS)
+        kind = "the professor's own split" if self.learning_focus == "custom" else "ProfPilot's preset the professor chose"
+        return f"{label}, {kind}: {split}"
+
+
+def check_bloom_distribution(focus: str, distribution: dict[str, int] | None) -> str | None:
+    """What's wrong with a learning focus, if anything. Only a custom focus has
+    percentages: six whole numbers from 0 to 100 that add up to 100. The database
+    enforces the same rule."""
+    if focus not in LEARNING_FOCUSES:
+        return "Choose one of the learning focus options."
+    if focus != "custom":
+        return None if distribution is None else "Only a custom learning focus has its own percentages."
+    if distribution is None or set(distribution) != set(COGNITIVE_LEVELS):
+        return "Enter a percentage for each of the six levels."
+    values = list(distribution.values())
+    if any(isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100 for value in values):
+        return "Enter a whole number from 0 to 100 for each level."
+    if sum(values) != 100:
+        return "Bloom's percentages must total 100%."
+    return None
 
 
 def check_difficulty_distribution(easy: int | None, medium: int | None, hard: int | None) -> str | None:

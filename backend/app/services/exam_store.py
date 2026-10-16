@@ -23,7 +23,7 @@ EXAM_COLUMNS = (
     "review_status, reviewed_at, error_message, finalized_at, created_at, updated_at"
 )
 QUESTION_COLUMNS = (
-    "id, exam_id, version_id, section_id, slot_id, position, type, difficulty, points, prompt, "
+    "id, exam_id, version_id, section_id, slot_id, position, type, difficulty, cognitive_level, points, prompt, "
     "choices, correct_choice, subparts, answer, solution, rubric, explanation, concepts, "
     "learning_objectives, source_refs, figure_document_id, estimated_minutes, status, "
     "needs_solution_review, created_at, updated_at"
@@ -32,6 +32,7 @@ QUESTION_COLUMNS = (
 SNAPSHOT_FIELDS = (
     "type",
     "difficulty",
+    "cognitive_level",
     "points",
     "prompt",
     "choices",
@@ -127,6 +128,8 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             problems.append(f"{label} has empty or repeated choices.")
         if content.correct_choice not in ids:
             problems.append(f"{label}'s correct_choice must be one of its choice ids ({', '.join(ids)}).")
+        if content.cognitive_level == "create" and not manual:
+            problems.append(f"{label} is multiple choice, which can't assess the Create level; use another level.")
     else:
         if content.choices or content.correct_choice:
             problems.append(f"{label} is not multiple choice, so it must not have choices.")
@@ -181,6 +184,7 @@ def content_to_row(
     return {
         "type": content.type,
         "difficulty": content.difficulty,
+        "cognitive_level": content.cognitive_level,
         "points": content.points,
         "prompt": content.prompt,
         "choices": [choice.model_dump() for choice in content.choices] if content.choices else None,
@@ -204,6 +208,7 @@ def row_to_content(row: dict[str, Any]) -> QuestionContent:
         {
             "type": row["type"],
             "difficulty": row["difficulty"],
+            "cognitive_level": row.get("cognitive_level"),
             "points": float(row["points"]),
             "prompt": row["prompt"],
             "choices": row.get("choices"),
@@ -224,7 +229,8 @@ def row_to_content(row: dict[str, Any]) -> QuestionContent:
 
 def render_question(row: dict[str, Any], number: int, *, include_key: bool = True) -> str:
     """A question as plain text, for prompts."""
-    lines = [f"Q{number} [{row['type']}, {row['difficulty']}, {float(row['points']):g} pts]", row["prompt"]]
+    level = f", Bloom's level: {row['cognitive_level']}" if row.get("cognitive_level") else ""
+    lines = [f"Q{number} [{row['type']}, {row['difficulty']}{level}, {float(row['points']):g} pts]", row["prompt"]]
     for choice in row.get("choices") or []:
         lines.append(f"  {choice['id']}. {choice['text']}")
     for part in row.get("subparts") or []:
@@ -253,6 +259,7 @@ def serialize_question(row: dict[str, Any], number: int, revision_count: int = 0
         "position": row["position"],
         "type": row["type"],
         "difficulty": row["difficulty"],
+        "cognitiveLevel": row.get("cognitive_level"),
         "points": float(row["points"]),
         "prompt": row["prompt"],
         "choices": row.get("choices"),

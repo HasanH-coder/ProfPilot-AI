@@ -30,6 +30,9 @@ from app.services.exam_store import ExamStore, FullExam, question_problems, rend
 
 logger = logging.getLogger("profpilot.review")
 
+# The review category of each distribution warning (see distribution.compare).
+_DIMENSION_CATEGORIES = {"format": "format", "difficulty": "difficulty", "bloom": "cognitive_level", "duration": "duration"}
+
 
 class ExamReviewService:
     def __init__(self, db: Database, ai: OpenAIService, usage: Usage) -> None:
@@ -132,9 +135,7 @@ class ExamReviewService:
                 issues.append(
                     _issue(
                         "warning",
-                        "difficulty"
-                        if warning["dimension"] == "difficulty"
-                        else ("duration" if warning["dimension"] == "duration" else "format"),
+                        _DIMENSION_CATEGORIES[warning["dimension"]],
                         f"Version {version['label']}: {warning['message']}",
                         None,
                         None,
@@ -158,16 +159,17 @@ class ExamReviewService:
                                 source="check",
                             )
                         )
-                    elif (twin["type"], twin["difficulty"], float(twin["points"])) != (
+                    elif (twin["type"], twin["difficulty"], twin.get("cognitive_level"), float(twin["points"])) != (
                         source["type"],
                         source["difficulty"],
+                        source.get("cognitive_level"),
                         float(source["points"]),
                     ):
                         issues.append(
                             _issue(
                                 "warning",
                                 "version_consistency",
-                                f"Question {number} differs in type, difficulty or points between versions "
+                                f"Question {number} differs in type, difficulty, Bloom's level or points between versions "
                                 f"{primary['label']} and {version['label']}.",
                                 twin,
                                 number,
@@ -266,6 +268,13 @@ class ExamReviewService:
             if abs(sum(item.points for item in fix.rubric) - float(row["points"])) > 0.01:
                 return False
             values["rubric"] = [item.model_dump() for item in fix.rubric]
+        elif fix.kind == "relabel_cognitive_level":
+            # Only the label changes, to the level the question really assesses;
+            # rewriting it to reach another level is left to the professor.
+            level = fix.cognitive_level
+            if not level or level == row.get("cognitive_level") or (row["type"] == "mcq" and level == "create"):
+                return False
+            values["cognitive_level"] = level
         elif fix.kind == "clarify_wording":
             prompt = (fix.prompt or "").strip()
             old = row["prompt"]

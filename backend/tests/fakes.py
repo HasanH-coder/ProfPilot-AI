@@ -29,6 +29,8 @@ from typing import Any
 
 from app.ai.openai_service import ToolCall, ToolLoopResult, Usage
 from app.core.errors import AIServiceError, ConflictError, InvalidInputError, NotFoundError
+from app.domain.setup import check_bloom_distribution
+from app.schemas.ai import COGNITIVE_LEVELS
 
 _clock = itertools.count()
 # Anchored at the real time, so a job started by a test is never older than the
@@ -71,6 +73,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "easy_percentage": None,
         "medium_percentage": None,
         "hard_percentage": None,
+        "learning_focus": "automatic",
+        "bloom_distribution": None,
         "additional_notes": None,
         "professor_prompt": None,
         "enhanced_prompt": None,
@@ -108,6 +112,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "exam_sections": {"instructions": None},
     "exam_questions": {
         "section_id": None,
+        "cognitive_level": None,
         "choices": None,
         "correct_choice": None,
         "subparts": None,
@@ -160,6 +165,8 @@ SETUP_COLUMNS = (
     "easy_percentage",
     "medium_percentage",
     "hard_percentage",
+    "learning_focus",
+    "bloom_distribution",
     "additional_notes",
     "professor_prompt",
 )
@@ -385,6 +392,8 @@ class FakeDatabase:
             raise ConflictError("This already exists.")
         if table == "exam_projects" and row.get("exam_name") is not None and not str(row["exam_name"]).strip():
             raise InvalidInputError()
+        if table == "exam_projects" and check_bloom_distribution(row["learning_focus"], row["bloom_distribution"]):
+            raise InvalidInputError()
         if table == "exam_questions":
             _check_question(row)
             if any(r["version_id"] == row["version_id"] and r["slot_id"] == row["slot_id"] for r in others):
@@ -409,6 +418,8 @@ def _check_question(row: dict[str, Any]) -> None:
     if row["type"] not in ("mcq", "short_answer", "long_answer", "problem"):
         raise InvalidInputError()
     if row["difficulty"] not in ("easy", "medium", "hard") or row["status"] not in ("draft", "approved"):
+        raise InvalidInputError()
+    if row["cognitive_level"] is not None and row["cognitive_level"] not in COGNITIVE_LEVELS:
         raise InvalidInputError()
     if not 0 < float(row["points"]) <= 1000 or not row["prompt"]:
         raise InvalidInputError()

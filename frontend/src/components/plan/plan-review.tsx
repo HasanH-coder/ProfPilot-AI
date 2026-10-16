@@ -244,7 +244,7 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
       />
 
       <ReviewSection title="Assessment plan" description="What ProfPilot will follow. Each value shows whether it came from you or from the AI.">
-        <SpecView spec={spec} />
+        <SpecView spec={spec} editHref={`${base}/edit`} />
       </ReviewSection>
 
       {(spec.assumptions.length > 0 || spec.warnings.length > 0) && (

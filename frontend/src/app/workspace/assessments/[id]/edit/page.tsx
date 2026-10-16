@@ -46,6 +46,7 @@ export default async function EditAssessmentPage({
           folder: `${professor.id}/${id}`,
           draft: assessment.draft,
           files: assessment.files,
+          bloomRecommendation: assessment.bloomRecommendation,
         }}
       />
     </div>
