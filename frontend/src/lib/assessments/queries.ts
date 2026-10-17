@@ -33,10 +33,12 @@ export type AssessmentListItem = {
  */
 export async function getAssessments({ limit }: { limit?: number } = {}): Promise<AssessmentListItem[]> {
   const supabase = await createClient();
+  // documents!…_fkey: the assessment's own uploads. Selected course sources are
+  // linked through assessment_documents, a second path PostgREST would find ambiguous.
   let query = supabase
     .from("exam_projects")
     .select(
-      "id, exam_name, status, updated_at, duration_minutes, number_of_versions, course:courses(code), documents(count)",
+      "id, exam_name, status, updated_at, duration_minutes, number_of_versions, course:courses(code), documents!documents_exam_project_id_fkey(count)",
     )
     .order("updated_at", { ascending: false });
   if (limit) query = query.limit(limit);
@@ -84,7 +86,7 @@ export const getAssessment = cache(async (id: string): Promise<Assessment | null
   const { data, error } = await supabase
     .from("exam_projects")
     .select(
-      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, easy_percentage, medium_percentage, hard_percentage, learning_focus, bloom_distribution, additional_notes, professor_prompt, spec_bloom:exam_spec->spec->bloom, course:courses(id, code, name), documents(id, category, original_name, size_bytes)",
+      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, easy_percentage, medium_percentage, hard_percentage, learning_focus, bloom_distribution, additional_notes, professor_prompt, spec_bloom:exam_spec->spec->bloom, course:courses(id, code, name), documents!documents_exam_project_id_fkey(id, category, original_name, size_bytes)",
     )
     .eq("id", id)
     .order("created_at", { referencedTable: "documents" })

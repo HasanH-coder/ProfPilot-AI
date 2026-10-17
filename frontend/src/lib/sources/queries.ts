@@ -64,10 +64,11 @@ export async function getCoursesWithSources(): Promise<CourseWithSources[]> {
   return courses.map((course) => ({ ...course, sources: byCourse.get(course.id) ?? [] }));
 }
 
-/** Data needed by the reusable selector when an agent workflow chooses a course. */
-export async function getCourseSources(courseId: string): Promise<CourseSource[]> {
+/** Every course's sources, for a form where the professor may still change the course. */
+export async function getSources(): Promise<CourseSource[]> {
   const supabase = await createClient();
-  const { data, error } = await sourcesQuery(supabase).eq("course_id", courseId);
+  // A source whose removal didn't finish can't be selected any more.
+  const { data, error } = await sourcesQuery(supabase).eq("deletion_pending", false);
   if (error) throw new Error(`Could not load course sources: ${error.message}`);
   return data.map(toCourseSource);
 }

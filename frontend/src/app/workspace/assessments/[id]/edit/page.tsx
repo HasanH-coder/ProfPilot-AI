@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { getAssessment } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import { getCourses } from "@/lib/courses/queries";
+import { getAssessmentSourceDocumentIds, getSources } from "@/lib/sources/queries";
 
 export async function generateMetadata({
   params,
@@ -23,9 +24,11 @@ export default async function EditAssessmentPage({
   const professor = await getCurrentProfessor();
   const { id } = await params;
   // Row Level Security hides other professors' assessments, so they are "not found" too.
-  const [assessment, courses] = await Promise.all([
+  const [assessment, courses, sources, sourceIds] = await Promise.all([
     getAssessment(id),
     getCourses(),
+    getSources(),
+    getAssessmentSourceDocumentIds(id),
   ]);
   if (!assessment) notFound();
   // Only drafts can be changed.
@@ -41,11 +44,13 @@ export default async function EditAssessmentPage({
       />
       <AssessmentForm
         courses={courses}
+        sources={sources}
         saved={{
           examProjectId: id,
           folder: `${professor.id}/${id}`,
           draft: assessment.draft,
           files: assessment.files,
+          sourceIds,
           bloomRecommendation: assessment.bloomRecommendation,
         }}
       />

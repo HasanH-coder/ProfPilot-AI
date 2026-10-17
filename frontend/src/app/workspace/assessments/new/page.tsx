@@ -4,6 +4,7 @@ import { AssessmentForm } from "@/components/assessment/assessment-form";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import { getCourses } from "@/lib/courses/queries";
+import { getSources } from "@/lib/sources/queries";
 
 export const metadata: Metadata = { title: "Create assessment" };
 
@@ -11,7 +12,7 @@ export const metadata: Metadata = { title: "Create assessment" };
 // sidebar's AI Assistant (?assistant=setup, which opens Set up with AI).
 export default async function NewAssessmentPage() {
   await getCurrentProfessor();
-  const courses = await getCourses();
+  const [courses, sources] = await Promise.all([getCourses(), getSources()]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -21,7 +22,7 @@ export default async function NewAssessmentPage() {
         highlight="Assessment"
         description="Provide the details and materials for your assessment. Every field is optional. Save your draft and continue later."
       />
-      <AssessmentForm courses={courses} />
+      <AssessmentForm courses={courses} sources={sources} />
     </div>
   );
 }

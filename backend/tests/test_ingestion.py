@@ -2,6 +2,7 @@
 
 import asyncio
 
+from app.api import assessments as assessments_api
 from app.services.assessment_context import AssessmentContextService, DocumentRecord
 from app.services.document_ingestion import DocumentIngestionService, TranscribedPage, Transcription
 from app.services.document_retrieval import DocumentRetrievalService
@@ -99,14 +100,26 @@ def test_course_source_processing_endpoint_is_owned_and_reuses_ingestion(api, su
     assert status["status"] == "ready" and status["title"]
 
 
-def test_a_source_already_being_read_is_not_started_again(api, supabase, db_a, ai):
+def test_a_source_already_being_read_is_not_started_again(api, supabase, db_a, ai, monkeypatch):
     course = run(seed_course(db_a))
     source = run(seed_course_source(supabase, db_a, course["id"]))
     run(db_a.update("documents", {"processing_status": "processing"}, filters=[("id", "eq", source["id"])]))
+    monkeypatch.setattr(assessments_api, "_reading", {source["id"]})
 
     reply = api.post(f"/api/documents/{source['id']}/processing", headers=auth())
     assert reply.status_code == 202 and reply.json()["status"] == "processing"
     assert ai.embedded_texts == [] and ai.calls_for("summarize_document") == []
+
+
+def test_an_interrupted_source_is_read_again(api, supabase, db_a):
+    # "processing" in the database, but this server isn't reading it: e.g. it restarted.
+    course = run(seed_course(db_a))
+    source = run(seed_course_source(supabase, db_a, course["id"]))
+    run(db_a.update("documents", {"processing_status": "processing"}, filters=[("id", "eq", source["id"])]))
+
+    assert api.post(f"/api/documents/{source['id']}/processing", headers=auth()).status_code == 202
+    assert api.get(f"/api/documents/{source['id']}/status", headers=auth()).json()["status"] == "ready"
+    assert assessments_api._reading == set()
 
 
 def test_an_identical_file_elsewhere_is_copied_not_paid_for_again(supabase, db_a, ai):

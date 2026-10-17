@@ -17,6 +17,8 @@ type AssessmentSummaryProps = {
   course: Course | undefined;
   /** The files added on the page. Only uploads Supabase has confirmed are counted. */
   files: UploadItem[];
+  /** Course sources selected from the library, counted with the course material. */
+  sourceCount?: number;
   className?: string;
   /** Actions shown under the summary, such as the Save button. */
   children?: ReactNode;
@@ -27,6 +29,7 @@ export function AssessmentSummary({
   draft,
   course,
   files,
+  sourceCount = 0,
   className,
   children,
 }: AssessmentSummaryProps) {
@@ -48,7 +51,10 @@ export function AssessmentSummary({
     { term: "Assessment", value: draft.examName.trim() },
     {
       term: "Course material",
-      value: fileCount("course_material"),
+      value:
+        [fileCount("course_material"), sourceCount > 0 && `${sourceCount} ${sourceCount === 1 ? "source" : "sources"}`]
+          .filter(Boolean)
+          .join(" · ") || undefined,
       empty: "None uploaded",
     },
     {

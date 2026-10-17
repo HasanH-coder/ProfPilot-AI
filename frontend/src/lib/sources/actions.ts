@@ -151,19 +151,25 @@ export async function getCourseSourceUrl(documentId: string): Promise<{ url?: st
   return error || !data ? { error: "The source couldn't be opened." } : { url: data.signedUrl };
 }
 
-/** Atomic integration seam for the assessment form once its restructuring is complete. */
+/**
+ * Replaces the course sources an assessment uses, atomically. The database
+ * accepts only the professor's own sources from the assessment's course.
+ */
 export async function setAssessmentSourceDocuments(
   assessmentId: string,
   documentIds: string[],
 ): Promise<{ error?: string }> {
   await getCurrentProfessor();
   const supabase = await createClient();
-  const uniqueIds = [...new Set(documentIds)];
+  const uniqueIds = Array.isArray(documentIds) ? [...new Set(documentIds)] : [];
   const { error } = await supabase.rpc("set_assessment_source_documents", {
     p_exam_project_id: assessmentId,
     p_document_ids: uniqueIds,
   });
-  if (error) return { error: "The selected sources couldn't be saved. Please try again." };
+  if (error) {
+    console.error("Could not save the assessment's sources:", error);
+    return { error: "The selected sources couldn't be saved. Please try again." };
+  }
   refresh();
   return {};
 }

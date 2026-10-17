@@ -1,7 +1,7 @@
 "use client";
 
 import { ExternalLink, FileCheck2, LoaderCircle, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { FileDropzone } from "@/components/assessment/file-dropzone";
 import { FileTypeIcon } from "@/components/assessment/file-type-icon";
@@ -112,6 +112,17 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
       }
     }
   }
+
+  // Resume reading that was interrupted (the tab closed, or the server restarted).
+  // The backend ignores a source it is still reading, so this never doubles work.
+  useEffect(() => {
+    for (const course of initialCourses) {
+      for (const source of course.sources) {
+        if (source.status === "pending" || source.status === "processing") void startProcessing(course.id, source);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, for the sources the page opened with
+  }, []);
 
   async function openSource(source: CourseSource) {
     const result = await getCourseSourceUrl(source.id);

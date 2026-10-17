@@ -37,6 +37,10 @@ from app.services.style_analysis import StyleAnalysisService
 
 router = APIRouter(prefix="/api", tags=["assessments"])
 
+# Sources this server is reading right now. One that says "processing" but isn't
+# here was interrupted (for example by a restart) and may be started again.
+_reading: set[str] = set()
+
 
 @router.get("/assessments/{assessment_id}/ai-status")
 async def ai_status(assessment_id: str, db: Database = Depends(get_db)) -> AiStatusOut:
@@ -150,22 +154,37 @@ async def process_document(
     db: Database = Depends(get_db),
     ai: OpenAIService = Depends(get_ai),
 ) -> DocumentProcessingOut:
-    """Starts ingestion for one owned source without requiring an assessment."""
+    """Starts (or resumes) ingestion for one owned source without requiring an assessment."""
     document = await AssessmentContextService(db).get_document(document_id)
-    # Claimed in one conditional update, so two requests never process the same file twice.
-    claimed = await db.update(
-        "documents",
-        {"processing_status": "processing", "processing_error": None},
-        filters=[
-            ("id", "eq", document.id),
-            ("professor_id", "eq", db.professor_id),
-            ("processing_status", "in", ["pending", "failed"]),
-        ],
-        columns="id",
-    )
+    if document.id in _reading:
+        return DocumentProcessingOut(id=document.id, status="processing")
+    # Reserved before the first await, so a second request can't start it too.
+    _reading.add(document.id)
+    try:
+        claimed = await db.update(
+            "documents",
+            {"processing_status": "processing", "processing_error": None},
+            filters=[
+                ("id", "eq", document.id),
+                ("professor_id", "eq", db.professor_id),
+                ("processing_status", "in", ["pending", "processing", "failed"]),
+            ],
+            columns="id",
+        )
+    except BaseException:
+        _reading.discard(document.id)
+        raise
     if not claimed:
+        _reading.discard(document.id)
         return DocumentProcessingOut(id=document.id, status=document.processing_status)
-    background_tasks.add_task(DocumentIngestionService(db, ai).process, document)
+
+    async def read() -> None:
+        try:
+            await DocumentIngestionService(db, ai).process(document)
+        finally:
+            _reading.discard(document.id)
+
+    background_tasks.add_task(read)
     return DocumentProcessingOut(id=document.id, status="processing")
 
 

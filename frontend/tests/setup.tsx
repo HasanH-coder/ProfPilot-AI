@@ -56,7 +56,7 @@ vi.mock("@/lib/sources/actions", () => ({
   recordCourseSource: vi.fn(),
   removeCourseSource: vi.fn(),
   getCourseSourceUrl: vi.fn(),
-  setAssessmentSourceDocuments: vi.fn(),
+  setAssessmentSourceDocuments: vi.fn(async () => ({})),
 }));
 vi.mock("@/lib/courses/actions", () => ({ createCourse: vi.fn(), updateCourse: vi.fn(), deleteCourse: vi.fn() }));
 vi.mock("@/lib/auth/actions", () => ({ login: vi.fn(), signup: vi.fn(), logout: vi.fn() }));
