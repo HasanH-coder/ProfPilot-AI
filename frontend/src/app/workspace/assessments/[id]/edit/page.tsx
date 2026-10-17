@@ -11,8 +11,8 @@ import { getAssessmentSourceDocumentIds, getSources } from "@/lib/sources/querie
 export async function generateMetadata({
   params,
 }: PageProps<"/workspace/assessments/[id]/edit">): Promise<Metadata> {
-  await getCurrentProfessor();
-  const assessment = await getAssessment((await params).id);
+  const { id } = await params;
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   if (!assessment) return { title: "Assessment not found" };
   const examName = assessment.draft.examName.trim();
   return { title: examName ? `Edit ${examName}` : "Edit assessment" };
@@ -21,10 +21,10 @@ export async function generateMetadata({
 export default async function EditAssessmentPage({
   params,
 }: PageProps<"/workspace/assessments/[id]/edit">) {
-  const professor = await getCurrentProfessor();
   const { id } = await params;
   // Row Level Security hides other professors' assessments, so they are "not found" too.
-  const [assessment, courses, sources, sourceIds] = await Promise.all([
+  const [professor, assessment, courses, sources, sourceIds] = await Promise.all([
+    getCurrentProfessor(),
     getAssessment(id),
     getCourses(),
     getSources(),

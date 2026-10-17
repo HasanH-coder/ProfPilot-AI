@@ -12,8 +12,8 @@ import { getCoursesWithSources } from "@/lib/sources/queries";
 export const metadata: Metadata = { title: "Sources" };
 
 export default async function SourcesPage() {
-  const professor = await getCurrentProfessor();
-  const courses = await getCoursesWithSources();
+  // Together: the session check doesn't hold up the query (RLS scopes it either way).
+  const [professor, courses] = await Promise.all([getCurrentProfessor(), getCoursesWithSources()]);
 
   return (
     <div className="flex flex-col gap-8">

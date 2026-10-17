@@ -9,9 +9,10 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 
-from app.ai.openai_service import OpenAIService
+from app.ai.openai_service import OpenAIService, Usage
 from app.api.deps import get_ai, get_db
 from app.core.errors import ConflictError, NotFoundError
+from app.core.timing import timed
 from app.db.supabase import Database
 from app.schemas.api import (
     AiStatusOut,
@@ -179,8 +180,11 @@ async def process_document(
         return DocumentProcessingOut(id=document.id, status=document.processing_status)
 
     async def read() -> None:
+        usage = Usage()
         try:
-            await DocumentIngestionService(db, ai).process(document)
+            # Logs how long reading took and the model calls it made (never the content).
+            async with timed("source_ingestion", usage):
+                await DocumentIngestionService(db, ai, usage).process(document)
         finally:
             _reading.discard(document.id)
 

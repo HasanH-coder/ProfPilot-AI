@@ -8,16 +8,15 @@ import { getAssessment } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 
 export async function generateMetadata({ params }: PageProps<"/workspace/assessments/[id]/plan">): Promise<Metadata> {
-  await getCurrentProfessor();
-  const assessment = await getAssessment((await params).id);
+  const { id } = await params;
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   return { title: assessment ? `Plan · ${assessmentTitle(assessment.draft.examName)}` : "Assessment not found" };
 }
 
 export default async function PlanPage({ params }: PageProps<"/workspace/assessments/[id]/plan">) {
-  await getCurrentProfessor();
   const { id } = await params;
   // Row Level Security hides other professors' assessments, so they are "not found" too.
-  const assessment = await getAssessment(id);
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   if (!assessment) notFound();
 
   return (

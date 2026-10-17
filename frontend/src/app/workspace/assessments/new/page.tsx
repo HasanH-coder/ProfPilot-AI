@@ -11,8 +11,7 @@ export const metadata: Metadata = { title: "Create assessment" };
 // The same page whether it is opened from Create assessment or from the
 // sidebar's AI Assistant (?assistant=setup, which opens Set up with AI).
 export default async function NewAssessmentPage() {
-  await getCurrentProfessor();
-  const [courses, sources] = await Promise.all([getCourses(), getSources()]);
+  const [, courses, sources] = await Promise.all([getCurrentProfessor(), getCourses(), getSources()]);
 
   return (
     <div className="flex flex-col gap-6">

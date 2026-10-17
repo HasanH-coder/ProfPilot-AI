@@ -69,12 +69,8 @@ export async function recordCourseSource(
     return { error: problem.error };
   }
 
-  const existing = await findCourseSource(courseId, sha256);
-  if (existing.source) {
-    await storage.remove([storagePath]);
-    return { source: existing.source, duplicate: true };
-  }
-
+  // The browser checked for a duplicate just before uploading (findCourseSource). One saved
+  // since then is caught by the unique index on the digest, and handled below.
   const { data, error } = await supabase
     .from("documents")
     .insert({
