@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink, FileCheck2, LoaderCircle, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
+import { Clock, ExternalLink, FileCheck2, LoaderCircle, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { FileDropzone } from "@/components/assessment/file-dropzone";
@@ -92,7 +92,11 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
       await apiRequest(`/api/documents/${source.id}/processing`, { method: "POST" });
       void pollSource(courseId, source);
     } catch (error) {
-      setActivity((current) => ({ ...current, [courseId]: errorMessage(error, `Couldn't read ${source.name}. Try again.`) }));
+      // The file itself is saved; only reading it couldn't start (e.g. the AI service is down).
+      setActivity((current) => ({
+        ...current,
+        [courseId]: `${source.name} is uploaded, but reading couldn't start. ${errorMessage(error)} Use Retry when it's back.`,
+      }));
     }
   }
 
@@ -175,7 +179,8 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
                       <Button variant="ghost" size="icon-sm" aria-label={`Open ${source.name}`} onClick={() => void openSource(source)}>
                         <ExternalLink />
                       </Button>
-                      {source.status === "failed" && (
+                      {/* Pending: uploaded, but reading never started (or was refused), so it can be started again. */}
+                      {(source.status === "failed" || source.status === "pending") && (
                         <Button variant="ghost" size="icon-sm" aria-label={`Retry ${source.name}`} onClick={() => void startProcessing(course.id, source)}>
                           <RotateCcw />
                         </Button>
@@ -198,7 +203,8 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
 function SourceState({ source }: { source: CourseSource }) {
   if (source.status === "ready") return <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-400"><FileCheck2 className="size-3" /> Ready for AI</span>;
   if (source.status === "failed") return <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-destructive"><TriangleAlert className="size-3" /> {source.error || "Could not read this file"}</span>;
-  return <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" /> {source.status === "processing" ? "Reading and indexing" : "Waiting to be read"}</span>;
+  if (source.status === "pending") return <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground"><Clock className="size-3" /> Uploaded · not read yet</span>;
+  return <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" /> Reading and indexing</span>;
 }
 
 async function digestFile(file: File) {

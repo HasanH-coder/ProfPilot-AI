@@ -25,6 +25,23 @@ test("reading that was interrupted is resumed when Sources opens", async () => {
   expect(vi.mocked(apiRequest).mock.calls.some(([path]) => path === "/api/documents/ready/processing")).toBe(false);
 });
 
+test("when the AI service can't be reached, an uploaded file says so truthfully and can be retried", async () => {
+  vi.mocked(apiRequest).mockRejectedValue(new Error("ProfPilot's AI service can't be reached right now."));
+  const waiting = [{ ...base, id: "waiting", name: "Lecture 3.pdf", status: "pending" as const }];
+  const screen = await render(
+    <CourseSourcesLibrary initialCourses={[{ ...courses[0], sources: waiting }]} professorId={professor.id} />,
+  );
+  // Not "still uploading" and not "waiting in a queue": the file is saved, reading didn't start.
+  await expect.element(screen.getByText(/Lecture 3\.pdf is uploaded, but reading couldn't start/)).toBeVisible();
+  await expect.element(screen.getByText("Uploaded · not read yet")).toBeVisible();
+
+  vi.mocked(apiRequest).mockResolvedValue({ status: "processing", error: null, pageCount: null, title: null });
+  await screen.getByRole("button", { name: "Retry Lecture 3.pdf" }).click();
+  await expect
+    .poll(() => vi.mocked(apiRequest).mock.calls.filter(([path]) => path === "/api/documents/waiting/processing").length)
+    .toBe(2);
+});
+
 test("a source an assessment still uses explains why it can't be removed", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.mocked(removeCourseSource).mockResolvedValueOnce({ error: "An assessment uses this source. Unselect it there first." });
