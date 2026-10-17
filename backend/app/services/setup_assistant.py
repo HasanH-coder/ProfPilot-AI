@@ -20,8 +20,9 @@ from app.ai.prompts import setup_chat_instructions
 from app.ai.tools import function_tool
 from app.core.errors import InvalidInputError
 from app.core.timing import timed
-from app.domain.setup import LIMITS, AssessmentSetup
-from app.services.assessment_context import CourseInfo
+from app.domain.setup import LEARNING_FOCUS_LABELS, LEARNING_FOCUSES, LIMITS, AssessmentSetup
+from app.schemas.ai import COGNITIVE_LEVELS
+from app.services.assessment_context import AssessmentContextService, CourseInfo, SourceInfo
 
 _PERCENT = {"type": ["integer", "null"], "minimum": 0, "maximum": 100}
 _TEXT_MODE = {"type": "string", "enum": ["append", "replace", "clear"]}
@@ -33,6 +34,7 @@ SETTING_QUESTIONS: dict[str, str] = {
     "duration": "Do you want to specify a duration?",
     "question_format": "Do you want to specify the question format?",
     "difficulty": "Do you want to set a difficulty mix?",
+    "learning_focus": "Do you want a learning focus, such as practical problem-solving or critical thinking?",
     "versions": "How many versions do you need?",
     "coverage": "What should it cover?",
 }
@@ -45,9 +47,12 @@ _TOOL_SETTINGS = {
     "set_duration": "duration",
     "set_question_distribution": "question_format",
     "set_difficulty_distribution": "difficulty",
+    "set_learning_focus": "learning_focus",
     "set_versions": "versions",
     "update_notes": "coverage",
 }
+# Tools that need the course's sources, loaded from the database only for them.
+SOURCE_TOOLS = {"list_course_sources", "set_course_sources"}
 
 SETUP_TOOLS: list[dict[str, Any]] = [
     function_tool("get_current_setup", "Read the assessment setup as it is on the professor's screen now.", {}),
@@ -79,9 +84,33 @@ SETUP_TOOLS: list[dict[str, Any]] = [
         {"easy_percent": _PERCENT, "medium_percent": _PERCENT, "hard_percent": _PERCENT},
     ),
     function_tool(
+        "set_learning_focus",
+        "Set how the exam assesses thinking skills (Bloom's Taxonomy): automatic (ProfPilot recommends a split), "
+        "balanced, practical (problem-solving), critical (critical thinking), or custom with the professor's own "
+        "shares of marks for all six levels, exactly as said; never adjust them to add up. Leave the six shares "
+        "null unless the focus is custom.",
+        {
+            "focus": {"type": "string", "enum": list(LEARNING_FOCUSES)},
+            **{f"{level}_percent": _PERCENT for level in COGNITIVE_LEVELS},
+        },
+    ),
+    function_tool(
         "set_versions",
         "Set how many equivalent versions of the exam to create (1–20).",
         {"count": {"type": "integer", "minimum": 1, "maximum": 20}},
+    ),
+    function_tool(
+        "list_course_sources",
+        "List the materials saved in Sources for the chosen course that are ready to use, with their ids.",
+        {},
+    ),
+    function_tool(
+        "set_course_sources",
+        "Choose which saved course sources the assessment uses, by ids from list_course_sources only.",
+        {
+            "source_ids": {"type": "array", "items": {"type": "string"}},
+            "mode": {"type": "string", "enum": ["add", "remove", "replace"]},
+        },
     ),
     function_tool(
         "update_notes",
@@ -107,16 +136,24 @@ SETUP_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def describe_setup(setup: AssessmentSetup, courses: list[CourseInfo]) -> str:
+def describe_learning_focus(setup: AssessmentSetup) -> str:
+    label = LEARNING_FOCUS_LABELS.get(setup.learning_focus, setup.learning_focus)
+    shares = setup.resolved_bloom()
+    return f"{label} ({' / '.join(f'{shares[level]}% {level}' for level in COGNITIVE_LEVELS)})" if shares else label
+
+
+def describe_setup(setup: AssessmentSetup, courses: list[CourseInfo], selected_sources: int = 0) -> str:
     course = next((c for c in courses if c.id == setup.course_id), None)
     missing = "not set"
     return "\n".join(
         [
             f"- Course: {course.label + ' (id ' + course.id + ')' if course else missing}",
             f"- Assessment name: {setup.exam_name.strip() or missing}",
+            f"- Course sources selected: {selected_sources}",
             f"- Duration: {setup.duration_text or missing}",
             f"- Question format: {setup.format_text or missing}",
             f"- Difficulty: {setup.difficulty_text or missing}",
+            f"- Learning focus: {describe_learning_focus(setup)}",
             f"- Versions: {setup.number_of_versions}",
             f"- Notes: {setup.additional_notes.strip() or missing}",
             f"- Instructions: {setup.professor_prompt.strip() or missing}",
@@ -144,6 +181,8 @@ def next_setup_question(setup: AssessmentSetup, courses: list[CourseInfo], addre
         "duration": setup.duration_minutes is not None,
         "question_format": setup.mcq_percentage is not None,
         "difficulty": setup.easy_percentage is not None,
+        # Automatic is the default and needs no answer; any other focus is the professor's choice.
+        "learning_focus": setup.learning_focus != "automatic",
         "versions": setup.number_of_versions != 1,
         "coverage": bool(setup.additional_notes.strip()),
     }
@@ -247,15 +286,21 @@ def duration_minutes(value: Any) -> int | None:
 
 
 def difficulty_split(arguments: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
-    """The professor's difficulty split, exactly as given, or an error the assistant asks about.
+    """The professor's easy/medium/hard split, exactly as given (see exact_split)."""
+    split = exact_split(arguments, ("easy", "medium", "hard"))
+    return (None, None, None) if split is None else (split["easy"], split["medium"], split["hard"])
+
+
+def exact_split(arguments: dict[str, Any], labels: tuple[str, ...]) -> dict[str, int] | None:
+    """A split of marks (`<label>_percent` arguments) exactly as the professor gave it, None
+    when all are empty, or an error the assistant asks about.
 
     Never normalized: 30/30/30 is not turned into 33/33/34; it comes back as
     "That adds up to 90%…" so the professor decides what the rest should be.
     """
-    labels = ("easy", "medium", "hard")
     raw = _as_percent([_number(arguments.get(f"{label}_percent"), f"{label} share") for label in labels])
     if all(value is None for value in raw):
-        return None, None, None
+        return None
     given = {label: _whole(value, f"{label} share") for label, value in zip(labels, raw, strict=True) if value is not None}
     if any(not 0 <= value <= 100 for value in given.values()):
         raise InvalidInputError("Each share must be from 0 to 100%. Ask the professor to restate the split.")
@@ -280,7 +325,7 @@ def difficulty_split(arguments: dict[str, Any]) -> tuple[int | None, int | None,
             f"{stated} adds up to {total}%, not 100%. Nothing was changed. Ask the professor one short question, "
             f"e.g. '{question}' Don't change their numbers yourself."
         )
-    return given["easy"], given["medium"], given["hard"]
+    return given
 
 
 def execute_setup_tool(
@@ -289,12 +334,23 @@ def execute_setup_tool(
     arguments: dict[str, Any],
     courses: list[CourseInfo],
     addressed: list[str] | None = None,
+    *,
+    sources: list[SourceInfo] | None = None,
+    source_ids: list[str] | None = None,
 ) -> tuple[AssessmentSetup, dict[str, Any]]:
-    """Applies one tool call. Returns the new setup and a result for the model."""
+    """Applies one tool call. Returns the new setup and a result for the model.
+
+    `sources` are the course's selectable sources, loaded from the database by
+    the caller (for SOURCE_TOOLS); `source_ids` the current selection. The new
+    selection is in the result's sourceIds.
+    """
     current = setup.model_copy()
     changes: dict[str, Any] = {}
     message = ""
     answered = clean_addressed(addressed)
+    selected = list(dict.fromkeys(source_ids or []))
+    new_selection = selected
+    listed: list[dict[str, Any]] | None = None
 
     def text_update(field: str, label: str) -> None:
         nonlocal message
@@ -337,6 +393,52 @@ def execute_setup_tool(
         else:
             changes["course_id"] = None
             message = "Course cleared."
+        # Sources belong to one course, so another course starts with none (as in the form).
+        if changes["course_id"] != current.course_id:
+            new_selection = []
+    elif name in SOURCE_TOOLS:
+        if not current.course_id:
+            raise InvalidInputError("Choose a course first: sources are saved per course.")
+        available = {source.id: source for source in sources or []}
+        if name == "list_course_sources":
+            listed = [{"id": s.id, "name": s.name, "selected": s.id in selected} for s in available.values()]
+            message = (
+                f"{len(listed)} ready source(s) for this course."
+                if listed
+                else "This course has no ready sources. The professor can add some on the Sources page."
+            )
+        else:
+            requested = arguments.get("source_ids")
+            if not isinstance(requested, list):
+                raise InvalidInputError("Give the source ids as a list, from list_course_sources.")
+            ids = list(dict.fromkeys(str(i) for i in requested))
+            unknown = [source_id for source_id in ids if source_id not in available]
+            if unknown:
+                raise InvalidInputError("Use only ids from list_course_sources; call it to see this course's sources.")
+            mode = arguments.get("mode")
+            if mode == "add":
+                new_selection = [*selected, *(i for i in ids if i not in selected)]
+            elif mode == "remove":
+                new_selection = [i for i in selected if i not in ids]
+            elif mode == "replace":
+                new_selection = ids
+            else:
+                raise InvalidInputError("Choose add, remove or replace.")
+            # Only the course's authorized sources are kept, whatever the browser sent as the selection.
+            new_selection = [i for i in new_selection if i in available]
+            names = [available[i].name for i in new_selection]
+            message = f"Sources selected: {', '.join(names)}." if names else "No sources selected."
+    elif name == "set_learning_focus":
+        focus = arguments.get("focus")
+        if focus not in LEARNING_FOCUSES:
+            raise InvalidInputError("Choose automatic, balanced, practical, critical or custom.")
+        split = exact_split(arguments, COGNITIVE_LEVELS)
+        if focus != "custom" and split is not None:
+            raise InvalidInputError("Shares by level are only for a custom focus: use focus 'custom' with all six.")
+        if focus == "custom" and split is None:
+            raise InvalidInputError("Ask the professor for the share of marks at each of the six levels.")
+        changes.update(learning_focus=focus, bloom_distribution=split)
+        message = f"Learning focus set to {describe_learning_focus(current.model_copy(update=changes))}."
     elif name == "set_duration":
         if leaves_duration_open(arguments.get("minutes")):
             # "Not now", "I don't know yet": like skip_setting, nothing changes.
@@ -385,21 +487,45 @@ def execute_setup_tool(
     errors = updated.errors()
     if errors:
         raise InvalidInputError(next(iter(errors.values())))
-    changed = {key: value for key, value in changes.items() if previous[key] != value}
+    changed = [_camel(key) for key, value in changes.items() if previous[key] != value]
+    if new_selection != selected:
+        changed.append("sourceIds")
     if name in _TOOL_SETTINGS:
         answered.append(_TOOL_SETTINGS[name])
     answered = clean_addressed(answered)
-    return updated, {
+    result: dict[str, Any] = {
         "ok": True,
         "message": message,
-        "changedFields": [_camel(key) for key in changed],
+        "changedFields": changed,
         # So the assistant can say "changed the duration from 60 to 90 minutes".
-        "previousValues": {_camel(key): previous[key] for key in changed},
-        "setup": describe_setup(updated, courses),
+        "previousValues": {_camel(key): previous[key] for key in changes if _camel(key) in changed},
+        "setup": describe_setup(updated, courses, len(new_selection)),
         # Settings answered in this conversation (set or skipped), and the one question to ask next.
         "addressed": answered,
         "nextQuestion": next_setup_question(updated, courses, answered),
+        "sourceIds": new_selection,
     }
+    if listed is not None:
+        result["sources"] = listed
+    return updated, result
+
+
+async def run_setup_tool(
+    context: AssessmentContextService,
+    setup: AssessmentSetup,
+    name: str,
+    arguments: dict[str, Any],
+    courses: list[CourseInfo],
+    addressed: list[str] | None,
+    source_ids: list[str] | None,
+) -> tuple[AssessmentSetup, dict[str, Any]]:
+    """execute_setup_tool, with the course's sources read from the database when the tool needs them.
+
+    Only for one of the professor's own courses: any other course id has no sources to offer.
+    """
+    own_course = any(course.id == setup.course_id for course in courses)
+    sources = await context.list_course_sources(setup.course_id) if name in SOURCE_TOOLS and own_course else None
+    return execute_setup_tool(setup, name, arguments, courses, addressed, sources=sources, source_ids=source_ids)
 
 
 def _camel(name: str) -> str:
@@ -408,28 +534,37 @@ def _camel(name: str) -> str:
 
 
 class SetupAssistantService:
-    def __init__(self, ai: OpenAIService, courses: list[CourseInfo], usage: Usage | None = None) -> None:
+    def __init__(
+        self, ai: OpenAIService, context: AssessmentContextService, courses: list[CourseInfo], usage: Usage | None = None
+    ) -> None:
         self.ai = ai
+        self.context = context
         self.courses = courses
         self.usage = usage or Usage()
 
     async def chat(
-        self, setup: AssessmentSetup, messages: list[dict[str, str]], addressed: list[str] | None = None
+        self,
+        setup: AssessmentSetup,
+        messages: list[dict[str, str]],
+        addressed: list[str] | None = None,
+        source_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """One text-chat turn: the model may call tools; the final setup comes back."""
+        """One text-chat turn: the model may call tools; the final setup (and source selection) comes back."""
         current = setup
+        selection = list(source_ids or [])
         changed: list[str] = []
         finished = False
         answered = clean_addressed(addressed)
 
         async def execute(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-            nonlocal current, finished, answered
+            nonlocal current, selection, finished, answered
             try:
-                current, result = execute_setup_tool(current, name, arguments, self.courses, answered)
+                current, result = await run_setup_tool(self.context, current, name, arguments, self.courses, answered, selection)
             except InvalidInputError as error:
                 return {"ok": False, "error": error.message}
             changed.extend(result["changedFields"])
             answered = result["addressed"]
+            selection = result["sourceIds"]
             finished = finished or name == "finish_setup"
             return result
 
@@ -444,7 +579,7 @@ class SetupAssistantService:
             result = await self.ai.run_tool_loop(
                 purpose="setup_chat",
                 instructions=setup_chat_instructions(
-                    describe_setup(setup, self.courses),
+                    describe_setup(setup, self.courses, len(selection)),
                     describe_courses(self.courses),
                     next_setup_question(setup, self.courses, answered),
                 ),
@@ -460,4 +595,5 @@ class SetupAssistantService:
             "changedFields": list(dict.fromkeys(changed)),
             "finished": finished,
             "addressed": answered,
+            "sourceIds": selection,
         }

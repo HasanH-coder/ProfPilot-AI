@@ -207,6 +207,7 @@ test("changes from Set up with AI update closed cards without opening them", asy
         changedFields: ["durationMinutes", "numberOfVersions", "additionalNotes"],
         finished: false,
         addressed: ["duration", "versions"],
+        sourceIds: [],
       };
       return reply;
     }

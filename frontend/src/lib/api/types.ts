@@ -276,6 +276,8 @@ export type SetupChatReply = {
   finished: boolean;
   /** Settings answered (set or skipped) in this conversation. */
   addressed: string[];
+  /** The course sources selected after the turn ("sourceIds" is in changedFields when it changed). */
+  sourceIds: string[];
 };
 
 export type RealtimeSecret = { clientSecret: string; expiresAt: number; model: string };

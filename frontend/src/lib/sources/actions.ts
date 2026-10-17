@@ -9,6 +9,7 @@ import type { CourseSource } from "@/lib/sources/types";
 import { createClient } from "@/lib/supabase/server";
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REMOVE_FAILED = "The source couldn't be removed. Please try again.";
 
 export type RecordCourseSourceInput = {
@@ -152,8 +153,10 @@ export async function getCourseSourceUrl(documentId: string): Promise<{ url?: st
 }
 
 /**
- * Replaces the course sources an assessment uses, atomically. The database
- * accepts only the professor's own sources from the assessment's course.
+ * Replaces the course sources an assessment uses, atomically. Only the
+ * professor's own sources from the assessment's saved course are kept: an id
+ * the form still holds for a source that was removed, or from another course,
+ * is left out rather than failing the save. The database checks the same again.
  */
 export async function setAssessmentSourceDocuments(
   assessmentId: string,
@@ -161,10 +164,31 @@ export async function setAssessmentSourceDocuments(
 ): Promise<{ error?: string }> {
   await getCurrentProfessor();
   const supabase = await createClient();
-  const uniqueIds = Array.isArray(documentIds) ? [...new Set(documentIds)] : [];
+  const requested = Array.isArray(documentIds) ? [...new Set(documentIds)].filter((id) => UUID.test(id)) : [];
+  let kept: string[] = [];
+  // Row Level Security returns only the professor's own rows.
+  const { data: assessment } =
+    requested.length > 0
+      ? await supabase.from("exam_projects").select("course_id").eq("id", assessmentId).maybeSingle()
+      : { data: null };
+  if (assessment?.course_id) {
+    const { data: selectable, error: lookupError } = await supabase
+      .from("documents")
+      .select("id")
+      .in("id", requested)
+      .eq("course_id", assessment.course_id)
+      .is("exam_project_id", null)
+      .eq("category", "course_material")
+      .eq("deletion_pending", false);
+    if (lookupError) {
+      console.error("Could not check the assessment's sources:", lookupError);
+      return { error: "The selected sources couldn't be saved. Please try again." };
+    }
+    kept = requested.filter((id) => selectable.some((row) => row.id === id));
+  }
   const { error } = await supabase.rpc("set_assessment_source_documents", {
     p_exam_project_id: assessmentId,
-    p_document_ids: uniqueIds,
+    p_document_ids: kept,
   });
   if (error) {
     console.error("Could not save the assessment's sources:", error);

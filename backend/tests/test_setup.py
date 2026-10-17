@@ -192,6 +192,7 @@ def test_the_assistant_covers_one_setting_at_a_time_in_order():
         ("skip_setting", {"setting": "duration"}),
         ("set_question_distribution", {"mcq_percent": 40}),
         ("set_difficulty_distribution", {"easy_percent": 30, "medium_percent": 40, "hard_percent": 30}),
+        ("skip_setting", {"setting": "learning_focus"}),
         ("set_versions", {"count": 1}),
         ("update_notes", {"text": "Lectures 3 to 5.", "mode": "append"}),
     ]
@@ -205,6 +206,7 @@ def test_the_assistant_covers_one_setting_at_a_time_in_order():
         "Do you want to specify a duration?",
         "Do you want to specify the question format?",
         "Do you want to set a difficulty mix?",
+        "Do you want a learning focus, such as practical problem-solving or critical thinking?",
         "How many versions do you need?",
         "What should it cover?",
         "Anything else, or shall I finish?",

@@ -48,6 +48,19 @@ class CourseInfo:
 
 
 @dataclass
+class SourceInfo:
+    """A course source an assessment may select: ready, and not being removed."""
+
+    id: str
+    name: str
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> "SourceInfo":
+        title = (row.get("summary") or {}).get("title")
+        return cls(id=row["id"], name=f"{title} ({row['original_name']})" if title else row["original_name"])
+
+
+@dataclass
 class AssessmentRecord:
     id: str
     setup: AssessmentSetup
@@ -202,6 +215,23 @@ class AssessmentContextService:
             order=[("code", "asc")],
         )
         return [CourseInfo(id=row["id"], code=row["code"], name=row.get("name")) for row in rows]
+
+    async def list_course_sources(self, course_id: str) -> list[SourceInfo]:
+        """The professor's ready sources for one course: the only ids a selection may use."""
+        rows = await self.db.select(
+            "documents",
+            columns="id, original_name, summary",
+            filters=[
+                ("course_id", "eq", course_id),
+                ("exam_project_id", "is", None),
+                ("category", "eq", "course_material"),
+                ("processing_status", "eq", "ready"),
+                ("deletion_pending", "eq", False),
+                ("professor_id", "eq", self.db.professor_id),
+            ],
+            order=[("created_at", "asc")],
+        )
+        return [SourceInfo.from_row(row) for row in rows]
 
 
 # =============================================================================

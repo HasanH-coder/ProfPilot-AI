@@ -280,6 +280,8 @@ class RealtimeSecretIn(ApiModel):
     setup: AssessmentSetup | None = None
     # Setup settings already answered (set or skipped) in this conversation.
     addressed: list[str] = Field(default=[], max_length=20)
+    # The course sources selected on the form (only counted here).
+    source_ids: list[str] = Field(default=[], max_length=100)
 
 
 class RealtimeSecretOut(ApiModel):
@@ -293,6 +295,8 @@ class SetupToolIn(ApiModel):
     arguments: dict[str, Any] = {}
     # Settings already answered (set or skipped) in this conversation.
     addressed: list[str] = Field(default=[], max_length=20)
+    # The course sources selected on the form. Changes are checked against the database.
+    source_ids: list[str] = Field(default=[], max_length=100)
 
 
 class SetupToolOut(ApiModel):
@@ -309,6 +313,7 @@ class SetupChatIn(ApiModel):
     setup: AssessmentSetup
     messages: list[ChatMessageIn] = Field(min_length=1, max_length=40)
     addressed: list[str] = Field(default=[], max_length=20)
+    source_ids: list[str] = Field(default=[], max_length=100)
 
 
 class SetupChatOut(ApiModel):
@@ -317,6 +322,7 @@ class SetupChatOut(ApiModel):
     changed_fields: list[str]
     finished: bool
     addressed: list[str]
+    source_ids: list[str]
 
 
 # -----------------------------------------------------------------------------

@@ -208,6 +208,7 @@ function applyChanges(
   current: FormValues,
   setup: AssessmentDraft,
   fields: Set<string>,
+  sourceIds: string[],
 ): FormValues {
   const next = { ...current };
   if (fields.has("courseId") && setup.courseId !== current.courseId) {
@@ -215,6 +216,8 @@ function applyChanges(
     // Sources belong to one course, so another course starts with none.
     next.sourceIds = [];
   }
+  // After the course, so sources chosen for a new course in the same turn are kept.
+  if (fields.has("sourceIds")) next.sourceIds = sourceIds;
   if (fields.has("examName")) next.examName = setup.examName;
   if (fields.has("durationMinutes"))
     next.duration = durationValue(setup.durationMinutes);
@@ -346,10 +349,10 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
   const course = courses.find((candidate) => candidate.id === values.courseId);
   const hasUnsavedChanges = snapshotOf(values) !== (savedSnapshot ?? EMPTY_SNAPSHOT);
   const courseSources = sources.filter((source) => source.courseId === values.courseId);
-  // Only sources of the chosen course are ever saved or counted.
-  const sourceIdsFor = (form: FormValues) =>
-    form.sourceIds.filter((id) => sources.some((source) => source.id === id && source.courseId === form.courseId));
-  const selectedSourceIds = sourceIdsFor(values);
+  // Shown and counted: the selected sources this page knows. Saving sends the whole selection and
+  // the server keeps what is valid, so a source added after the page loaded (for example chosen by
+  // Set up with AI) is saved, and appears with the refresh that follows the save.
+  const selectedSourceIds = values.sourceIds.filter((id) => courseSources.some((source) => source.id === id));
   const saveFailed = Boolean(saveResult.error || saveResult.fieldErrors);
   // What closed cards show, derived from the form (never stored separately).
   const settings = describeSettings(draft);
@@ -435,7 +438,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
       const result = await saveAssessmentDraft(location.examProjectId, toDraft(target));
       if (result.error || result.fieldErrors) return result;
       // After the draft, so the selection is checked against its saved course.
-      const sourcesResult = await setAssessmentSourceDocuments(location.examProjectId, sourceIdsFor(target));
+      const sourcesResult = await setAssessmentSourceDocuments(location.examProjectId, target.sourceIds);
       if (sourcesResult.error) return sourcesResult;
       return { examProjectId: location.examProjectId };
     } catch (error) {
@@ -552,12 +555,13 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
   function applyAssistantChanges(
     setup: AssessmentDraft,
     changedFields: string[],
+    sourceIds: string[],
   ) {
     const fields = new Set(changedFields);
     // Current right away: the next tool call in the same reply reads the form
     // before React has re-rendered it.
-    latestValues.current = applyChanges(latestValues.current, setup, fields);
-    setValues((current) => applyChanges(current, setup, fields));
+    latestValues.current = applyChanges(latestValues.current, setup, fields, sourceIds);
+    setValues((current) => applyChanges(current, setup, fields, sourceIds));
     setSaveResult({});
     setHighlighted(
       new Set(
@@ -624,6 +628,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
         {assistantOpen ? (
           <SetupAssistant
             getSetup={() => toDraft(latestValues.current)}
+            getSourceIds={() => latestValues.current.sourceIds}
             onApply={applyAssistantChanges}
             ensureDraft={async () =>
               (await getDraft()).draft?.examProjectId ?? null
@@ -675,7 +680,10 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
                 <CourseSourceSelector
                   sources={courseSources}
                   selectedIds={selectedSourceIds}
-                  onChange={(sourceIds) => update({ sourceIds })}
+                  // Keeps selected sources this page doesn't list yet (see selectedSourceIds).
+                  onChange={(sourceIds) =>
+                    update({ sourceIds: [...sourceIds, ...values.sourceIds.filter((id) => !selectedSourceIds.includes(id))] })
+                  }
                 />
               </div>
             )
