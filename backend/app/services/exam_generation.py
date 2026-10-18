@@ -72,6 +72,8 @@ from app.services.lecture_knowledge import (
     render_inventory,
     render_topics,
     topic_index,
+    unverified_expressions,
+    unverified_formula_problems,
 )
 from app.services.prompt_interpreter import PromptInterpreterService
 
@@ -98,6 +100,13 @@ class GenerationContext:
     def knowledge_refs(self) -> set[str]:
         """Every topic id the planner may cite (e.g. 'L2.t5')."""
         return set(topic_index(lecture_refs(self.documents, self.knowledge)))
+
+    def formula_problems(self, questions: Iterable[tuple[str, QuestionContent]]) -> list[str]:
+        """(label, question) pairs that quote an unverified lecture formula's garbled extracted text."""
+        expressions = unverified_expressions(self.documents, self.knowledge)
+        if not expressions:
+            return []
+        return [problem for label, content in questions for problem in unverified_formula_problems(content, expressions, label)]
 
     @property
     def document_names(self) -> dict[str, str]:
@@ -660,7 +669,10 @@ class ExamGenerationService:
             schema=QuestionBatch,
             effort=batch_effort(batch),
             max_output_tokens=48_000,
-            validate=lambda result: batch_problems(result, batch, others),
+            validate=lambda result: (
+                batch_problems(result, batch, others)
+                + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)
+            ),
             usage=self.usage,
         )
         return batch_result.questions, excerpts
@@ -722,7 +734,12 @@ class ExamGenerationService:
             schema=VariantBatch,
             effort="medium",
             max_output_tokens=40_000,
-            validate=lambda batch: variant_problems(batch, sources),
+            validate=lambda batch: (
+                variant_problems(batch, sources)
+                + ctx.formula_problems(
+                    (f"The variant of question {v.source_number}", normalize_content(v.question)) for v in batch.variants
+                )
+            ),
             usage=self.usage,
         )
         return [(sources[v.source_number], normalize_content(v.question)) for v in result.variants]
@@ -818,7 +835,10 @@ class ExamGenerationService:
             schema=QuestionBatch,
             effort=question_effort(slot_type, slot_difficulty),
             max_output_tokens=24_000,
-            validate=lambda batch: _single_problems(batch, slot, others, ctx.figure_ids),
+            validate=lambda batch: (
+                _single_problems(batch, slot, others, ctx.figure_ids)
+                + ctx.formula_problems(("The question", normalize_content(q)) for q in batch.questions)
+            ),
             usage=self.usage,
         )
         content = normalize_content(result.questions[0])

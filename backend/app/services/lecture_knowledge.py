@@ -25,6 +25,7 @@ the material can support.
 import logging
 import math
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -35,7 +36,8 @@ from app.core.errors import AppError
 from app.db.supabase import Database
 from app.schemas.ai import COGNITIVE_LEVELS, LectureSynthesis, SegmentKnowledge
 from app.services.assessment_context import DocumentRecord
-from app.services.document_parsers import FIGURE_MARKER
+from app.services.document_parsers import EXTRACTION_GLYPHS, FIGURE_MARKER, PAGE_MARKER
+from app.services.exam_store import question_texts
 
 logger = logging.getLogger("profpilot.knowledge")
 
@@ -161,10 +163,69 @@ def merge_topics(results: list[SegmentKnowledge]) -> list[dict[str, Any]]:
     return [{"id": f"t{number}", **topic} for number, topic in enumerate(merged.values(), start=1)]
 
 
+# Characters of real content a page needs (beyond titles, headers and footers) to count as substantive.
+_SUBSTANTIVE_CHARS = 40
+PAGE_CLASSES = ("text", "text_with_figures", "figure_dominated", "divider", "empty")
+
+
+def page_texts(chunks: list[dict[str, Any]]) -> dict[int, str]:
+    """Each page's or slide's text, recovered from the markers inside the chunks (empty without markers)."""
+    pages: dict[int, str] = {}
+    for chunk in chunks:
+        parts = PAGE_MARKER.split(chunk["content"])  # [before, kind, number, text, kind, number, text…]
+        for index in range(1, len(parts) - 2, 3):
+            number = int(parts[index + 1])
+            pages[number] = f"{pages.get(number, '')}\n{parts[index + 2]}"
+    return pages
+
+
+def classify_pages(pages: dict[int, str], page_count: int | None) -> dict[str, list[int]]:
+    """Every page or slide in one class of PAGE_CLASSES, plus the pages whose maths is unreliable.
+
+    Lines repeated on at least half the pages (headers, footers, the course title) and all-capital
+    headings are not content: a slide with only those is a divider, or figure-dominated when it
+    also has an unread figure or leftover labels (axis ticks, stray characters).
+    """
+    lines = {number: {line.strip() for line in text.splitlines() if line.strip()} for number, text in pages.items()}
+    seen = Counter(line for page_lines in lines.values() for line in page_lines)
+    repeated = {line for line, count in seen.items() if len(pages) >= 4 and count >= len(pages) / 2}
+    classes: dict[str, list[int]] = {name: [] for name in (*PAGE_CLASSES, "uncertain_math")}
+    for number in range(1, max(page_count or 0, max(pages, default=0)) + 1):
+        text = pages.get(number)
+        if text is None:
+            classes["empty"].append(number)
+            continue
+        if EXTRACTION_GLYPHS.search(text):
+            classes["uncertain_math"].append(number)
+        figures = bool(FIGURE_MARKER.search(text))
+        residual = " ".join(
+            line
+            for line in (raw.strip() for raw in text.splitlines())
+            if line and line not in repeated and not FIGURE_MARKER.match(line) and not _is_heading(line)
+        )
+        if len(residual) >= _SUBSTANTIVE_CHARS:
+            classes["text_with_figures" if figures else "text"].append(number)
+        elif figures or any(character.isdigit() for character in residual):
+            classes["figure_dominated"].append(number)
+        else:
+            classes["divider"].append(number)
+    return classes
+
+
+def _is_heading(line: str) -> bool:
+    letters = [character for character in line if character.isalpha()]
+    return bool(letters) and len(line) <= 80 and not any(character.islower() for character in letters)
+
+
 def coverage_of(
     chunks: list[dict[str, Any]], page_count: int | None, extracted_characters: int | None, segments: int
 ) -> dict[str, Any]:
-    """What was analysed, page by page or slide by slide, and what had no text to analyse."""
+    """What was analysed, page by page or slide by slide, honestly classified.
+
+    With page markers (files read since they were added), every page is classified (see
+    classify_pages) and only pages with substantive text count as analysed content. Older files
+    only show which pages had any text at all; `page_detail` says which applies.
+    """
     labels = [chunk["location_label"] for chunk in chunks if chunk.get("location_label")]
     covered: set[int] = set()
     kind = None
@@ -174,15 +235,23 @@ def coverage_of(
             kind = match.group(1)
             start = int(match.group(2))
             covered.update(range(start, int(match.group(3) or start) + 1))
-    without_text = sorted(set(range(1, page_count + 1)) - covered) if page_count and kind else []
-    with_figures = sorted({int(n) for chunk in chunks for n in FIGURE_MARKER.findall(chunk["content"])})
+    texts = page_texts(chunks)
+    marker = PAGE_MARKER.search(chunks[0]["content"]) if chunks and texts else None
+    kind = marker.group(1) if marker else kind
+    classes = classify_pages(texts, page_count) if texts else None
+    without_text = classes["empty"] if classes else sorted(set(range(1, page_count + 1)) - covered) if page_count and kind else []
     return {
         "unit": kind.lower() if kind else None,
         "total_units": page_count,
-        "analysed_units": len(covered) if kind else None,
+        # Pages with any extracted text at all (titles and footers included).
+        "analysed_units": (len(texts) if classes else len(covered)) if kind else None,
+        # Pages with real content: None when the file predates page markers.
+        "substantive_units": len(classes["text"]) + len(classes["text_with_figures"]) if classes else None,
+        "page_detail": classes is not None,
+        "pages": classes,
         "units_without_text": without_text,
-        # Slides whose pictures or charts the extracted text can't show (their text was analysed).
-        "units_with_figures": with_figures,
+        # Pages or slides whose pictures or charts the extracted text can't show.
+        "units_with_figures": sorted({int(n) for chunk in chunks for n in FIGURE_MARKER.findall(chunk["content"])}),
         "locations": list(dict.fromkeys(labels)),
         "segments": segments,
         "characters": sum(len(chunk["content"]) for chunk in chunks),
@@ -192,18 +261,37 @@ def coverage_of(
 
 def coverage_warnings(coverage: dict[str, Any]) -> list[str]:
     warnings = []
+    unit = (coverage["unit"] or "page").capitalize()
+    pages = coverage.get("pages") or {}
+
+    def listed(numbers: list[int]) -> str:
+        return ", ".join(str(number) for number in numbers[:30]) + (" …" if len(numbers) > 30 else "")
+
     if coverage["units_without_text"]:
-        unit = (coverage["unit"] or "page").capitalize()
-        listed = ", ".join(str(number) for number in coverage["units_without_text"][:30])
         warnings.append(
-            f"{unit}s {listed} had no extractable text (often a figure, diagram or scan), so their content "
-            "isn't in the profile; questions about them need the original."
+            f"{unit}s {listed(coverage['units_without_text'])} had no extractable text (often a figure, diagram "
+            "or scan), so their content isn't in the profile; questions about them need the original."
         )
-    if coverage.get("units_with_figures"):
-        listed = ", ".join(str(number) for number in coverage["units_with_figures"][:30])
+    if pages.get("figure_dominated"):
         warnings.append(
-            f"Slides {listed} also contain pictures or charts whose content isn't in the text; their text was "
-            "analysed, but questions about the visuals need the original slides."
+            f"{unit}s {listed(pages['figure_dominated'])} are mostly figures, plots or images with little "
+            "extractable text: their content isn't in the profile and needs the original (or a figure-reading pass)."
+        )
+    figure_pages = pages.get("text_with_figures") if coverage.get("page_detail") else coverage.get("units_with_figures")
+    if figure_pages:
+        warnings.append(
+            f"{unit}s {listed(figure_pages)} also contain figures or images whose content isn't in the text; their "
+            "text was analysed, but questions about the visuals need the original."
+        )
+    if pages.get("uncertain_math"):
+        warnings.append(
+            f"{unit}s {listed(pages['uncertain_math'])}: the mathematics wasn't reliably extracted (garbled "
+            "symbols), so their formulas are unverified until checked against the original."
+        )
+    if coverage.get("page_detail") is False and coverage.get("total_units"):
+        warnings.append(
+            "Page-level coverage isn't available for this file (it was read before page markers existed): pages "
+            "counted as having text include title-only and figure slides. Re-read the file for exact coverage."
         )
     if coverage["truncated"]:
         warnings.append("The file is longer than ProfPilot reads; its end wasn't extracted or analysed.")
@@ -218,6 +306,17 @@ def estimate_build(extracted_characters: int | None) -> dict[str, int]:
         "modelCalls": segments + 1,
         "inputTokens": characters // 4 + (segments + 1) * _INSTRUCTION_TOKENS + _SYNTHESIS_TOKENS,
         "outputTokens": segments * _SEGMENT_OUTPUT_ESTIMATE + _SYNTHESIS_TOKENS // 2,
+    }
+
+
+def knowledge_summary(knowledge: dict[str, Any]) -> dict[str, Any]:
+    """The file summary a profile replaces (title, overview, the first topics)."""
+    topics = knowledge.get("topics") or []
+    return {
+        "title": knowledge.get("title"),
+        "summary": knowledge.get("overview"),
+        "topics": [{"name": topic["name"], "location": (topic.get("locations") or [None])[0]} for topic in topics[:25]],
+        "low_content": not topics,
     }
 
 
@@ -236,14 +335,40 @@ class LectureKnowledgeService:
         return (row or {}).get("knowledge")
 
     async def build(self, document: DocumentRecord) -> dict[str, Any] | None:
-        """Builds and saves the profile. Never raises for a model or content problem: it saves 'failed'."""
-        if document.id in _building:
+        """Builds and saves the profile. Never raises for a model or content problem: it saves 'failed'.
+
+        An identical copy (same professor, same SHA-256) with a current profile is copied instead of
+        analysed again, and two copies are never analysed at the same time.
+        """
+        keys = {document.id, *([f"sha:{document.content_sha256}"] if document.content_sha256 else [])}
+        if keys & _building:
             return None
-        _building.add(document.id)
+        _building.update(keys)
         try:
-            return await self._build(document)
+            copied = await self._copy_from_identical(document)
+            return copied if copied is not None else await self._build(document)
         finally:
-            _building.discard(document.id)
+            _building.difference_update(keys)
+
+    async def _copy_from_identical(self, document: DocumentRecord) -> dict[str, Any] | None:
+        if not document.content_sha256:
+            return None
+        twins = await self.db.select(
+            "documents",
+            columns="id, knowledge",
+            filters=[
+                ("content_sha256", "eq", document.content_sha256),
+                ("professor_id", "eq", self.db.professor_id),
+                ("id", "neq", document.id),
+                ("knowledge", "cs", {"status": "ready"}),
+            ],
+            limit=10,
+        )
+        knowledge = next((row["knowledge"] for row in twins if is_current(row.get("knowledge"), document.content_sha256)), None)
+        if knowledge is None:
+            return None
+        await self._save(document.id, knowledge, summary=knowledge_summary(knowledge))
+        return knowledge
 
     async def _build(self, document: DocumentRecord) -> dict[str, Any]:
         started = datetime.now(UTC).isoformat()
@@ -295,13 +420,7 @@ class LectureKnowledgeService:
                 "stats": {"topics": len(topics), "warnings": len(set(warnings))},
                 "usage": self._usage_since(tokens_before),
             }
-            summary = {
-                "title": synthesis.title,
-                "summary": synthesis.overview,
-                "topics": [{"name": topic["name"], "location": (topic["locations"] or [None])[0]} for topic in topics[:25]],
-                "low_content": not topics,
-            }
-            await self._save(document.id, knowledge, summary=summary)
+            await self._save(document.id, knowledge, summary=knowledge_summary(knowledge))
             return knowledge
         except AppError as error:
             return await self._failed(document.id, base, error.message, tokens_before)
@@ -454,6 +573,9 @@ def render_inventory(documents: list[DocumentRecord], knowledge: dict[str, dict[
                 for name, label in (("formulas", "formula"), ("examples", "example"))
                 if topic.get(name)
             ]
+            unverified = sum(1 for formula in topic.get("formulas", []) if formula.get("uncertain"))
+            if unverified:
+                extras.append(f"{unverified} unverified formula{'s' if unverified > 1 else ''}")
             if any(not visual.get("interpretable", True) for visual in topic.get("visuals", [])):
                 extras.append("figure not in text")
             line = f"[{ref}.{topic['id']}] {topic['name']} ({compact_locations(topic['locations']) or 'location unknown'})"
@@ -512,14 +634,7 @@ def render_topics(
         doc, topic = found
         lines = [f"{topic['name']} ({', '.join(topic['locations'])}): {topic['summary']}"]
         lines += [f"- {c['kind']}: {c['name']}: {c['description']} ({', '.join(c['locations'])})" for c in topic["concepts"]]
-        lines += [
-            f"- formula{' (uncertain extraction: verify against the excerpt)' if f['uncertain'] else ''}: {f['name']}: "
-            f"{f['expression']}"
-            + (f"; {', '.join(f['variables'])}" if f["variables"] else "")
-            + (f"; holds when {f['conditions']}" if f.get("conditions") else "")
-            + f" ({', '.join(f['locations'])})"
-            for f in topic["formulas"]
-        ]
+        lines += [render_formula(formula) for formula in topic["formulas"]]
         lines += [
             f"- {e['kind'].replace('_', ' ')}: {e['title']}: {e['description']} ({', '.join(e['locations'])})"
             for e in topic["examples"]
@@ -542,6 +657,65 @@ def render_topics(
     )
 
 
+def render_formula(formula: dict[str, Any]) -> str:
+    """One formula for a question writer: a verified one as written; an unverified one clearly marked,
+    with its proposed standard form (if any) kept apart from the garbled evidence."""
+    details = (f"; {', '.join(formula['variables'])}" if formula["variables"] else "") + (
+        f"; holds when {formula['conditions']}" if formula.get("conditions") else ""
+    )
+    where = f" ({', '.join(formula['locations'])})"
+    if not formula.get("uncertain"):
+        return f"- formula: {formula['name']}: {formula['expression']}{details}{where}"
+    standard = (
+        f"proposed standard form (ProfPilot's reading, not confirmed by the lecture): {formula['normalized']}"
+        if formula.get("normalized")
+        else "no reliable standard form: don't base a question on this formula's exact form"
+    )
+    return (
+        f"- formula UNVERIFIED (garbled in the extracted text; never quote it): {formula['name']}: {standard}"
+        f"{details}{where}. Extracted evidence, for reference only: {formula['expression']}"
+    )
+
+
+def unverified_expressions(documents: list[DocumentRecord], knowledge: dict[str, dict[str, Any]]) -> list[str]:
+    """The extracted text of every unverified formula in these lectures' profiles."""
+    return [
+        formula["expression"]
+        for _ref, (_doc, topic) in topic_index(lecture_refs(documents, knowledge)).items()
+        for formula in topic.get("formulas", [])
+        if formula.get("uncertain") and formula.get("expression")
+    ]
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def unverified_formula_problems(content: Any, expressions: list[str], label: str = "The question") -> list[str]:
+    """A question that quotes an unverified formula's garbled extracted text (a long enough piece of it)."""
+    texts = _compact(" ".join(question_texts(content)))
+    for expression in expressions:
+        for piece in (_compact(part) for part in expression.splitlines()):
+            if len(piece) >= 12 and piece in texts:
+                return [
+                    f"{label} quotes an unverified, garbled formula from the lecture's extracted text; use its "
+                    "standard form only if one is given, otherwise test the idea without that formula."
+                ]
+    return []
+
+
+def unverified_refs(refs: list[str], documents: list[DocumentRecord], knowledge: dict[str, dict[str, Any]]) -> list[str]:
+    """Which of these topic ids have unverified formulas, with where they are (for the professor)."""
+    index = topic_index(lecture_refs(documents, knowledge))
+    found = []
+    for ref in dict.fromkeys(refs):
+        topic = index.get(ref, (None, None))[1]
+        if topic and any(formula.get("uncertain") for formula in topic.get("formulas", [])):
+            pages = compact_locations([loc for f in topic["formulas"] if f.get("uncertain") for loc in f["locations"]])
+            found.append(f"{topic['name']} ({pages or compact_locations(topic['locations'])})")
+    return found
+
+
 def matching_refs(text: str, documents: list[DocumentRecord], knowledge: dict[str, dict[str, Any]], limit: int = 2) -> list[str]:
     """Topic ids whose names share the most words with `text` (for a question asked for by topic)."""
     words = set(_key(text).split()) - {"the", "and", "for", "with", "question", "lecture"}
@@ -553,6 +727,11 @@ def matching_refs(text: str, documents: list[DocumentRecord], knowledge: dict[st
         if overlap:
             scored.append((overlap, ref))
     return [ref for _score, ref in sorted(scored, key=lambda item: (-item[0], item[1]))[:limit]]
+
+
+def _camel(name: str) -> str:
+    first, *rest = name.split("_")
+    return first + "".join(part.capitalize() for part in rest)
 
 
 def overview(knowledge: dict[str, Any] | None, document: DocumentRecord) -> dict[str, Any]:
@@ -573,6 +752,10 @@ def overview(knowledge: dict[str, Any] | None, document: DocumentRecord) -> dict
                 "unit": coverage.get("unit"),
                 "totalUnits": coverage.get("total_units"),
                 "analysedUnits": coverage.get("analysed_units"),
+                # None for profiles built before page markers: only "has any text" is known then.
+                "substantiveUnits": coverage.get("substantive_units"),
+                "pageDetail": bool(coverage.get("page_detail")),
+                "pages": {_camel(name): numbers for name, numbers in (coverage.get("pages") or {}).items()},
                 "unitsWithoutText": coverage.get("units_without_text", []),
                 "unitsWithFigures": coverage.get("units_with_figures", []),
                 "truncated": bool(coverage.get("truncated")),

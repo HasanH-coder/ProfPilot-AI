@@ -123,7 +123,25 @@ def test_formulas_are_kept_as_written_and_uncertain_ones_are_flagged(supabase, d
     record = process(db_a, ai, source["id"])
     knowledge = {source["id"]: knowledge_of(db_a, source["id"])}
     rendered = render_topics(["L1.t1"], [record], knowledge, DataFramer())
-    assert "w = w - \\eta \\nabla L" in rendered and "uncertain extraction: verify against the excerpt" in rendered
+    # Marked unverified, with the extracted text kept only as labelled evidence, after the warning.
+    assert "formula UNVERIFIED (garbled in the extracted text; never quote it): update rule" in rendered
+    assert "no reliable standard form: don't base a question on this formula's exact form" in rendered
+    assert rendered.index("UNVERIFIED") < rendered.index("Extracted evidence, for reference only: w = w - \\eta \\nabla L")
+
+
+def test_a_proposed_standard_form_is_kept_apart_from_the_evidence_and_never_presented_as_the_lecture():
+    from app.services.lecture_knowledge import render_formula
+
+    formula = {
+        "name": "sigmoid", "expression": "𝒈 𝒛 = 𝟏 𝟏+𝒆−𝒛", "normalized": "g(z) = 1 / (1 + e^{-z})",
+        "variables": [], "conditions": None, "locations": ["Page 9"], "uncertain": True,
+    }  # fmt: skip
+    line = render_formula(formula)
+    assert "proposed standard form (ProfPilot's reading, not confirmed by the lecture): g(z) = 1 / (1 + e^{-z})" in line
+    assert line.endswith("Extracted evidence, for reference only: 𝒈 𝒛 = 𝟏 𝟏+𝒆−𝒛") and "(Page 9)" in line
+    # A verified formula is shown exactly as written; any proposed form is ignored.
+    verified = render_formula({**formula, "expression": "g(z) = 1/(1+e^{-z})", "uncertain": False})
+    assert verified == "- formula: sigmoid: g(z) = 1/(1+e^{-z}) (Page 9)"
 
 
 # -- Reuse, versions, failure and duplicates ---------------------------------------------------
@@ -319,7 +337,28 @@ def test_slides_with_pictures_are_reported_in_the_coverage():
     ]  # fmt: skip
     coverage = coverage_of(chunks, page_count=3, extracted_characters=100, segments=1)
     assert coverage["units_with_figures"] == [2] and coverage["units_without_text"] == []
-    assert any("Slides 2 also contain pictures or charts" in warning for warning in coverage_warnings(coverage))
+    # Chunks without page markers (files read earlier) can't be classified page by page, and say so.
+    assert coverage["page_detail"] is False and coverage["substantive_units"] is None
+    warnings = coverage_warnings(coverage)
+    assert any("Slides 2 also contain figures or images" in warning for warning in warnings)
+    assert any("Page-level coverage isn't available" in warning for warning in warnings)
+
+
+def test_legacy_profiles_stay_current_and_show_their_coverage_honestly(supabase, db_a, ai):
+    course = run(seed_course(db_a))
+    source = run(seed_course_source(supabase, db_a, course["id"]))
+    record = process(db_a, ai, source["id"])
+    knowledge = knowledge_of(db_a, source["id"])
+    # A profile saved before page-level coverage existed: no page classes in its coverage.
+    legacy = {
+        **knowledge,
+        "coverage": {
+            key: value for key, value in knowledge["coverage"].items() if key not in ("substantive_units", "page_detail", "pages")
+        },
+    }
+    assert lecture_knowledge.is_current(legacy, record.content_sha256)
+    shown = lecture_knowledge.overview(legacy, record)["coverage"]
+    assert shown["pageDetail"] is False and shown["substantiveUnits"] is None and shown["pages"] == {}
 
 
 def test_plans_may_only_cite_listed_topic_ids():

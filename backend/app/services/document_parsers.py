@@ -87,6 +87,9 @@ def parse_pdf(data: bytes) -> ParsedDocument:
 
     units: list[TextUnit] = []
     without_text: list[int] = []
+    # Images every page has (a slide template's logo or background) aren't figures.
+    images = [_pdf_image_count(page) for page in pages]
+    template = min(images, default=0)
     for number, page in enumerate(pages, start=1):
         try:
             text = normalize_text(page.extract_text() or "")
@@ -95,8 +98,24 @@ def parse_pdf(data: bytes) -> ParsedDocument:
         if len(text) < _MIN_PAGE_CHARACTERS:
             without_text.append(number)
             continue
+        figures = images[number - 1] - template
+        if figures > 0:
+            # Embedded images aren't text: say so, so their content is never assumed to be covered.
+            text = f"{text}\n{figure_marker('page', number, figures)}"
         units.append(TextUnit(text=text, page_start=number, page_end=number, kind="Page"))
     return ParsedDocument(units=units, page_count=len(pages), pages_without_text=without_text)
+
+
+def _pdf_image_count(page) -> int:
+    """Images drawn on a PDF page (from its resources; nothing is decoded)."""
+    try:
+        resources = page.get("/Resources")
+        xobjects = resources.get_object().get("/XObject") if resources else None
+        if not xobjects:
+            return 0
+        return sum(1 for item in xobjects.get_object().values() if item.get_object().get("/Subtype") == "/Image")
+    except Exception:
+        return 0
 
 
 def parse_pptx(data: bytes) -> ParsedDocument:
@@ -131,18 +150,23 @@ def parse_pptx(data: bytes) -> ParsedDocument:
         visuals = sum(_visual_count(shape) for shape in slide.shapes)
         if visuals and any(parts):
             # Pictures and charts aren't text: say so, so their content is never assumed to be covered.
-            parts.append(figure_marker(number, visuals))
+            parts.append(figure_marker("slide", number, visuals))
         text = normalize_text("\n".join(part for part in parts if part))
         if text:
             units.append(TextUnit(text=text, page_start=number, page_end=number, kind="Slide"))
     return ParsedDocument(units=units, page_count=len(slides))
 
 
-FIGURE_MARKER = re.compile(r"\[Figure on slide (\d+):")
+FIGURE_MARKER = re.compile(r"\[Figure on (?:slide|page) (\d+):")
+# Unicode "mathematical alphanumeric" letters (𝒇, 𝒘, 𝟏…): what PDF text layers yield for typeset
+# maths, often with garbled signs around them. Where they appear, extracted formulas are unreliable.
+EXTRACTION_GLYPHS = re.compile("[\U0001d400-\U0001d7ff]")
+# "[Page 14]" / "[Slide 3]": where a page or slide starts inside a chunk (see chunk_units).
+PAGE_MARKER = re.compile(r"^\[(Page|Slide) (\d+)\]$", re.M)
 
 
-def figure_marker(slide: int, count: int) -> str:
-    return f"[Figure on slide {slide}: {count} picture(s) or chart(s) whose content is not in the extracted text]"
+def figure_marker(unit: str, number: int, count: int) -> str:
+    return f"[Figure on {unit} {number}: {count} picture(s) or chart(s) whose content is not in the extracted text]"
 
 
 def _visual_count(shape) -> int:
@@ -263,7 +287,8 @@ def chunk_units(units: list[TextUnit], *, target_chars: int = 2400, overlap_char
 
     Small consecutive units (e.g. short slides) are combined; long units are
     split at paragraph or sentence boundaries with a little overlap so no idea
-    is cut in half without context.
+    is cut in half without context. Each page or slide starts with a marker
+    ("[Page 14]"), so text inside a multi-page chunk keeps its own page.
     """
     chunks: list[Chunk] = []
     current: list[TextUnit] = []
@@ -273,7 +298,7 @@ def chunk_units(units: list[TextUnit], *, target_chars: int = 2400, overlap_char
         nonlocal current, size
         if not current:
             return
-        text = "\n\n".join(unit.text for unit in current)
+        text = "\n\n".join(_marked(unit, unit.text) for unit in current)
         first, last = current[0], current[-1]
         kind = first.kind if all(unit.kind == first.kind for unit in current) else None
         start = first.page_start
@@ -290,7 +315,7 @@ def chunk_units(units: list[TextUnit], *, target_chars: int = 2400, overlap_char
             for piece in _split_long(text, target_chars, overlap_chars):
                 chunks.append(
                     Chunk(
-                        text=piece,
+                        text=_marked(unit, piece),
                         page_start=unit.page_start,
                         page_end=unit.page_end,
                         location_label=location_label(unit.kind, unit.page_start, unit.page_end, unit.heading),
@@ -312,6 +337,13 @@ def chunk_units(units: list[TextUnit], *, target_chars: int = 2400, overlap_char
         size += len(text) + 2
     flush()
     return chunks
+
+
+def _marked(unit: TextUnit, text: str) -> str:
+    """The text of a page or slide, starting with its marker ("[Slide 3]")."""
+    if unit.kind in ("Page", "Slide") and unit.page_start is not None:
+        return f"[{unit.kind} {unit.page_start}]\n{text}"
+    return text
 
 
 def _split_long(text: str, target: int, overlap: int) -> list[str]:

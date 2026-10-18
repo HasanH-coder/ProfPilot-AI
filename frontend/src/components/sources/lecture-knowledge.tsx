@@ -123,6 +123,34 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
   );
 }
 
+/** Honest coverage: substantive pages by class when known, otherwise only which pages had any text. */
+function CoverageLine({ coverage, unit }: { coverage: NonNullable<LectureKnowledge["coverage"]>; unit: string }) {
+  const pages = coverage.pages ?? {};
+  const listed = (label: string, numbers: number[] | undefined) =>
+    numbers && numbers.length > 0 ? ` · ${label} ${unit}s ${numbers.join(", ")}` : "";
+  if (coverage.pageDetail && coverage.substantiveUnits != null) {
+    return (
+      <p className="text-muted-foreground">
+        {coverage.substantiveUnits} of {coverage.totalUnits} {unit}s have substantive text
+        {listed("figures not readable on", pages.textWithFigures)}
+        {listed("mostly figures on", pages.figureDominated)}
+        {listed("title or divider", pages.divider)}
+        {listed("no text on", pages.empty)}
+        {listed("formulas unverified on", pages.uncertainMath)}
+        {coverage.truncated && " · end of file not read"}
+      </p>
+    );
+  }
+  return (
+    <p className="text-muted-foreground">
+      {coverage.analysedUnits} of {coverage.totalUnits} {unit}s have extracted text (page-level detail unavailable)
+      {listed("no text on", coverage.unitsWithoutText)}
+      {listed("figures not readable on", coverage.unitsWithFigures)}
+      {coverage.truncated && " · end of file not read"}
+    </p>
+  );
+}
+
 function KnowledgeOverview({ knowledge }: { knowledge: LectureKnowledge }) {
   const { coverage } = knowledge;
   const unit = coverage?.unit ?? "page";
@@ -130,13 +158,7 @@ function KnowledgeOverview({ knowledge }: { knowledge: LectureKnowledge }) {
     <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3 text-xs">
       {knowledge.title && <p className="font-medium">{knowledge.title}</p>}
       {knowledge.overview && <p className="text-muted-foreground">{knowledge.overview}</p>}
-      {coverage?.totalUnits ? (
-        <p className="text-muted-foreground">
-          {coverage.analysedUnits} of {coverage.totalUnits} {unit}s analysed
-          {coverage.unitsWithoutText.length > 0 && ` · no text on ${unit}s ${coverage.unitsWithoutText.join(", ")}`}
-          {coverage.unitsWithFigures.length > 0 && ` · figures not readable on ${unit}s ${coverage.unitsWithFigures.join(", ")}`}
-        </p>
-      ) : null}
+      {coverage?.totalUnits ? <CoverageLine coverage={coverage} unit={unit} /> : null}
       {knowledge.sections.length > 0 && (
         <p>
           <span className="font-medium">Sections: </span>

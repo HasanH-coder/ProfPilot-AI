@@ -47,9 +47,34 @@ test("a ready lecture shows its topic count and, on request, a concise overview"
   await screen.getByRole("button", { name: "View" }).click();
   await expect.element(screen.getByText("L2 regularization")).toBeVisible();
   await expect
-    .element(screen.getByText(/11 of 12 slides analysed · no text on slides 9 · figures not readable on slides 4/))
+    .element(
+      screen.getByText(
+        /11 of 12 slides have extracted text \(page-level detail unavailable\) · no text on slides 9 · figures not readable on slides 4/,
+      ),
+    )
     .toBeVisible();
   await expect.element(screen.getByText(/Slides 9 had no extractable text/)).toBeVisible();
+});
+
+test("with page-level detail, only substantive slides count and the others are named by kind", async () => {
+  vi.mocked(apiRequest).mockResolvedValue({
+    ...READY,
+    coverage: {
+      ...READY.coverage!,
+      substantiveUnits: 8,
+      pageDetail: true,
+      pages: { text: [2, 3, 5, 6, 7, 8], textWithFigures: [4, 10], figureDominated: [11], divider: [1, 12], empty: [9], uncertainMath: [6] },
+    },
+  });
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "ready", topics: 2 })} />);
+  await screen.getByRole("button", { name: "View" }).click();
+  await expect
+    .element(
+      screen.getByText(
+        "8 of 12 slides have substantive text · figures not readable on slides 4, 10 · mostly figures on slides 11 · title or divider slides 1, 12 · no text on slides 9 · formulas unverified on slides 6",
+      ),
+    )
+    .toBeVisible();
 });
 
 test("building asks first, showing the estimated cost, and starts only when confirmed", async () => {

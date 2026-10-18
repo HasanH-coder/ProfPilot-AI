@@ -291,7 +291,13 @@ export type LectureKnowledge = {
   coverage: {
     unit: string | null;
     totalUnits: number | null;
+    /** Pages or slides with any extracted text (titles and footers included). */
     analysedUnits: number | null;
+    /** Pages with real content; null for files read before page-level detail existed. */
+    substantiveUnits?: number | null;
+    pageDetail?: boolean;
+    /** Page numbers by class: text, textWithFigures, figureDominated, divider, empty, uncertainMath. */
+    pages?: Partial<Record<"text" | "textWithFigures" | "figureDominated" | "divider" | "empty" | "uncertainMath", number[]>>;
     unitsWithoutText: number[];
     /** Slides whose pictures or charts aren't in the text (their text was analysed). */
     unitsWithFigures: number[];

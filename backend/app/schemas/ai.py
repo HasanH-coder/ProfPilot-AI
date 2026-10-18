@@ -204,6 +204,10 @@ class KnowledgeFormula(BaseModel):
     locations: list[str]
     # True when the extracted text may have garbled it (e.g. a broken PDF text layer).
     uncertain: bool
+    # For an uncertain formula: its standard form (LaTeX) only when the lecture's intent is
+    # unambiguous; null otherwise. Never replaces `expression`, the evidence, and stays
+    # unverified until the professor confirms it. (Profiles built before this field lack it.)
+    normalized: str | None = None
 
 
 class KnowledgeExample(BaseModel):

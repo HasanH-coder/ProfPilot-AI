@@ -250,18 +250,20 @@ class DocumentIngestionService:
         """Reuses the chunks, vectors and overview of an identical, already processed file."""
         twins = await self.db.select(
             "documents",
-            columns=DOCUMENT_COLUMNS,
+            columns=DOCUMENT_COLUMNS + ", knowledge",
             filters=[
                 ("content_sha256", "eq", digest),
                 ("processing_status", "eq", "ready"),
                 ("professor_id", "eq", self.db.professor_id),
                 ("id", "neq", document.id),
             ],
-            limit=1,
+            limit=10,
         )
         if not twins:
             return False
-        twin = DocumentRecord.from_row(twins[0])
+        # Prefer a copy whose lecture knowledge profile is current, so it's reused rather than paid for again.
+        best = next((row for row in twins if is_current(row.get("knowledge"), digest)), twins[0])
+        twin = DocumentRecord.from_row(best)
         chunks = await self.db.select(
             "document_chunks",
             columns="chunk_index, content, page_start, page_end, location_label, token_estimate, embedding",
@@ -275,7 +277,7 @@ class DocumentIngestionService:
         for start in range(0, len(rows), _INSERT_BATCH):
             await self.db.insert("document_chunks", rows[start : start + _INSERT_BATCH], columns="id")
         # Same bytes, same lecture: its current knowledge profile is reused too, not paid for again.
-        twin_knowledge = await LectureKnowledgeService(self.db, self.ai, self.usage).get(twin.id)
+        twin_knowledge = best.get("knowledge")
         await self._update(
             document.id,
             {

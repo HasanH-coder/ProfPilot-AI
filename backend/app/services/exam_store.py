@@ -17,6 +17,7 @@ from app.db.supabase import Database
 from app.domain import distribution
 from app.schemas.ai import ExamSpec, QuestionContent
 from app.schemas.common import parse_id
+from app.services.document_parsers import EXTRACTION_GLYPHS
 
 EXAM_COLUMNS = (
     "id, exam_project_id, mode, status, spec_snapshot, enhanced_prompt_snapshot, plan, review, "
@@ -103,6 +104,16 @@ def normalize_content(content: QuestionContent) -> QuestionContent:
     return content
 
 
+def question_texts(content: QuestionContent) -> list[str]:
+    """Every piece of text a student or marker reads."""
+    texts = [content.prompt, content.answer, content.solution, content.explanation or ""]
+    texts += [choice.text for choice in content.choices or []]
+    texts += [item.criterion for item in content.rubric or []]
+    for part in content.subparts or []:
+        texts += [part.prompt, part.answer, *(item.criterion for item in part.rubric)]
+    return [text for text in texts if text]
+
+
 def question_problems(content: QuestionContent, *, label: str = "The question", manual: bool = False) -> list[str]:
     """Business rules a question must satisfy before it is saved.
 
@@ -113,6 +124,11 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
     problems: list[str] = []
     if not content.prompt:
         problems.append(f"{label} has no question text.")
+    if not manual and any(EXTRACTION_GLYPHS.search(text) for text in question_texts(content)):
+        problems.append(
+            f"{label} contains characters copied from a PDF's extracted text (such as '𝒇' or '𝒆'), where "
+            "mathematics may be garbled; write all mathematics in LaTeX and never copy extracted formulas."
+        )
     if not content.answer and not manual:
         problems.append(f"{label} has no answer.")
     if content.type == "mcq":

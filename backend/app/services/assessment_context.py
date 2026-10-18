@@ -219,17 +219,49 @@ class AssessmentContextService:
     async def get_knowledge(self, documents: list[DocumentRecord]) -> dict[str, dict[str, Any]]:
         """The lecture knowledge profiles of these course-material documents, by id (one query).
 
-        Loaded only where an AI task uses them, so lists of documents stay light.
+        Loaded only where an AI task uses them, so lists of documents stay light. A document
+        without a current profile borrows the current profile of the same professor's
+        identical copy (same SHA-256), so the same lecture is never analysed twice.
         """
-        ids = [doc.id for doc in documents if doc.category == "course_material" and doc.processing_status == "ready"]
-        if not ids:
+        from app.services.lecture_knowledge import is_current  # noqa: PLC0415 (lecture_knowledge imports this module)
+
+        docs = [doc for doc in documents if doc.category == "course_material" and doc.processing_status == "ready"]
+        if not docs:
             return {}
         rows = await self.db.select(
             "documents",
             columns="id, knowledge",
-            filters=[("id", "in", ids), ("professor_id", "eq", self.db.professor_id)],
+            filters=[("id", "in", [doc.id for doc in docs]), ("professor_id", "eq", self.db.professor_id)],
         )
-        return {row["id"]: row["knowledge"] for row in rows if row.get("knowledge")}
+        found = {row["id"]: row["knowledge"] for row in rows if row.get("knowledge")}
+        missing = {
+            doc.content_sha256 for doc in docs if doc.content_sha256 and not is_current(found.get(doc.id), doc.content_sha256)
+        }
+        if missing:
+            twins = await self.db.select(
+                "documents",
+                columns="id, content_sha256, knowledge",
+                filters=[
+                    ("content_sha256", "in", sorted(missing)),
+                    ("processing_status", "eq", "ready"),
+                    ("professor_id", "eq", self.db.professor_id),
+                    ("knowledge", "cs", {"status": "ready"}),
+                ],
+            )
+            for doc in docs:
+                if doc.id in found and is_current(found[doc.id], doc.content_sha256):
+                    continue
+                twin = next(
+                    (
+                        row
+                        for row in twins
+                        if row["content_sha256"] == doc.content_sha256 and is_current(row.get("knowledge"), doc.content_sha256)
+                    ),
+                    None,
+                )
+                if twin is not None:
+                    found[doc.id] = twin["knowledge"]
+        return found
 
     async def list_course_sources(self, course_id: str) -> list[SourceInfo]:
         """The professor's ready sources for one course: the only ids a selection may use."""

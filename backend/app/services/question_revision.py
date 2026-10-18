@@ -34,6 +34,7 @@ from app.services.exam_store import (
     row_to_content,
     similar,
 )
+from app.services.lecture_knowledge import matching_refs, render_topics
 from app.services.personalization import PreferenceService
 
 LOCKED_MESSAGE = "This question is approved and locked. Unlock it to change it."
@@ -183,7 +184,16 @@ class QuestionRevisionService:
                 found.append("Write a genuinely different question, not a reworded one.")
             if any(similar(content.prompt, other) > 0.85 for other in others):
                 found.append("The revised question duplicates another question in the exam.")
+            found += ctx.formula_problems([("The revised question", content)])
             return found
+
+        # The lecture topics closest to this question (what is verified, what isn't), from the stored profiles.
+        notes = render_topics(
+            matching_refs(" ".join([*(question.get("concepts") or []), question["prompt"][:400]]), ctx.documents, ctx.knowledge),
+            ctx.documents,
+            ctx.knowledge,
+            framer,
+        )
 
         result = await self.ai.parse(
             purpose="revise_question",
@@ -194,6 +204,7 @@ class QuestionRevisionService:
                     "OTHER QUESTIONS IN THIS VERSION (don't duplicate them)\n"
                     + ("\n".join(f"- {text[:200]}" for text in others) or "(none)"),
                     render_excerpts(excerpts, framer),
+                    notes,
                     "THE QUESTION TO REVISE (application data)\n"
                     + framer.block("question", f"question {number}", render_question(question, number)),
                     "REQUESTED CHANGE\n" + request,
