@@ -101,7 +101,8 @@ class InterpretationOut(ApiModel):
 
 
 class InterpretationEditIn(ApiModel):
-    enhanced_prompt: str = Field(min_length=1, max_length=8000)
+    # A structured brief (objectives, coverage, Bloom's, constraints…) runs to about 900 words.
+    enhanced_prompt: str = Field(min_length=1, max_length=12000)
 
 
 # -----------------------------------------------------------------------------

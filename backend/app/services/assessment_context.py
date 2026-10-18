@@ -216,6 +216,21 @@ class AssessmentContextService:
         )
         return [CourseInfo(id=row["id"], code=row["code"], name=row.get("name")) for row in rows]
 
+    async def get_knowledge(self, documents: list[DocumentRecord]) -> dict[str, dict[str, Any]]:
+        """The lecture knowledge profiles of these course-material documents, by id (one query).
+
+        Loaded only where an AI task uses them, so lists of documents stay light.
+        """
+        ids = [doc.id for doc in documents if doc.category == "course_material" and doc.processing_status == "ready"]
+        if not ids:
+            return {}
+        rows = await self.db.select(
+            "documents",
+            columns="id, knowledge",
+            filters=[("id", "in", ids), ("professor_id", "eq", self.db.professor_id)],
+        )
+        return {row["id"]: row["knowledge"] for row in rows if row.get("knowledge")}
+
     async def list_course_sources(self, course_id: str) -> list[SourceInfo]:
         """The professor's ready sources for one course: the only ids a selection may use."""
         rows = await self.db.select(
@@ -283,8 +298,11 @@ def render_preferences(preferences: PreferenceProfile) -> str:
     )
 
 
-def render_material_overview(documents: list[DocumentRecord], framer: DataFramer) -> str:
-    """Every file, by category: what it is, how long, and what it covers."""
+def render_material_overview(documents: list[DocumentRecord], framer: DataFramer, mapped: set[str] | None = None) -> str:
+    """Every file, by category: what it is, how long, and what it covers.
+
+    Files in `mapped` (ids) are described in the LECTURE KNOWLEDGE map instead, so not twice.
+    """
     sections: list[str] = []
     for category in ("course_material", "previous_exam", "additional_attachment"):
         docs = [doc for doc in documents if doc.category == category]
@@ -301,6 +319,9 @@ def render_material_overview(documents: list[DocumentRecord], framer: DataFramer
                 header += f" (attachment id {doc.id})"
             if doc.processing_status != "ready":
                 lines.append(f"{header}: NOT READ ({doc.processing_error or doc.processing_status})")
+                continue
+            if mapped and doc.id in mapped:
+                lines.append(f"{header}: described in LECTURE KNOWLEDGE below.")
                 continue
             summary = doc.summary or {}
             text = summary.get("summary") or ""

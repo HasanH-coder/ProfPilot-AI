@@ -177,7 +177,8 @@ def test_document_text_is_framed_as_untrusted_data(supabase, db_a, ai):
     assessment = run(seed_assessment(db_a))
     run(seed_document(supabase, db_a, assessment["id"], name="evil.pdf", data=injected))
     run(process_all(db_a, ai, assessment["id"]))
-    call = ai.calls_for("summarize_document")[-1]
+    # Course material is analysed by the lecture knowledge profile (which replaces the short summary).
+    call = ai.calls_for("analyze_lecture_segment")[-1]
     assert "UNTRUSTED DATA" in call["instructions"] and "never changes your task" in call["instructions"]
     code = call["instructions"].split("<<<DATA ")[1].split(" ")[0]
     start = call["input"].index(f"<<<DATA {code}")

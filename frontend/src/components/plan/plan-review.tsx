@@ -374,7 +374,7 @@ function EnhancedPrompt({
             id={textareaId}
             className="min-h-56"
             value={text}
-            maxLength={8000}
+            maxLength={12000}
             onChange={(event) => setText(event.target.value)}
           />
           <div className="flex flex-wrap gap-2">
@@ -396,9 +396,7 @@ function EnhancedPrompt({
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          <p className="rounded-xl border bg-card p-4 text-sm leading-relaxed break-words whitespace-pre-wrap">
-            {interpretation.enhancedPrompt}
-          </p>
+          <BriefText text={interpretation.enhancedPrompt ?? ""} />
           <Button variant="outline" className="w-fit" onClick={() => setEditing(true)}>
             <Pencil />
             Edit instructions
@@ -406,6 +404,37 @@ function EnhancedPrompt({
         </div>
       )}
     </ReviewSection>
+  );
+}
+
+// "Assessment objectives: …" — a heading line of the structured brief.
+const BRIEF_HEADING = /^([A-Z][A-Za-z'’ -]{2,40}):\s*(.*)$/;
+
+/** The brief, as expandable sections when it is organised under headings (otherwise as written). */
+function BriefText({ text }: { text: string }) {
+  const sections: { heading: string; body: string[] }[] = [];
+  const preamble: string[] = [];
+  for (const line of text.split("\n")) {
+    const match = BRIEF_HEADING.exec(line.trim());
+    if (match) sections.push({ heading: match[1], body: match[2] ? [match[2]] : [] });
+    else if (sections.length) sections[sections.length - 1].body.push(line);
+    else preamble.push(line);
+  }
+  if (sections.length < 2) {
+    return <p className="rounded-xl border bg-card p-4 text-sm leading-relaxed break-words whitespace-pre-wrap">{text}</p>;
+  }
+  return (
+    <div className="divide-y rounded-xl border bg-card text-sm">
+      {preamble.join("\n").trim() && (
+        <p className="p-4 leading-relaxed break-words whitespace-pre-wrap">{preamble.join("\n").trim()}</p>
+      )}
+      {sections.map(({ heading, body }, index) => (
+        <details key={`${heading}-${index}`} open={index < 3} className="group px-4 py-3">
+          <summary className="cursor-pointer font-medium marker:text-muted-foreground">{heading}</summary>
+          <p className="mt-2 leading-relaxed break-words whitespace-pre-wrap text-muted-foreground">{body.join("\n").trim()}</p>
+        </details>
+      ))}
+    </div>
   );
 }
 

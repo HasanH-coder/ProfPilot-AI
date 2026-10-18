@@ -129,8 +129,20 @@ Files are read in the background as soon as they are uploaded (`POST /api/assess
 3. **Extract text.** PDF page by page (pypdf), PPTX slides, tables and speaker notes, DOCX headings and tables, TXT in common encodings. Damaged, password-protected and empty files fail with a specific message.
 4. **Scanned PDFs** (at least half the pages without a text layer): those pages are transcribed by the reasoning model, eight pages per request, up to `MAX_OCR_PAGES` (default 30) pages.
 5. **Images** are described by the reasoning model (what they show, any text, labels and data).
-6. **Chunk** (about 2,400 characters with 300 overlapping, labelled "Page 3", "Slides 1–3" or "Section: …"), **embed** in batches, and store.
-7. **Summarize** the file (title, summary, topics with locations).
+6. **Chunk** (about 2,400 characters with 300 overlapping, labelled "Page 3", "Slides 1–3" or "Section: …", never across a page without text, so a label never claims a missing page), **embed** in batches, and store. The file is now searchable ("ready").
+7. **Course material** then gets its **Lecture Knowledge Profile** (below), which also gives its title and summary. Other files get a short **summary** (title, summary, topics with locations).
+
+### Lecture knowledge
+
+Each course-material document gets one reusable, structured profile (`documents.knowledge`, built by `lecture_knowledge.py`). The chunks stay the authoritative evidence; the profile is a map of everything the lecture contains:
+
+- **Complete coverage.** The stored chunks are analysed in order, in sections of up to 24,000 characters, one call per section, so long lectures are never truncated or sampled. Every item (concepts and definitions, formulas with variables and conditions, examples and applications, figures and tables, misconceptions, and the Bloom's levels each topic can support) cites the locations its section really contains; a reply citing any other location is sent back once. Formulas are kept as written and flagged `uncertain` when the extracted text looks garbled. Misconceptions say whether the lecture states them or ProfPilot suggests them.
+- **Relations.** One short call over the merged topic inventory gives the title, overview, section structure, learning objectives and the relations between topics (prerequisite, builds on, contrasts with, trade-off…); relations naming unknown topics are dropped.
+- **Coverage record.** Which pages or slides were analysed, which had no extractable text (usually figures or scans, which then need the original), which PowerPoint slides also carry pictures or charts the text can't show (the parser marks them), whether the file was truncated, and how many tokens the build used.
+- **Once per version.** A profile is current while its version (`KNOWLEDGE_VERSION`) and the file's SHA-256 match; an identical file reuses it. It is built automatically only when a file is first read. An outdated or failed profile is rebuilt only when the professor asks, on Sources, after seeing an estimate (`GET`/`POST /api/documents/{id}/knowledge`). Existing files are never reprocessed in bulk.
+- **No assessment settings.** The profile lists the levels the material supports; each assessment's own Bloom's split stays in its ExamSpec.
+
+Planning uses it: the interpreter and planner see a compact map of every lecture: every topic with its id (`L2.t5`), merged locations ("Slides 3–5"), supported levels as initials, and formula, example and unreadable-figure counts; relations and warnings beyond a few are counted, not listed. No topic is ever left out (about 5,000 tokens for six 30-topic lectures), and the file overview doesn't repeat what the map says. When every lecture is mapped, the planner samples one excerpt per lecture instead of three. Each planned question cites the topics it draws on (`knowledge_refs`, checked against the inventory), and its question writer receives exactly those topics' full notes alongside the retrieved excerpts, which remain the authority. Lectures without a current profile are named, and work as before (overview and excerpts).
 
 The three categories stay separate:
 
@@ -369,6 +381,7 @@ The interactive documentation is at http://localhost:8000/docs while the backend
 ## Cost controls
 
 - Files are read once; identical files are reused by hash; the style profile is cached.
+- A lecture's knowledge profile is built once per file version (its summary comes with it, not as a separate call) and reused by every assessment; rebuilds happen only on request, after an estimate. Each build records its token usage on the profile and logs a `lecture_knowledge` timing line.
 - Retrieval sends only the most relevant excerpts, within a character budget.
 - Reasoning effort is set per task (see [Models](#models)); verbosity is kept low where possible.
 - Independent reads (the assessment, its files, the style profile, preferences; the exam's parts; one similarity search per query) run in parallel.

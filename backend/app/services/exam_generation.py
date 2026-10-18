@@ -21,7 +21,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.ai.openai_service import Effort, OpenAIService, Usage, gather_limited, get_openai_service
@@ -65,6 +65,14 @@ from app.services.exam_store import (
     similar,
 )
 from app.services.jobs import RunContext
+from app.services.lecture_knowledge import (
+    lecture_refs,
+    mapped_ids,
+    matching_refs,
+    render_inventory,
+    render_topics,
+    topic_index,
+)
 from app.services.prompt_interpreter import PromptInterpreterService
 
 logger = logging.getLogger("profpilot.generation")
@@ -83,6 +91,13 @@ class GenerationContext:
     documents: list[DocumentRecord]
     style: StyleProfile | None
     preferences: PreferenceProfile
+    # Lecture knowledge profiles of the course material, by document id (see lecture_knowledge.py).
+    knowledge: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @property
+    def knowledge_refs(self) -> set[str]:
+        """Every topic id the planner may cite (e.g. 'L2.t5')."""
+        return set(topic_index(lecture_refs(self.documents, self.knowledge)))
 
     @property
     def document_names(self) -> dict[str, str]:
@@ -144,6 +159,7 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
         documents=documents,
         style=style[0] if style else None,
         preferences=preferences,
+        knowledge=await context.get_knowledge(documents),
     )
 
 
@@ -325,8 +341,10 @@ def interleave_plan(plan: ExamPlan, document_names: list[str]) -> ExamPlan:
 # =============================================================================
 
 
-def plan_problems(plan: ExamPlan, spec: ExamSpec, figure_ids: set[str]) -> tuple[list[str], list[str]]:
-    """(structural problems, softer target misses) for a plan."""
+def plan_problems(
+    plan: ExamPlan, spec: ExamSpec, figure_ids: set[str], knowledge_refs: set[str] | None = None
+) -> tuple[list[str], list[str]]:
+    """(structural problems, softer target misses) for a plan. `knowledge_refs`: the topic ids it may cite."""
     hard: list[str] = []
     soft: list[str] = []
     questions = plan.questions
@@ -350,6 +368,12 @@ def plan_problems(plan: ExamPlan, spec: ExamSpec, figure_ids: set[str]) -> tuple
         previous_section = q.section_index
         if q.figure_document_id and q.figure_document_id not in figure_ids:
             hard.append(f"Question {q.number} uses figure id {q.figure_document_id}, which isn't an image attachment.")
+        unknown = [ref for ref in q.knowledge_refs if ref not in (knowledge_refs or set())]
+        if unknown:
+            hard.append(
+                f"Question {q.number} cites {', '.join(unknown)}, which aren't topic ids from the LECTURE KNOWLEDGE "
+                "inventory; use ids exactly as listed (or none if there is no inventory)."
+            )
 
     summary = distribution.summarize(questions)
     for warning in distribution.compare(summary, spec, tolerance=_PLAN_TOLERANCE):
@@ -378,17 +402,23 @@ class ExamPlanningService:
         framer = DataFramer()
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
         course_ids = [doc.id for doc in ctx.documents if doc.category == "course_material" and doc.processing_status == "ready"]
+        mapped = mapped_ids(ctx.documents, ctx.knowledge)
+        # Lectures in the LECTURE KNOWLEDGE map need only a taste of their wording here: the map gives
+        # their full coverage, and each question's writer retrieves its own excerpts.
+        per_document = 1 if course_ids and set(course_ids) <= mapped else 3
         spread = assign_refs(
-            await retrieval.spread(course_ids, document_names=ctx.document_names, per_document=3, max_chars=18_000)
+            await retrieval.spread(course_ids, document_names=ctx.document_names, per_document=per_document, max_chars=18_000)
         )
         sections = [
             *ctx.common_sections(framer),
-            render_material_overview(ctx.documents, framer),
+            render_material_overview(ctx.documents, framer, mapped=mapped_ids(ctx.documents, ctx.knowledge)),
+            render_inventory(ctx.documents, ctx.knowledge, framer),
             render_excerpts(spread, framer, title="SAMPLE OF THE COURSE MATERIAL"),
             "Plan the exam now.",
         ]
         base_input = "\n\n".join(sections)
         figure_ids = ctx.figure_ids
+        known = ctx.knowledge_refs
 
         plan = await self.ai.parse(
             purpose="plan_exam",
@@ -397,10 +427,10 @@ class ExamPlanningService:
             schema=ExamPlan,
             effort="high",
             max_output_tokens=24_000,
-            validate=lambda result: plan_problems(result, ctx.spec, figure_ids)[0],
+            validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known)[0],
             usage=self.usage,
         )
-        _, soft = plan_problems(plan, ctx.spec, figure_ids)
+        _, soft = plan_problems(plan, ctx.spec, figure_ids, known)
         if soft:
             # One focused repair for targets the plan misses.
             try:
@@ -424,10 +454,10 @@ class ExamPlanningService:
                     schema=ExamPlan,
                     effort="high",
                     max_output_tokens=24_000,
-                    validate=lambda result: plan_problems(result, ctx.spec, figure_ids)[0],
+                    validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known)[0],
                     usage=self.usage,
                 )
-                remaining = plan_problems(repaired, ctx.spec, figure_ids)[1]
+                remaining = plan_problems(repaired, ctx.spec, figure_ids, known)[1]
                 if len(remaining) <= len(soft):
                     plan, soft = repaired, remaining
             except AppError:
@@ -586,7 +616,13 @@ class ExamGenerationService:
     ) -> tuple[list[GeneratedQuestion], list[Excerpt]]:
         framer = DataFramer()
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
-        queries = [f"{slot.topic}. {slot.learning_objective}. {slot.source_hint or ''}" for slot in batch]
+        refs = [ref for slot in batch for ref in slot.knowledge_refs]
+        topics = topic_index(lecture_refs(ctx.documents, ctx.knowledge))
+        queries = [
+            f"{slot.topic}. {slot.learning_objective}. {slot.source_hint or ''} "
+            + " ".join(topics[ref][1]["name"] for ref in slot.knowledge_refs if ref in topics)
+            for slot in batch
+        ]
         excerpts = assign_refs(
             await retrieval.search(
                 ctx.record.id, queries, document_names=ctx.document_names, per_query=5, max_excerpts=10, max_chars=18_000
@@ -595,7 +631,9 @@ class ExamGenerationService:
         plan_lines = [
             f"{q.number}. [{plan.sections[q.section_index].title if q.section_index < len(plan.sections) else ''}] "
             f"{q.type}, {q.difficulty}, {q.points:g} pts, ~{q.estimated_minutes:g} min — {q.topic}: {q.learning_objective}"
-            f" (Bloom's level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'})"
+            f" (Bloom's level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'}"
+            + (f"; lecture knowledge: {', '.join(q.knowledge_refs)}" if q.knowledge_refs else "")
+            + ")"
             for q in plan.questions
         ]
         targets = [line for line in plan_lines if int(line.split(".", 1)[0]) in {slot.number for slot in batch}]
@@ -606,6 +644,7 @@ class ExamGenerationService:
             "QUESTIONS ALREADY WRITTEN (don't repeat them)\n"
             + ("\n".join(f"- {text[:240]}" for text in others[-40:]) if others else "(none yet)"),
             render_excerpts(excerpts, framer),
+            render_topics(refs, ctx.documents, ctx.knowledge, framer),
             (
                 ""
                 if ctx.has_course_material
@@ -771,6 +810,8 @@ class ExamGenerationService:
                     *ctx.common_sections(framer),
                     "QUESTIONS ALREADY IN THE EXAM\n" + ("\n".join(f"- {t[:240]}" for t in others) if others else "(none yet)"),
                     render_excerpts(excerpts, framer),
+                    # The lecture topics closest to what was asked, from the stored profiles (no extra call).
+                    render_topics(matching_refs(query, ctx.documents, ctx.knowledge), ctx.documents, ctx.knowledge, framer),
                     "\n".join(part for part in request if part),
                 ]
             ),

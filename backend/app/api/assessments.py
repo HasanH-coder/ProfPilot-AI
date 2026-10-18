@@ -33,6 +33,8 @@ from app.services.document_ingestion import DocumentIngestionService
 from app.services.exam_generation import ExamGenerationService
 from app.services.exam_store import ExamStore, serialize_exam
 from app.services.jobs import RUN_COLUMNS, RunContext, is_stale, job_runner, public_run
+from app.services.lecture_knowledge import LectureKnowledgeService, is_building
+from app.services.lecture_knowledge import overview as lecture_overview
 from app.services.prompt_interpreter import PromptInterpreterService, stale_reasons
 from app.services.style_analysis import StyleAnalysisService
 
@@ -190,6 +192,43 @@ async def process_document(
 
     background_tasks.add_task(read)
     return DocumentProcessingOut(id=document.id, status="processing")
+
+
+@router.get("/documents/{document_id}/knowledge")
+async def document_knowledge(
+    document_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> dict[str, Any]:
+    """An owned document's lecture knowledge: state, structure, topics, coverage, warnings and a build estimate."""
+    document = await AssessmentContextService(db).get_document(document_id)
+    knowledge = await LectureKnowledgeService(db, ai).get(document.id)
+    result = lecture_overview(knowledge, document)
+    if result["state"] == "building" and not is_building(document.id):
+        result["state"] = "failed"  # interrupted (e.g. by a restart): it can be rebuilt
+        result["error"] = "Building the lecture knowledge was interrupted. Build it again."
+    return result
+
+
+@router.post("/documents/{document_id}/knowledge", status_code=status.HTTP_202_ACCEPTED)
+async def build_document_knowledge(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    db: Database = Depends(get_db),
+    ai: OpenAIService = Depends(get_ai),
+) -> dict[str, Any]:
+    """Builds (or rebuilds) one lecture's knowledge profile, only when the professor asks: it costs model calls."""
+    document = await AssessmentContextService(db).get_document(document_id)
+    if document.category != "course_material" or document.processing_status != "ready":
+        raise ConflictError("Lecture knowledge is built for course material once it's read.", code="not_ready")
+    if is_building(document.id):
+        return {"state": "building"}
+
+    async def build() -> None:
+        usage = Usage()
+        async with timed("lecture_knowledge", usage):
+            await LectureKnowledgeService(db, ai, usage).build(document)
+
+    background_tasks.add_task(build)
+    return {"state": "building"}
 
 
 @router.post("/assessments/{assessment_id}/interpretation", status_code=status.HTTP_202_ACCEPTED)

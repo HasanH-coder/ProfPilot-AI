@@ -4,8 +4,10 @@ import { createClient } from "@/lib/supabase/server";
 import type { Tables } from "@/lib/supabase/database.types";
 import type { CourseSource, CourseWithSources, SourceStatus } from "@/lib/sources/types";
 
+// Only the lecture knowledge's status, version and size: the profile itself stays on the server.
+// (One literal, so the Supabase client can type the rows.)
 export const SOURCE_COLUMNS =
-  "id, course_id, category, original_name, size_bytes, processing_status, processing_error, page_count, summary, created_at";
+  "id, course_id, category, original_name, size_bytes, processing_status, processing_error, page_count, summary, created_at, content_sha256, knowledge_status:knowledge->>status, knowledge_sha:knowledge->>content_sha256, knowledge_topics:knowledge->stats->>topics";
 
 type SourceRow = Pick<
   Tables<"documents">,
@@ -18,11 +20,23 @@ type SourceRow = Pick<
   | "page_count"
   | "summary"
   | "created_at"
->;
+  | "content_sha256"
+> & { knowledge_status: string | null; knowledge_sha: string | null; knowledge_topics: string | null };
+
+/** A profile built for an earlier version of the file (or by older analysis) is offered for rebuild. */
+function knowledgeOf(row: SourceRow): CourseSource["knowledge"] {
+  const topics = row.knowledge_topics === null ? null : Number(row.knowledge_topics);
+  if (row.knowledge_status === "ready") {
+    return { state: row.knowledge_sha === row.content_sha256 ? "ready" : "outdated", topics };
+  }
+  if (row.knowledge_status === "building" || row.knowledge_status === "failed") return { state: row.knowledge_status, topics };
+  return { state: "none", topics: null };
+}
 
 export function toCourseSource(row: SourceRow): CourseSource {
   const summary = row.summary && typeof row.summary === "object" && !Array.isArray(row.summary) ? row.summary : null;
   return {
+    knowledge: knowledgeOf(row),
     id: row.id,
     courseId: row.course_id ?? "",
     category: "course_material",

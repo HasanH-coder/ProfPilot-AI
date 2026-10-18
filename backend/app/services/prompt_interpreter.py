@@ -10,6 +10,7 @@ The professor's explicit settings are binding: after the model answers, they
 are applied again in code, so the AI can never change them.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,6 +35,7 @@ from app.services.assessment_context import (
 from app.services.document_ingestion import DocumentIngestionService
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
 from app.services.jobs import RunContext
+from app.services.lecture_knowledge import mapped_ids, render_inventory
 from app.services.style_analysis import StyleAnalysisService
 
 SPEC_ENVELOPE_VERSION = 1
@@ -98,13 +100,14 @@ class PromptInterpreterService:
         if run:
             await run.stage("interpreting")
         framer = DataFramer()
-        excerpts = await self._excerpts(record, documents)
+        excerpts, knowledge = await asyncio.gather(self._excerpts(record, documents), self.context.get_knowledge(documents))
         attachments = [doc for doc in documents if doc.category == "additional_attachment" and doc.processing_status == "ready"]
         sections = [
             render_settings(record),
             render_professor_instructions(record),
             render_preferences(preferences),
-            render_material_overview(documents, framer),
+            render_material_overview(documents, framer, mapped=mapped_ids(documents, knowledge)),
+            render_inventory(documents, knowledge, framer),
             render_style_profile(style, framer),
             render_excerpts(excerpts, framer),
             (

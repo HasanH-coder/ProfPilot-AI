@@ -280,7 +280,30 @@ export type SetupChatReply = {
   sourceIds: string[];
 };
 
-export type RealtimeSecret = { clientSecret: string; expiresAt: number; model: string };
+/** A lecture's reusable knowledge profile, in brief (GET /api/documents/{id}/knowledge). */
+export type LectureKnowledge = {
+  state: "none" | "building" | "ready" | "outdated" | "failed";
+  error: string | null;
+  title: string | null;
+  overview: string | null;
+  sections: string[];
+  topics: { id: string; name: string; locations: string[] }[];
+  coverage: {
+    unit: string | null;
+    totalUnits: number | null;
+    analysedUnits: number | null;
+    unitsWithoutText: number[];
+    /** Slides whose pictures or charts aren't in the text (their text was analysed). */
+    unitsWithFigures: number[];
+    truncated: boolean;
+  } | null;
+  warnings: string[];
+  usage: { inputTokens: number; outputTokens: number; modelCalls: number } | null;
+  /** A rough estimate of a (re)build, shown before it starts. */
+  estimate: { modelCalls: number; inputTokens: number; outputTokens: number };
+};
+
+export type RealtimeSecret ={ clientSecret: string; expiresAt: number; model: string };
 
 export type Preferences = {
   explicitNotes: string;

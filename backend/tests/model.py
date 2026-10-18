@@ -12,6 +12,7 @@ from typing import Any
 
 from app.schemas.ai import (
     COGNITIVE_LEVELS,
+    BloomOpportunity,
     BloomSpec,
     ChoiceOut,
     CoverageTopic,
@@ -23,6 +24,12 @@ from app.schemas.ai import (
     FormatSpec,
     GeneratedQuestion,
     InterpretationOutput,
+    KnowledgeConcept,
+    KnowledgeFormula,
+    KnowledgeMisconception,
+    KnowledgeRelation,
+    KnowledgeTopic,
+    LectureSynthesis,
     PlannedQuestion,
     PlannedSection,
     QuestionBatch,
@@ -30,6 +37,7 @@ from app.schemas.ai import (
     ReviewOutput,
     RevisedQuestion,
     RubricItem,
+    SegmentKnowledge,
     SolutionKey,
     SpecItem,
     StyleProfile,
@@ -337,6 +345,66 @@ def summary_handler(call: dict[str, Any]) -> DocumentSummary:
     )
 
 
+_SEGMENT_BLOCK = re.compile(r"<<<DATA \w+ \| excerpt \| ([^>]+)>>>\n(.*?)\n<<<END DATA", re.S)
+
+
+def segment_handler(call: dict[str, Any]) -> SegmentKnowledge:
+    """One topic per excerpt of the section, citing only that excerpt's own location label."""
+    topics = []
+    for label, content in _SEGMENT_BLOCK.findall(call["input"]):
+        words = re.findall(r"[A-Za-z]{4,}", content)
+        name = " ".join(words[:3]).lower() or f"topic at {label}"
+        location = [label] if re.match(r"(Slide|Page|Section)", label) else []
+        topics.append(
+            KnowledgeTopic(
+                name=name,
+                section=None,
+                summary=content[:120],
+                locations=location,
+                concepts=[KnowledgeConcept(name=name, kind="definition", description=content[:200], locations=location)],
+                formulas=(
+                    [
+                        KnowledgeFormula(
+                            name="update rule",
+                            expression="w = w - \\eta \\nabla L",
+                            variables=["η: learning rate"],
+                            conditions=None,
+                            locations=location,
+                            uncertain=False,
+                        )
+                    ]
+                    if "rate" in content.lower()
+                    else []
+                ),
+                examples=[],
+                visuals=[],
+                misconceptions=[KnowledgeMisconception(description=f"confusing {name}", origin="ai_suggestion", locations=[])],
+                bloom_opportunities=[
+                    BloomOpportunity(level="remember", idea=f"define {name}"),
+                    BloomOpportunity(level="apply", idea=f"use {name} on a small example"),
+                    BloomOpportunity(level="analyze", idea=f"diagnose a failure of {name}"),
+                ],
+            )
+        )
+    return SegmentKnowledge(topics=topics, warnings=[])
+
+
+def synthesis_handler(call: dict[str, Any]) -> LectureSynthesis:
+    names = re.findall(r"^- (.+?)(?: \[.*?\])? \(", call["input"], re.M)
+    relations = (
+        [KnowledgeRelation(source_topic=names[0], target_topic=names[1], kind="prerequisite", note="comes first")]
+        if len(names) > 1
+        else []
+    )
+    return LectureSynthesis(
+        title="Lecture notes",
+        overview="Covers gradient descent and regression.",
+        sections=["Introduction"],
+        learning_objectives=["Apply gradient descent"],
+        relations=relations,
+    )
+
+
 def style_handler(_call: dict[str, Any]) -> StyleProfile:
     return StyleProfile(
         exams_analyzed=1,
@@ -367,6 +435,8 @@ def install_well_behaved(ai: FakeAI) -> FakeAI:
     ai.on("revise_question", well_behaved_revision)
     ai.on("regenerate_solution", well_behaved_solution)
     ai.on("summarize_document", summary_handler)
+    ai.on("analyze_lecture_segment", segment_handler)
+    ai.on("synthesize_lecture", synthesis_handler)
     ai.on("analyze_previous_exams", style_handler)
     return ai
 

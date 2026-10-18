@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { FileDropzone } from "@/components/assessment/file-dropzone";
 import { FileTypeIcon } from "@/components/assessment/file-type-icon";
+import { LectureKnowledgePanel } from "@/components/sources/lecture-knowledge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { apiRequest, errorMessage } from "@/lib/api/client";
@@ -175,6 +176,7 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
                           {source.pageCount ? ` · ${source.pageCount} pages` : ""}
                         </p>
                         <SourceState source={source} />
+                        <LectureKnowledgePanel source={source} />
                       </div>
                       <Button variant="ghost" size="icon-sm" aria-label={`Open ${source.name}`} onClick={() => void openSource(source)}>
                         <ExternalLink />

@@ -97,6 +97,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "extracted_characters": None,
         "summary": None,
         "deletion_pending": False,
+        "knowledge": None,
     },
     "document_chunks": {"page_start": None, "page_end": None, "location_label": None, "token_estimate": None, "embedding": None},
     "assessment_style_profiles": {"model": None},

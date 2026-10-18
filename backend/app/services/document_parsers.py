@@ -128,10 +128,31 @@ def parse_pptx(data: bytes) -> ParsedDocument:
                     parts.append(f"Speaker notes: {notes}")
         except Exception:
             pass
+        visuals = sum(_visual_count(shape) for shape in slide.shapes)
+        if visuals and any(parts):
+            # Pictures and charts aren't text: say so, so their content is never assumed to be covered.
+            parts.append(figure_marker(number, visuals))
         text = normalize_text("\n".join(part for part in parts if part))
         if text:
             units.append(TextUnit(text=text, page_start=number, page_end=number, kind="Slide"))
     return ParsedDocument(units=units, page_count=len(slides))
+
+
+FIGURE_MARKER = re.compile(r"\[Figure on slide (\d+):")
+
+
+def figure_marker(slide: int, count: int) -> str:
+    return f"[Figure on slide {slide}: {count} picture(s) or chart(s) whose content is not in the extracted text]"
+
+
+def _visual_count(shape) -> int:
+    """Pictures and charts on a slide (inside groups too)."""
+    try:
+        if shape.shape_type == 6 and hasattr(shape, "shapes"):  # a group of shapes
+            return sum(_visual_count(child) for child in shape.shapes)
+        return int(shape.shape_type == 13 or bool(getattr(shape, "has_chart", False)))  # 13: a picture
+    except Exception:
+        return 0
 
 
 def _shape_texts(shape, *, skip_text: str = "") -> list[str]:
@@ -276,8 +297,16 @@ def chunk_units(units: list[TextUnit], *, target_chars: int = 2400, overlap_char
                     )
                 )
             continue
-        # Don't merge Word sections with different headings: they are separate topics.
-        if current and (size + len(text) > target_chars or unit.heading != current[-1].heading):
+        # Don't merge Word sections with different headings: they are separate topics. Don't
+        # merge across a gap (a page with no text) either, so "Pages 3–5" never claims a missing page.
+        previous = current[-1] if current else None
+        gap = bool(
+            previous
+            and unit.page_start is not None
+            and previous.page_end is not None
+            and unit.page_start != previous.page_end + 1
+        )
+        if current and (size + len(text) > target_chars or unit.heading != current[-1].heading or gap):
             flush()
         current.append(unit)
         size += len(text) + 2

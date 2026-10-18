@@ -202,7 +202,9 @@ def test_scenario_d_prompt_improvement_uses_everything(api, supabase, db_a, ai):
     started = api.post(f"/api/assessments/{assessment['id']}/interpretation", headers=auth())
     wait_for_run(api, started.json()["run"]["id"])
     assert len(ai.calls_for("analyze_previous_exams")) == 1
-    assert len(ai.calls_for("summarize_document")) == 2
+    # The previous exam's short summary and the lecture's knowledge profile were each made once.
+    assert len(ai.calls_for("summarize_document")) == 1
+    assert len(ai.calls_for("synthesize_lecture")) == 1
     new_texts = ai.embedded_texts[embedded:]
     assert all("Gradient descent updates parameters" not in text for text in new_texts)  # only queries embedded
 

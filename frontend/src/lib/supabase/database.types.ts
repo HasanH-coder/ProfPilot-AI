@@ -296,6 +296,7 @@ export type Database = {
           exam_project_id: string | null;
           extracted_characters: number | null;
           id: string;
+          knowledge: Json | null;
           mime_type: string | null;
           original_name: string;
           page_count: number | null;
@@ -316,6 +317,7 @@ export type Database = {
           exam_project_id?: string | null;
           extracted_characters?: number | null;
           id?: string;
+          knowledge?: Json | null;
           mime_type?: string | null;
           original_name: string;
           page_count?: number | null;
@@ -336,6 +338,7 @@ export type Database = {
           exam_project_id?: string | null;
           extracted_characters?: number | null;
           id?: string;
+          knowledge?: Json | null;
           mime_type?: string | null;
           original_name?: string;
           page_count?: number | null;

@@ -170,6 +170,108 @@ class DocumentSummary(BaseModel):
     low_content: bool
 
 
+# =============================================================================
+# Lecture Knowledge Profile (built once per course-material document)
+# =============================================================================
+#
+# The model analyses a lecture one section at a time (SegmentKnowledge), then
+# relates the merged topics (LectureSynthesis). Everything is assembled, checked
+# and stored by app/services/lecture_knowledge.py. `locations` are always the
+# labels the section was given ("Slide 12", "Pages 3–4"): never invented.
+
+# Where an item comes from: the lecture itself, or ProfPilot's own pedagogical suggestion.
+KnowledgeOrigin = Literal["lecture", "ai_suggestion"]
+
+
+class KnowledgeConcept(BaseModel):
+    name: str
+    kind: Literal[
+        "definition", "term", "method", "algorithm", "principle", "theorem", "property",
+        "classification", "assumption", "limitation", "exception", "observation", "other",
+    ]  # fmt: skip
+    # Faithful to the lecture, including the conditions under which it holds.
+    description: str
+    locations: list[str]
+
+
+class KnowledgeFormula(BaseModel):
+    name: str
+    # As written in the lecture (LaTeX where possible); never "corrected".
+    expression: str
+    # e.g. "η: learning rate"
+    variables: list[str]
+    conditions: str | None
+    locations: list[str]
+    # True when the extracted text may have garbled it (e.g. a broken PDF text layer).
+    uncertain: bool
+
+
+class KnowledgeExample(BaseModel):
+    title: str
+    kind: Literal["worked_example", "application", "case_study", "calculation", "comparison", "demonstration", "dataset"]
+    description: str
+    locations: list[str]
+
+
+class KnowledgeVisual(BaseModel):
+    """A figure, table or diagram the text refers to or contains."""
+
+    description: str
+    locations: list[str]
+    # False when the text only hints at it (its content needs the original page).
+    interpretable: bool
+
+
+class KnowledgeMisconception(BaseModel):
+    description: str
+    origin: KnowledgeOrigin
+    locations: list[str]
+
+
+class BloomOpportunity(BaseModel):
+    """What a question at this level could ask, supported by the lecture. Not a quota."""
+
+    level: CognitiveLevel
+    idea: str
+
+
+class KnowledgeTopic(BaseModel):
+    name: str
+    section: str | None
+    summary: str
+    locations: list[str]
+    concepts: list[KnowledgeConcept]
+    formulas: list[KnowledgeFormula]
+    examples: list[KnowledgeExample]
+    visuals: list[KnowledgeVisual]
+    misconceptions: list[KnowledgeMisconception]
+    bloom_opportunities: list[BloomOpportunity]
+
+
+class SegmentKnowledge(BaseModel):
+    """One section of a lecture, analysed in full."""
+
+    topics: list[KnowledgeTopic]
+    warnings: list[str]
+
+
+class KnowledgeRelation(BaseModel):
+    source_topic: str
+    target_topic: str
+    kind: Literal["prerequisite", "builds_on", "contrasts_with", "generalizes", "causes", "trade_off", "applies_to", "related"]
+    note: str
+
+
+class LectureSynthesis(BaseModel):
+    """The whole lecture, from its merged topic inventory."""
+
+    title: str
+    overview: str
+    sections: list[str]
+    learning_objectives: list[str]
+    relations: list[KnowledgeRelation]
+
+
 class StyleTrait(BaseModel):
     trait: str
     # Short evidence from the previous exams (e.g. "Q3 and Q5 use scenarios").
@@ -219,6 +321,9 @@ class PlannedQuestion(BaseModel):
     estimated_minutes: float = Field(gt=0, le=600)
     # id of an uploaded image attachment the question should show, if any.
     figure_document_id: str | None
+    # Lecture-knowledge topic ids it draws on (e.g. "L2.t5"), from the LECTURE KNOWLEDGE
+    # inventory. (The default keeps plans saved before this field existed valid.)
+    knowledge_refs: list[str] = Field(default_factory=list)
 
 
 class ExamPlan(BaseModel):

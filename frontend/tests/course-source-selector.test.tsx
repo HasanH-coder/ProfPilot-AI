@@ -17,6 +17,7 @@ const sources: CourseSource[] = [
     pageCount: 12,
     title: "Introduction to Machine Learning",
     createdAt: "2026-10-16T10:00:00Z",
+    knowledge: { state: "none", topics: null },
   },
   {
     id: "source-pending",
@@ -29,6 +30,7 @@ const sources: CourseSource[] = [
     pageCount: null,
     title: null,
     createdAt: "2026-10-16T10:01:00Z",
+    knowledge: { state: "none", topics: null },
   },
 ];
 

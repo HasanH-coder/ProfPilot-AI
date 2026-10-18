@@ -90,15 +90,26 @@ def bloom_conflicts(spec: ExamSpec) -> list[str]:
     """Where the cognitive split can't be met with the other settings, for the professor to resolve.
 
     Multiple-choice questions can't assess creating something, so Create-level
-    marks need written (subjective) questions. Nothing is changed silently.
+    marks need written (subjective) questions; and each level with a share needs
+    at least one question, so a short assessment can't cover more levels than it
+    has questions. Nothing is changed silently.
     """
-    if spec.bloom is None or spec.question_format is None:
+    if spec.bloom is None:
         return []
-    create, subjective = spec.bloom.create_percent, spec.question_format.subjective_percent
-    if create <= subjective:
-        return []
-    return [
-        f"{create}% of the marks are planned at the Create level, but only {subjective}% are for written "
-        "(subjective) answers, and multiple-choice questions can't assess creating. Lower Create to at most "
-        f"{subjective}% or raise the subjective share before approving."
-    ]
+    conflicts = []
+    if spec.question_format is not None:
+        create, subjective = spec.bloom.create_percent, spec.question_format.subjective_percent
+        if create > subjective:
+            conflicts.append(
+                f"{create}% of the marks are planned at the Create level, but only {subjective}% are for written "
+                "(subjective) answers, and multiple-choice questions can't assess creating. Lower Create to at most "
+                f"{subjective}% or raise the subjective share before approving."
+            )
+    levels = [level for level, share in spec.bloom.shares().items() if share > 0]
+    if spec.question_count_max is not None and len(levels) > spec.question_count_max:
+        conflicts.append(
+            f"The Bloom's split gives marks to {len(levels)} levels ({', '.join(levels)}), but the assessment has at "
+            f"most {spec.question_count_max} question(s), and each question assesses one level. Allow more questions "
+            "or set some levels to 0% before approving."
+        )
+    return conflicts

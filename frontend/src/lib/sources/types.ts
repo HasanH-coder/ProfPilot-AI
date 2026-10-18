@@ -10,7 +10,11 @@ export type CourseSource = DocumentFile & {
   pageCount: number | null;
   title: string | null;
   createdAt: string;
+  /** The reusable lecture knowledge profile, in brief (the details come from the API). */
+  knowledge: { state: KnowledgeState; topics: number | null };
 };
+
+export type KnowledgeState = "none" | "building" | "ready" | "outdated" | "failed";
 
 export type CourseWithSources = {
   id: string;

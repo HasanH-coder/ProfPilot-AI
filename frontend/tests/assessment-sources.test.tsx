@@ -26,6 +26,7 @@ function source(id: string, courseId: string, name: string, status: CourseSource
     pageCount: 3,
     title: null,
     createdAt: "2026-10-16T10:00:00Z",
+    knowledge: { state: "none", topics: null },
   };
 }
 

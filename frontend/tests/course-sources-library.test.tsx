@@ -8,7 +8,16 @@ import type { CourseSource, CourseWithSources } from "@/lib/sources/types";
 
 import { professor } from "./fixtures";
 
-const base = { courseId: "course-1", category: "course_material" as const, size: 1000, error: null, pageCount: null, title: null, createdAt: "2026-10-16T10:00:00Z" };
+const base = {
+  courseId: "course-1",
+  category: "course_material" as const,
+  size: 1000,
+  error: null,
+  pageCount: null,
+  title: null,
+  createdAt: "2026-10-16T10:00:00Z",
+  knowledge: { state: "none" as const, topics: null },
+};
 const sources: CourseSource[] = [
   { ...base, id: "ready", name: "Lecture 1.pdf", status: "ready" },
   { ...base, id: "stuck", name: "Lecture 2.pdf", status: "processing" },

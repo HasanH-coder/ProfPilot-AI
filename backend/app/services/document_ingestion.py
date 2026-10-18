@@ -2,7 +2,9 @@
 
 For each file: download it (as the professor), extract its text with page,
 slide or section locations, split it into chunks, embed the chunks for
-semantic search, and write a short overview. Results are cached:
+semantic search, and write a short overview. Course material then gets its
+Lecture Knowledge Profile (see lecture_knowledge.py), which also provides its
+overview. Results are cached:
 
 - a file is processed once (files are never overwritten, so they never change);
 - an identical file the professor already processed elsewhere (same SHA-256)
@@ -39,6 +41,7 @@ from app.services.document_parsers import (
     parse_document,
 )
 from app.services.jobs import now_iso
+from app.services.lecture_knowledge import LectureKnowledgeService, is_current
 
 logger = logging.getLogger("profpilot.ingestion")
 
@@ -101,8 +104,29 @@ class DocumentIngestionService:
         except Exception as error:  # an unexpected parser crash on a strange file
             logger.warning("Processing %s failed: %s", document.id, type(error).__name__)
             await self._fail(document, "This file couldn't be read. It may be damaged or in an unusual format.")
+        processed = await self._reload(document)
+        if await self._ensure_knowledge(processed):
+            processed = await self._reload(document)  # with the summary the profile wrote
+        return processed
+
+    async def _reload(self, document: DocumentRecord) -> DocumentRecord:
         row = await self.db.select_one("documents", columns=DOCUMENT_COLUMNS, filters=[("id", "eq", document.id)])
         return DocumentRecord.from_row(row) if row else document
+
+    async def _ensure_knowledge(self, document: DocumentRecord) -> bool:
+        """Course material gets its lecture knowledge profile once it's searchable (once per version).
+
+        The document is already ready for retrieval; the profile is a further
+        layer with its own status, so a failure here leaves the file usable.
+        Returns whether a profile was built (or attempted).
+        """
+        if document.category != "course_material" or document.processing_status != "ready":
+            return False
+        knowledge = LectureKnowledgeService(self.db, self.ai, self.usage)
+        if is_current(await knowledge.get(document.id), document.content_sha256):
+            return False
+        await knowledge.build(document)
+        return True
 
     # -- Steps -------------------------------------------------------------------
 
@@ -113,7 +137,9 @@ class DocumentIngestionService:
         units = _trim_units(parsed.units, settings.max_extracted_characters)
         chunks = chunk_units(units)
         vectors = await self.ai.embed([chunk.text for chunk in chunks], usage=self.usage)
-        summary = await self._summarize(document, units)
+        # Course material's summary comes from its lecture knowledge profile (built next, from
+        # the whole text), so it isn't paid for twice; other files get the short overview.
+        summary = None if document.category == "course_material" else await self._summarize(document, units)
 
         await self.db.delete("document_chunks", filters=[("document_id", "eq", document.id)])
         rows = [
@@ -243,6 +269,8 @@ class DocumentIngestionService:
         rows = [{**chunk, "document_id": document.id, "category": document.category} for chunk in chunks]
         for start in range(0, len(rows), _INSERT_BATCH):
             await self.db.insert("document_chunks", rows[start : start + _INSERT_BATCH], columns="id")
+        # Same bytes, same lecture: its current knowledge profile is reused too, not paid for again.
+        twin_knowledge = await LectureKnowledgeService(self.db, self.ai, self.usage).get(twin.id)
         await self._update(
             document.id,
             {
@@ -253,6 +281,7 @@ class DocumentIngestionService:
                 "page_count": twin.page_count,
                 "extracted_characters": twin.extracted_characters,
                 "summary": twin.summary,
+                **({"knowledge": twin_knowledge} if is_current(twin_knowledge, digest) else {}),
             },
         )
         return True
