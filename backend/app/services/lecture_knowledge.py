@@ -26,6 +26,8 @@ import logging
 import math
 import re
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -54,6 +56,8 @@ _SYNTHESIS_TOKENS = 4_000
 
 # Documents whose profile this server is building right now.
 _building: set[str] = set()
+# Documents whose stored text this server is re-reading right now (never built at the same time).
+_extracting: set[str] = set()
 
 _ITEM_LISTS = ("concepts", "formulas", "examples", "visuals", "misconceptions", "bloom_opportunities")
 _RANGE = re.compile(r"^(Slide|Page)s? (\d+)(?:\s*[–-]\s*(\d+))?$")
@@ -68,6 +72,38 @@ def is_current(knowledge: dict[str, Any] | None, content_sha256: str | None) -> 
         and content_sha256
         and knowledge.get("content_sha256") == content_sha256
     )
+
+
+def is_legacy(knowledge: dict[str, Any] | None) -> bool:
+    """A ready profile built from text without page markers: usable, but without page-level coverage."""
+    return bool(knowledge and knowledge.get("status") == "ready" and not (knowledge.get("coverage") or {}).get("page_detail"))
+
+
+def extraction_state(chunks: list[dict[str, Any]]) -> str:
+    """Whether a file's stored text (its chunks, in order) has page markers.
+
+    legacy: read before page markers existed; current: every page chunk starts with one;
+    interrupted: a re-read stopped between saving the new chunks and removing the old ones
+    (both sets are there: pages go backwards, or marked and unmarked chunks are mixed);
+    not_applicable: no page or slide locations (Word or text files).
+    """
+    marked = legacy = 0
+    backwards = False
+    previous = 0
+    for chunk in chunks:
+        match = _RANGE.match(chunk.get("location_label") or "")
+        if not match:
+            continue
+        if PAGE_MARKER.match(chunk["content"]):
+            marked += 1
+        else:
+            legacy += 1
+        start = int(match.group(2))
+        backwards = backwards or start < previous
+        previous = start
+    if backwards or (marked and legacy):
+        return "interrupted"
+    return "legacy" if legacy else "current" if marked else "not_applicable"
 
 
 def knowledge_state(knowledge: dict[str, Any] | None, content_sha256: str | None) -> str:
@@ -338,10 +374,11 @@ class LectureKnowledgeService:
         """Builds and saves the profile. Never raises for a model or content problem: it saves 'failed'.
 
         An identical copy (same professor, same SHA-256) with a current profile is copied instead of
-        analysed again, and two copies are never analysed at the same time.
+        analysed again, and two copies are never analysed at the same time. A ready profile stays in
+        place (and in use) until its replacement is saved; a failed rebuild never removes it.
         """
         keys = {document.id, *([f"sha:{document.content_sha256}"] if document.content_sha256 else [])}
-        if keys & _building:
+        if keys & _building or document.id in _extracting:
             return None
         _building.update(keys)
         try:
@@ -364,7 +401,10 @@ class LectureKnowledgeService:
             ],
             limit=10,
         )
-        knowledge = next((row["knowledge"] for row in twins if is_current(row.get("knowledge"), document.content_sha256)), None)
+        current = [row["knowledge"] for row in twins if is_current(row.get("knowledge"), document.content_sha256)]
+        # A copy without page-level detail is no better than a profile this file already has.
+        has_own = (await self.get(document.id) or {}).get("status") == "ready"
+        knowledge = next((k for k in current if not is_legacy(k)), None if has_own else next(iter(current), None))
         if knowledge is None:
             return None
         await self._save(document.id, knowledge, summary=knowledge_summary(knowledge))
@@ -374,16 +414,19 @@ class LectureKnowledgeService:
         started = datetime.now(UTC).isoformat()
         tokens_before = (self.usage.input_tokens, self.usage.output_tokens, self.usage.model_calls)
         base = {"version": KNOWLEDGE_VERSION, "content_sha256": document.content_sha256, "started_at": started}
-        await self._save(document.id, {**base, "status": "building"})
+        # A working profile keeps serving assessments while its replacement is built.
+        previous = await self.get(document.id)
+        kept = {k: v for k, v in previous.items() if k != "rebuild"} if (previous or {}).get("status") == "ready" else None
+        await self._save(
+            document.id,
+            {**kept, "rebuild": {"status": "building", "started_at": started}} if kept else {**base, "status": "building"},
+        )
         try:
-            chunks = await self.db.select(
-                "document_chunks",
-                columns="chunk_index, content, location_label",
-                filters=[("document_id", "eq", document.id), ("professor_id", "eq", self.db.professor_id)],
-                order=[("chunk_index", "asc")],
-            )
+            chunks = await self._chunks(document.id)
             if not chunks:
                 raise AppError("This file has no extracted text to analyse.")
+            if extraction_state(chunks) == "interrupted":
+                raise AppError("Re-reading this file was interrupted. Re-read it again before building its lecture knowledge.")
             segments = split_segments(chunks)
             framer = DataFramer()
             results: list[SegmentKnowledge] = await gather_limited(
@@ -423,10 +466,22 @@ class LectureKnowledgeService:
             await self._save(document.id, knowledge, summary=knowledge_summary(knowledge))
             return knowledge
         except AppError as error:
-            return await self._failed(document.id, base, error.message, tokens_before)
+            return await self._failed(document.id, base, kept, error.message, tokens_before)
         except Exception as error:  # an unexpected failure must not leave it "building"
             logger.warning("Lecture knowledge for %s failed: %s", document.id, type(error).__name__)
-            return await self._failed(document.id, base, "The lecture couldn't be analysed. Try again.", tokens_before)
+            return await self._failed(document.id, base, kept, "The lecture couldn't be analysed. Try again.", tokens_before)
+
+    async def _chunks(self, document_id: str) -> list[dict[str, Any]]:
+        return await self.db.select(
+            "document_chunks",
+            columns="chunk_index, content, location_label",
+            filters=[("document_id", "eq", document_id), ("professor_id", "eq", self.db.professor_id)],
+            order=[("chunk_index", "asc")],
+        )
+
+    async def extraction(self, document_id: str) -> str:
+        """The stored text's extraction state (see extraction_state)."""
+        return extraction_state(await self._chunks(document_id))
 
     async def _analyse(
         self, framer: DataFramer, document: DocumentRecord, segment: list[dict[str, Any]], index: int, total: int
@@ -476,8 +531,17 @@ class LectureKnowledgeService:
             "model_calls": self.usage.model_calls - before[2],
         }
 
-    async def _failed(self, document_id: str, base: dict[str, Any], message: str, before: tuple[int, int, int]) -> dict[str, Any]:
-        knowledge = {**base, "status": "failed", "error": message[:500], "usage": self._usage_since(before)}
+    async def _failed(
+        self,
+        document_id: str,
+        base: dict[str, Any],
+        kept: dict[str, Any] | None,
+        message: str,
+        before: tuple[int, int, int],
+    ) -> dict[str, Any]:
+        failure = {"status": "failed", "error": message[:500], "usage": self._usage_since(before)}
+        # A failed rebuild is recorded beside the working profile, which stays as it was.
+        knowledge = {**kept, "rebuild": {**failure, "started_at": base["started_at"]}} if kept else {**base, **failure}
         await self._save(document_id, knowledge)
         return knowledge
 
@@ -495,6 +559,20 @@ class LectureKnowledgeService:
 
 def is_building(document_id: str) -> bool:
     return document_id in _building
+
+
+def is_extracting(document_id: str) -> bool:
+    return document_id in _extracting
+
+
+@contextmanager
+def extracting(document_id: str) -> Iterator[None]:
+    """Marks a document's text as being re-read, so its profile isn't built from half-replaced chunks."""
+    _extracting.add(document_id)
+    try:
+        yield
+    finally:
+        _extracting.discard(document_id)
 
 
 # -----------------------------------------------------------------------------
@@ -740,9 +818,14 @@ def overview(knowledge: dict[str, Any] | None, document: DocumentRecord) -> dict
     profile = knowledge or {}
     coverage = profile.get("coverage")
     usage = profile.get("usage")
+    rebuild = profile.get("rebuild")
     return {
         "state": state,
         "error": profile.get("error") if state == "failed" else None,
+        # Built from text without page markers: it works, and a re-read plus rebuild adds page detail.
+        "legacy": is_legacy(profile),
+        # A rebuild in progress or failed beside the working profile, which stays in use meanwhile.
+        "rebuild": {"state": rebuild["status"], "error": rebuild.get("error")} if rebuild else None,
         "title": profile.get("title"),
         "overview": profile.get("overview"),
         "sections": profile.get("sections", []),
@@ -770,4 +853,6 @@ def overview(knowledge: dict[str, Any] | None, document: DocumentRecord) -> dict
             else None
         ),
         "estimate": estimate_build(document.extracted_characters),
+        # Re-reading makes no language-model call: only its new chunks are embedded.
+        "rereadEstimate": {"embeddingTokens": (document.extracted_characters or 0) // 4 + 10 * (document.page_count or 0)},
     }

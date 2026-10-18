@@ -30,10 +30,11 @@ from app.schemas.api import (
 from app.schemas.common import parse_id
 from app.services.assessment_context import AssessmentContextService
 from app.services.document_ingestion import DocumentIngestionService
+from app.services.document_parsers import PDF, PPTX
 from app.services.exam_generation import ExamGenerationService
 from app.services.exam_store import ExamStore, serialize_exam
 from app.services.jobs import RUN_COLUMNS, RunContext, is_stale, job_runner, public_run
-from app.services.lecture_knowledge import LectureKnowledgeService, is_building
+from app.services.lecture_knowledge import LectureKnowledgeService, extracting, is_building, is_extracting
 from app.services.lecture_knowledge import overview as lecture_overview
 from app.services.prompt_interpreter import PromptInterpreterService, stale_reasons
 from app.services.style_analysis import StyleAnalysisService
@@ -200,12 +201,52 @@ async def document_knowledge(
 ) -> dict[str, Any]:
     """An owned document's lecture knowledge: state, structure, topics, coverage, warnings and a build estimate."""
     document = await AssessmentContextService(db).get_document(document_id)
-    knowledge = await LectureKnowledgeService(db, ai).get(document.id)
+    service = LectureKnowledgeService(db, ai)
+    knowledge = await service.get(document.id)
     result = lecture_overview(knowledge, document)
+    interrupted = "Building the lecture knowledge was interrupted. Build it again."
     if result["state"] == "building" and not is_building(document.id):
         result["state"] = "failed"  # interrupted (e.g. by a restart): it can be rebuilt
-        result["error"] = "Building the lecture knowledge was interrupted. Build it again."
+        result["error"] = interrupted
+    if result["rebuild"] and result["rebuild"]["state"] == "building" and not is_building(document.id):
+        result["rebuild"] = {"state": "failed", "error": interrupted}
+    # Whether the stored text has page markers (a free re-read adds them; see refresh_extraction).
+    result["extraction"] = {
+        "state": "processing" if is_extracting(document.id) else await service.extraction(document.id),
+        "rereadable": document.processing_status == "ready" and (document.mime_type or "").lower() in _REREADABLE,
+    }
     return result
+
+
+# Files whose text a re-read can improve (page and slide markers); never images (AI-read).
+_REREADABLE = {PDF, PPTX}
+
+
+@router.post("/documents/{document_id}/extraction")
+async def reread_document(
+    document_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> dict[str, Any]:
+    """Re-reads one owned lecture's stored text with the current parser, only when the professor asks.
+
+    Free of language-model calls (only the new chunks are embedded). The document, its links and its
+    lecture knowledge are kept; rebuilding the knowledge is a separate, confirmed step.
+    """
+    document = await AssessmentContextService(db).get_document(document_id)
+    if document.processing_status != "ready" or (document.mime_type or "").lower() not in _REREADABLE:
+        raise ConflictError("Only a PDF or PowerPoint file that has been read can be re-read.", code="not_rereadable")
+    if document.id in _reading or is_building(document.id) or is_extracting(document.id):
+        raise ConflictError("This file is busy (being read or analysed). Try again when it's done.", code="busy")
+    # Reserved before the first await, so a second request can't start it too.
+    usage = Usage()
+    with extracting(document.id):
+        async with timed("source_reread", usage):
+            chunks = await DocumentIngestionService(db, ai, usage).refresh_extraction(document)
+    refreshed = await AssessmentContextService(db).get_document(document.id)
+    return {
+        "chunks": chunks,
+        "pageCount": refreshed.page_count,
+        "extraction": await LectureKnowledgeService(db, ai).extraction(document.id),
+    }
 
 
 @router.post("/documents/{document_id}/knowledge", status_code=status.HTTP_202_ACCEPTED)
@@ -219,6 +260,8 @@ async def build_document_knowledge(
     document = await AssessmentContextService(db).get_document(document_id)
     if document.category != "course_material" or document.processing_status != "ready":
         raise ConflictError("Lecture knowledge is built for course material once it's read.", code="not_ready")
+    if is_extracting(document.id):
+        raise ConflictError("This file is being re-read. Build its lecture knowledge when that's done.", code="busy")
     if is_building(document.id):
         return {"state": "building"}
 

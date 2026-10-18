@@ -139,29 +139,12 @@ class DocumentIngestionService:
         parsed = await self._extract(document, data)
         if parsed.character_count == 0:
             raise DocumentParseError("No readable text was found in this file.")
-        units = _trim_units(parsed.units, settings.max_extracted_characters)
-        chunks = chunk_units(units)
-        vectors = await self.ai.embed([chunk.text for chunk in chunks], usage=self.usage)
+        units, rows = await self._chunk_rows(document, parsed)
         # Course material's summary comes from its lecture knowledge profile (built next, from
         # the whole text), so it isn't paid for twice; other files get the short overview.
         summary = None if document.category == "course_material" else await self._summarize(document, units)
 
         await self.db.delete("document_chunks", filters=[("document_id", "eq", document.id)])
-        rows = [
-            {
-                "document_id": document.id,
-                "chunk_index": index,
-                "content": chunk.text,
-                "page_start": chunk.page_start,
-                "page_end": chunk.page_end,
-                "location_label": chunk.location_label,
-                "token_estimate": estimate_tokens(chunk.text),
-                "embedding": vector_literal(vector),
-                # exam_project_id and category are filled in from the document by a trigger.
-                "category": document.category,
-            }
-            for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True))
-        ]
         for start in range(0, len(rows), _INSERT_BATCH):
             await self.db.insert("document_chunks", rows[start : start + _INSERT_BATCH], columns="id")
 
@@ -178,18 +161,90 @@ class DocumentIngestionService:
             },
         )
 
+    async def _chunk_rows(self, document: DocumentRecord, parsed: ParsedDocument) -> tuple[list[TextUnit], list[dict[str, Any]]]:
+        """The document's units (trimmed to the reading limit) and its embedded chunk rows."""
+        units = _trim_units(parsed.units, settings.max_extracted_characters)
+        chunks = chunk_units(units)
+        vectors = await self.ai.embed([chunk.text for chunk in chunks], usage=self.usage)
+        rows = [
+            {
+                "document_id": document.id,
+                "chunk_index": index,
+                "content": chunk.text,
+                "page_start": chunk.page_start,
+                "page_end": chunk.page_end,
+                "location_label": chunk.location_label,
+                "token_estimate": estimate_tokens(chunk.text),
+                "embedding": vector_literal(vector),
+                # exam_project_id and category are filled in from the document by a trigger.
+                "category": document.category,
+            }
+            for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True))
+        ]
+        return units, rows
+
+    async def refresh_extraction(self, document: DocumentRecord) -> int:
+        """Re-reads a ready file's stored text with the current parser (page markers, figure notes).
+
+        Only the chunks and the text size change: the document, its file, course and assessment
+        links, summary and lecture knowledge stay as they are (the profile stays in use until the
+        professor rebuilds it). No language-model call is made; only the new chunks are embedded.
+        The new chunks are saved before the old ones are removed, so search never loses the file;
+        a failure removes what was added, and an interrupted re-read is cleaned up by the next one.
+        Raises AppError, changing nothing, if the file would need paid transcription or no longer
+        matches what was read. Returns the number of chunks.
+        """
+        mime = (document.mime_type or "").lower()
+        data = await self.db.download(BUCKET, document.storage_path)
+        if hashlib.sha256(data).hexdigest() != document.content_sha256:
+            raise AppError("The stored file doesn't match what was read before, so it wasn't re-read.")
+        try:
+            parsed = await asyncio.to_thread(parse_document, data, mime)
+        except DocumentParseError as error:
+            raise AppError(str(error)) from error
+        if _scanned_pages(parsed, mime):
+            raise AppError(
+                "Part of this file was transcribed by AI when it was read. Re-reading it would repeat that paid "
+                "transcription, so it wasn't changed."
+            )
+        if parsed.character_count == 0:
+            raise AppError("No readable text was found in this file, so it wasn't changed.")
+        units, rows = await self._chunk_rows(document, parsed)
+        mine = [("document_id", "eq", document.id), ("professor_id", "eq", self.db.professor_id)]
+        last = await self.db.select(
+            "document_chunks", columns="chunk_index", filters=mine, order=[("chunk_index", "desc")], limit=1
+        )
+        base = last[0]["chunk_index"] + 1 if last else 0
+        try:
+            for start in range(0, len(rows), _INSERT_BATCH):
+                batch = [{**row, "chunk_index": base + row["chunk_index"]} for row in rows[start : start + _INSERT_BATCH]]
+                await self.db.insert("document_chunks", batch, columns="id")
+        except Exception:
+            await self.db.delete("document_chunks", filters=[*mine, ("chunk_index", "gte", base)])
+            raise
+        # Everything before `base`: the old chunks, and any left by an interrupted re-read.
+        await self.db.delete("document_chunks", filters=[*mine, ("chunk_index", "lt", base)])
+        await self._update(
+            document.id,
+            {
+                "page_count": parsed.page_count,
+                "extracted_characters": sum(len(unit.text) for unit in units),
+                "processed_at": now_iso(),
+            },
+        )
+        return len(rows)
+
     async def _extract(self, document: DocumentRecord, data: bytes) -> ParsedDocument:
         mime = (document.mime_type or "").lower()
         if mime in IMAGE_TYPES:
             text = await self._read_image(document, data, mime)
             return ParsedDocument(units=[TextUnit(text=text, kind=None, heading="Image")])
         parsed = await asyncio.to_thread(parse_document, data, mime)
-        if mime == PDF and parsed.pages_without_text and parsed.page_count:
+        pages = _scanned_pages(parsed, mime)
+        if pages:
             # Mostly scanned: transcribe the pages that have no text layer.
-            if len(parsed.pages_without_text) >= max(1, parsed.page_count // 2):
-                pages = parsed.pages_without_text[: settings.max_ocr_pages]
-                transcribed = await self._transcribe_pdf_pages(document, data, pages)
-                parsed.units = sorted([*parsed.units, *transcribed], key=lambda unit: unit.page_start or 0)
+            transcribed = await self._transcribe_pdf_pages(document, data, pages)
+            parsed.units = sorted([*parsed.units, *transcribed], key=lambda unit: unit.page_start or 0)
         return parsed
 
     async def _read_image(self, document: DocumentRecord, data: bytes, mime: str) -> str:
@@ -303,6 +358,15 @@ class DocumentIngestionService:
             filters=[("id", "eq", document_id), ("professor_id", "eq", self.db.professor_id)],
             columns="id",
         )
+
+
+def _scanned_pages(parsed: ParsedDocument, mime: str) -> list[int]:
+    """The pages to transcribe with AI: those without a text layer, when a PDF is mostly scanned."""
+    if mime != PDF or not parsed.pages_without_text or not parsed.page_count:
+        return []
+    if len(parsed.pages_without_text) < max(1, parsed.page_count // 2):
+        return []
+    return parsed.pages_without_text[: settings.max_ocr_pages]
 
 
 def _data_url(mime: str, data: bytes) -> str:

@@ -94,6 +94,65 @@ test("building asks first, showing the estimated cost, and starts only when conf
   await expect.element(screen.getByText("Building lecture knowledge…")).toBeVisible();
 });
 
+test("a legacy lecture refreshes in two confirmed steps: a free re-read, then a paid rebuild", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  let extraction: "legacy" | "current" = "legacy";
+  vi.mocked(apiRequest).mockImplementation(async (path, options) => {
+    if ((options as { method?: string } | undefined)?.method === "POST") {
+      if (String(path).endsWith("/extraction")) extraction = "current";
+      return { state: "building" };
+    }
+    return {
+      ...READY,
+      legacy: true,
+      rebuild: null,
+      extraction: { state: extraction, rereadable: true },
+      rereadEstimate: { embeddingTokens: 15000 },
+    };
+  });
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "ready", topics: 2 })} />);
+  await screen.getByRole("button", { name: "View" }).click();
+  await expect.element(screen.getByText(/Step 1 \(free\): re-read it/)).toBeVisible();
+
+  await screen.getByRole("button", { name: "Re-read file" }).click();
+  await expect.poll(() => confirm.mock.calls.length).toBe(1);
+  expect(confirm.mock.calls[0][0]).toMatch(/No AI analysis is done[\s\S]*about 15k tokens, well under one cent/);
+  expect(confirm.mock.calls[0][0]).toMatch(/current lecture knowledge stay as they are/);
+  await expect.element(screen.getByText(/Step 2: rebuild the lecture knowledge/)).toBeVisible();
+  // The re-read never starts the paid build.
+  expect(
+    vi.mocked(apiRequest).mock.calls.some(
+      ([path, options]) => String(path).endsWith("/knowledge") && (options as { method?: string })?.method === "POST",
+    ),
+  ).toBe(false);
+
+  await screen.getByRole("button", { name: "Rebuild lecture knowledge" }).click();
+  await expect.poll(() => confirm.mock.calls.length).toBe(2);
+  expect(confirm.mock.calls[1][0]).toMatch(/Estimated cost: 2 AI calls/);
+  expect(confirm.mock.calls[1][0]).toMatch(/stays in use until the new one is ready, and is kept if this fails/);
+  await expect
+    .poll(() => vi.mocked(apiRequest).mock.calls.filter(([, options]) => (options as { method?: string })?.method === "POST"))
+    .toEqual([
+      ["/api/documents/lecture-1/extraction", { method: "POST" }],
+      ["/api/documents/lecture-1/knowledge", { method: "POST" }],
+    ]);
+});
+
+test("a failed rebuild says the previous lecture knowledge is still in use", async () => {
+  vi.mocked(apiRequest).mockResolvedValue({
+    ...READY,
+    legacy: true,
+    rebuild: { state: "failed", error: "The AI service is busy." },
+    extraction: { state: "current", rereadable: true },
+  });
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "ready", topics: 2 })} />);
+  await screen.getByRole("button", { name: "View" }).click();
+  await expect
+    .element(screen.getByText("Rebuilding failed: The AI service is busy. The previous lecture knowledge is still in use."))
+    .toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Retry rebuild" })).toBeVisible();
+});
+
 test("nothing is shown for a file that isn't read yet", async () => {
   const screen = await render(<LectureKnowledgePanel source={source({ state: "none", topics: null }, "processing")} />);
   expect(screen.getByText(/lecture knowledge/i).query()).toBeNull();

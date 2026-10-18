@@ -30,7 +30,8 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
   const load = useCallback(async () => {
     const knowledge = await apiRequest<LectureKnowledge>(`/api/documents/${source.id}/knowledge`);
     setDetails(knowledge);
-    setState(knowledge.state);
+    // A rebuild runs beside the working profile: show it, and keep checking until it's done.
+    setState(knowledge.rebuild?.state === "building" ? "building" : knowledge.state);
     setTopics(knowledge.topics.length || null);
     return knowledge;
   }, [source.id]);
@@ -52,15 +53,41 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
     setBusy(true);
     setProblem(null);
     try {
-      const { estimate } = details ?? (await load());
+      const { estimate, topics: existing } = details ?? (await load());
       const confirmed = window.confirm(
         `Analyse “${source.name}” in full to build its lecture knowledge?\n\n` +
           `Estimated cost: ${estimate.modelCalls} AI calls, about ${formatTokens(estimate.inputTokens)} input and ` +
-          `${formatTokens(estimate.outputTokens)} output tokens. It's done once and reused by every assessment.`,
+          `${formatTokens(estimate.outputTokens)} output tokens. It's done once and reused by every assessment.` +
+          (existing.length > 0
+            ? "\n\nThe current lecture knowledge stays in use until the new one is ready, and is kept if this fails."
+            : ""),
       );
       if (!confirmed) return;
       await apiRequest(`/api/documents/${source.id}/knowledge`, { method: "POST" });
       setState("building");
+    } catch (cause) {
+      setProblem(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** The free first step of a refresh: re-read the file's text with page-level detail. */
+  async function reread() {
+    setBusy(true);
+    setProblem(null);
+    try {
+      const { rereadEstimate } = details ?? (await load());
+      const confirmed = window.confirm(
+        `Re-read “${source.name}” to add page-level detail?\n\n` +
+          `No AI analysis is done: only the new text is indexed for search (one embedding request, about ` +
+          `${formatTokens(rereadEstimate?.embeddingTokens ?? 0)} tokens, well under one cent). The file, its ` +
+          "assessments and its current lecture knowledge stay as they are. Rebuilding the lecture knowledge is a " +
+          "separate step that asks first.",
+      );
+      if (!confirmed) return;
+      await apiRequest(`/api/documents/${source.id}/extraction`, { method: "POST" });
+      await load();
     } catch (cause) {
       setProblem(errorMessage(cause));
     } finally {
@@ -78,6 +105,12 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
 
   const action =
     state === "none" ? "Build lecture knowledge" : state === "outdated" ? "Rebuild" : state === "failed" ? "Retry" : null;
+  const extraction = details?.extraction;
+  // Refresh, in two steps: a free re-read for page markers, then a paid rebuild that asks first.
+  const needsReread =
+    state !== "building" && !!extraction?.rereadable && (extraction.state === "legacy" || extraction.state === "interrupted");
+  const needsRebuild = state === "ready" && !!details?.legacy && extraction?.state === "current";
+  const rebuildFailed = state === "ready" && details?.rebuild?.state === "failed";
   return (
     <div className="mt-1.5 flex flex-col gap-1.5 text-[11px]">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -89,7 +122,8 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
           ) : (
             <BrainCircuit className="size-3" />
           )}
-          {state === "building" && "Building lecture knowledge…"}
+          {state === "building" &&
+            (topics ? "Rebuilding lecture knowledge… (the current version stays in use)" : "Building lecture knowledge…")}
           {state === "ready" && `Lecture knowledge · ${topics ?? 0} ${topics === 1 ? "topic" : "topics"}`}
           {state === "none" && "No lecture knowledge yet"}
           {state === "outdated" && "Lecture knowledge is out of date"}
@@ -117,6 +151,39 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
         <p role="alert" className="text-destructive">
           {problem}
         </p>
+      )}
+      {open && (needsReread || needsRebuild || rebuildFailed) && (
+        <div className="flex flex-col gap-1 rounded-lg border border-dashed p-2">
+          {rebuildFailed && (
+            <p className="text-destructive">
+              Rebuilding failed: {details?.rebuild?.error ?? "try again"} The previous lecture knowledge is still in use.
+            </p>
+          )}
+          {needsReread && (
+            <p className="text-muted-foreground">
+              {extraction?.state === "interrupted"
+                ? "Re-reading this file was interrupted. Re-read it to finish."
+                : "This file was read before page-level detail existed. Step 1 (free): re-read it."}
+            </p>
+          )}
+          {needsRebuild && !rebuildFailed && (
+            <p className="text-muted-foreground">
+              The text now has page-level detail. Step 2: rebuild the lecture knowledge to use it.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-x-3">
+            {needsReread && (
+              <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" disabled={busy} onClick={() => void reread()}>
+                Re-read file
+              </Button>
+            )}
+            {(needsRebuild || rebuildFailed) && !needsReread && (
+              <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" disabled={busy} onClick={() => void build()}>
+                {rebuildFailed ? "Retry rebuild" : "Rebuild lecture knowledge"}
+              </Button>
+            )}
+          </div>
+        </div>
       )}
       {open && details && <KnowledgeOverview knowledge={details} />}
     </div>

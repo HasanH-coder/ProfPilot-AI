@@ -307,6 +307,14 @@ export type LectureKnowledge = {
   usage: { inputTokens: number; outputTokens: number; modelCalls: number } | null;
   /** A rough estimate of a (re)build, shown before it starts. */
   estimate: { modelCalls: number; inputTokens: number; outputTokens: number };
+  /** Built from text without page markers: usable, without page-level coverage. */
+  legacy?: boolean;
+  /** A rebuild running or failed beside the working profile, which stays in use meanwhile. */
+  rebuild?: { state: "building" | "failed"; error: string | null } | null;
+  /** Whether the stored text has page markers, and whether a (free) re-read can add them. */
+  extraction?: { state: "legacy" | "current" | "interrupted" | "not_applicable" | "processing"; rereadable: boolean };
+  /** A re-read makes no AI analysis call: only its new text is embedded for search. */
+  rereadEstimate?: { embeddingTokens: number };
 };
 
 export type RealtimeSecret ={ clientSecret: string; expiresAt: number; model: string };
