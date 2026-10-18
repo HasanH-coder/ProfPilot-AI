@@ -146,6 +146,28 @@ def test_a_profile_is_built_once_and_reused_by_an_identical_file(supabase, db_a,
     assert knowledge_of(db_a, copy["id"])["topics"] == knowledge_of(db_a, first["id"])["topics"]
 
 
+def test_a_copy_of_an_unprofiled_lecture_never_starts_a_paid_build(supabase, db_a, ai, monkeypatch):
+    # An existing lecture (read before profiles existed) and an unread copy of it in an old assessment.
+    course = run(seed_course(db_a))
+    data = pdf_bytes(["Logistic regression models the log-odds as a linear function."])
+    original = run(seed_course_source(supabase, db_a, course["id"], data=data))
+    monkeypatch.setattr(DocumentIngestionService, "_ensure_knowledge", lambda self, doc: _no_build())
+    process(db_a, ai, original["id"])
+    monkeypatch.undo()
+    assert knowledge_of(db_a, original["id"]) is None
+    calls = len(ai.calls)
+
+    assessment = run(seed_assessment(db_a, course_id=course["id"]))
+    copy = run(seed_document(supabase, db_a, assessment["id"], data=data))
+    processed = process(db_a, ai, copy["id"])  # e.g. opening the old assessment
+    assert processed.processing_status == "ready" and len(ai.calls) == calls  # chunks copied, no AI call
+    assert knowledge_of(db_a, copy["id"]) is None  # built only on request
+
+
+async def _no_build() -> bool:
+    return False
+
+
 def test_an_outdated_profile_is_offered_for_rebuild_never_rebuilt_silently(api, supabase, db_a, ai, monkeypatch):
     course = run(seed_course(db_a))
     source = run(seed_course_source(supabase, db_a, course["id"]))

@@ -90,11 +90,13 @@ class DocumentIngestionService:
     async def process(self, document: DocumentRecord) -> DocumentRecord:
         """Processes one file. Never raises for a bad file: it is marked failed instead."""
         await self._update(document.id, {"processing_status": "processing", "processing_error": None})
+        newly_read = False
         try:
             data = await self.db.download(BUCKET, document.storage_path)
             digest = hashlib.sha256(data).hexdigest()
             if not await self._copy_from_identical(document, digest):
                 await self._ingest(document, data, digest)
+                newly_read = True
         except DocumentParseError as error:
             await self._fail(document, str(error))
         except AIServiceError as error:
@@ -105,7 +107,10 @@ class DocumentIngestionService:
             logger.warning("Processing %s failed: %s", document.id, type(error).__name__)
             await self._fail(document, "This file couldn't be read. It may be damaged or in an unusual format.")
         processed = await self._reload(document)
-        if await self._ensure_knowledge(processed):
+        # Only text read for the first time gets a profile automatically. A copy of a file the
+        # professor already has reuses its profile (copied above) or waits for an explicit build,
+        # so opening an old assessment never starts paid analysis of existing lectures.
+        if newly_read and await self._ensure_knowledge(processed):
             processed = await self._reload(document)  # with the summary the profile wrote
         return processed
 
