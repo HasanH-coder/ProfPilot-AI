@@ -6,12 +6,11 @@ import { WorkspaceSidebar } from "@/components/layout/workspace-sidebar";
 import { professor } from "./fixtures";
 import { navigation } from "./mocks/navigation";
 
-test("Resources is no longer in the sidebar", async () => {
+test("Sources is available in the sidebar", async () => {
   const screen = await render(<WorkspaceSidebar professor={professor} />);
   const nav = screen.getByRole("navigation", { name: "Workspace" });
   await expect.element(nav.getByRole("link", { name: "Assessments" })).toBeVisible();
-  expect(screen.getByText("Resources").query()).toBeNull();
-  expect(screen.getByText("Soon", { exact: true }).query()).toBeNull();
+  await expect.element(nav.getByRole("link", { name: "Sources" })).toHaveAttribute("href", "/workspace/sources");
 });
 
 test("AI Assistant opens Assessment Setup with the assistant, as a normal prefetched link", async () => {

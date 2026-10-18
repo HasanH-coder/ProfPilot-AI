@@ -16,6 +16,7 @@ the professor instead of changed.
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,9 +27,24 @@ from app.domain import distribution
 from app.schemas.ai import QuestionFix, ReviewIssue, ReviewOutput
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
 from app.services.exam_generation import GenerationContext, load_generation_context
-from app.services.exam_store import ExamStore, FullExam, question_problems, render_question, row_to_content, similar
+from app.services.exam_store import (
+    ExamStore,
+    FullExam,
+    question_problems,
+    question_texts,
+    render_question,
+    row_to_content,
+    similar,
+)
+from app.services.lecture_knowledge import unverified_refs
 
 logger = logging.getLogger("profpilot.review")
+
+# Mathematics in a question: LaTeX, or an equation between letters and numbers.
+_MATHS = re.compile(r"\\\(|\\\[|\\frac|\\sum|[A-Za-z0-9)]\s*=\s*[-A-Za-z0-9(\\]")
+
+# The review category of each distribution warning (see distribution.compare).
+_DIMENSION_CATEGORIES = {"format": "format", "difficulty": "difficulty", "bloom": "cognitive_level", "duration": "duration"}
 
 
 class ExamReviewService:
@@ -127,14 +143,14 @@ class ExamReviewService:
                             )
                         )
                         break
+            if version["id"] == primary["id"]:
+                issues.extend(self._unverified_formula_issues(full, questions, ctx))
             summary = distribution.summarize(questions)
             for warning in distribution.compare(summary, spec):
                 issues.append(
                     _issue(
                         "warning",
-                        "difficulty"
-                        if warning["dimension"] == "difficulty"
-                        else ("duration" if warning["dimension"] == "duration" else "format"),
+                        _DIMENSION_CATEGORIES[warning["dimension"]],
                         f"Version {version['label']}: {warning['message']}",
                         None,
                         None,
@@ -158,16 +174,17 @@ class ExamReviewService:
                                 source="check",
                             )
                         )
-                    elif (twin["type"], twin["difficulty"], float(twin["points"])) != (
+                    elif (twin["type"], twin["difficulty"], twin.get("cognitive_level"), float(twin["points"])) != (
                         source["type"],
                         source["difficulty"],
+                        source.get("cognitive_level"),
                         float(source["points"]),
                     ):
                         issues.append(
                             _issue(
                                 "warning",
                                 "version_consistency",
-                                f"Question {number} differs in type, difficulty or points between versions "
+                                f"Question {number} differs in type, difficulty, Bloom's level or points between versions "
                                 f"{primary['label']} and {version['label']}.",
                                 twin,
                                 number,
@@ -175,6 +192,32 @@ class ExamReviewService:
                                 source="check",
                             )
                         )
+        return issues
+
+    def _unverified_formula_issues(
+        self, full: FullExam, questions: list[dict[str, Any]], ctx: GenerationContext
+    ) -> list[dict[str, Any]]:
+        """Questions with mathematics, planned on lecture topics whose formulas weren't reliably
+        extracted: the professor confirms them against the original pages before use."""
+        plan = full.exam.get("plan") or {}
+        refs_by_number = {slot.get("number"): slot.get("knowledge_refs") or [] for slot in plan.get("questions", [])}
+        issues = []
+        for number, row in enumerate(questions, start=1):
+            topics = unverified_refs(refs_by_number.get(row.get("position"), []), ctx.documents, ctx.knowledge)
+            if topics and _MATHS.search(" ".join(question_texts(row_to_content(row)))):
+                issues.append(
+                    _issue(
+                        "warning",
+                        "answer_key",
+                        f"Question {number} uses mathematics from lecture material whose formulas weren't reliably "
+                        f"extracted: {'; '.join(topics)}. Confirm its formulas and answer against the original "
+                        "slides before using it.",
+                        row,
+                        number,
+                        full.primary_version["label"],
+                        source="check",
+                    )
+                )
         return issues
 
     # -- AI review ----------------------------------------------------------------------
@@ -266,6 +309,13 @@ class ExamReviewService:
             if abs(sum(item.points for item in fix.rubric) - float(row["points"])) > 0.01:
                 return False
             values["rubric"] = [item.model_dump() for item in fix.rubric]
+        elif fix.kind == "relabel_cognitive_level":
+            # Only the label changes, to the level the question really assesses;
+            # rewriting it to reach another level is left to the professor.
+            level = fix.cognitive_level
+            if not level or level == row.get("cognitive_level") or (row["type"] == "mcq" and level == "create"):
+                return False
+            values["cognitive_level"] = level
         elif fix.kind == "clarify_wording":
             prompt = (fix.prompt or "").strip()
             old = row["prompt"]

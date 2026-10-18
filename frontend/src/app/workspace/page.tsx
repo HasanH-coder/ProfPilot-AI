@@ -12,8 +12,7 @@ import { getCurrentProfessor } from "@/lib/auth/current-professor";
 export const metadata: Metadata = { title: "Workspace" };
 
 export default async function WorkspaceHomePage() {
-  const professor = await getCurrentProfessor();
-  const recentAssessments = await getAssessments({ limit: 3 });
+  const [professor, recentAssessments] = await Promise.all([getCurrentProfessor(), getAssessments({ limit: 3 })]);
 
   return (
     <div className="flex flex-col gap-12">

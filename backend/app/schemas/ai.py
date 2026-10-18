@@ -8,19 +8,36 @@ add up to 100, an answer key that matches a choice, points that add up) are
 checked in code before anything is saved.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 QuestionType = Literal["mcq", "short_answer", "long_answer", "problem"]
 Difficulty = Literal["easy", "medium", "hard"]
 # Where a setting came from, so the professor can see what they decided and what
 # the AI added.
 Provenance = Literal["professor", "ai_inferred", "ai_assumption"]
-CognitiveLevel = Literal["recall", "understanding", "application", "analysis", "evaluation", "creation"]
+# Bloom's taxonomy: the thinking a question asks for. Independent of difficulty
+# (an Analyze question can be medium; an Apply question can be hard).
+CognitiveLevel = Literal["remember", "understand", "apply", "analyze", "evaluate", "create"]
+# How the professor chose the cognitive mix: ProfPilot recommends it (automatic),
+# a preset, or their own percentages (custom). See app/domain/setup.py.
+LearningFocus = Literal["automatic", "balanced", "practical", "critical", "custom"]
 
 QUESTION_TYPES: tuple[QuestionType, ...] = ("mcq", "short_answer", "long_answer", "problem")
 DIFFICULTIES: tuple[Difficulty, ...] = ("easy", "medium", "hard")
+COGNITIVE_LEVELS: tuple[CognitiveLevel, ...] = ("remember", "understand", "apply", "analyze", "evaluate", "create")
+
+# Plans saved before Bloom's own names were used have these labels.
+_LEGACY_LEVELS = {
+    "recall": "remember",
+    "understanding": "understand",
+    "application": "apply",
+    "analysis": "analyze",
+    "evaluation": "evaluate",
+    "creation": "create",
+}
+PlannedLevel = Annotated[CognitiveLevel, BeforeValidator(lambda value: _LEGACY_LEVELS.get(value, value))]
 QUESTION_TYPE_LABELS: dict[str, str] = {
     "mcq": "Multiple choice",
     "short_answer": "Short answer",
@@ -58,6 +75,22 @@ class DifficultySpec(BaseModel):
     source: Provenance
 
 
+class BloomSpec(BaseModel):
+    """Share of the assessment's marks at each Bloom's level, and the learning focus it follows."""
+
+    focus: LearningFocus
+    remember_percent: int = Field(ge=0, le=100)
+    understand_percent: int = Field(ge=0, le=100)
+    apply_percent: int = Field(ge=0, le=100)
+    analyze_percent: int = Field(ge=0, le=100)
+    evaluate_percent: int = Field(ge=0, le=100)
+    create_percent: int = Field(ge=0, le=100)
+    source: Provenance
+
+    def shares(self) -> dict[str, int]:
+        return {level: getattr(self, f"{level}_percent") for level in COGNITIVE_LEVELS}
+
+
 class CoverageTopic(BaseModel):
     topic: str
     emphasis: Literal["high", "normal", "low"]
@@ -90,6 +123,9 @@ class ExamSpec(BaseModel):
     question_count_source: Provenance | None
     question_format: FormatSpec | None
     difficulty: DifficultySpec | None
+    # The cognitive mix by marks. (The default keeps specs saved before this
+    # field existed valid; the API still requires the field.)
+    bloom: BloomSpec | None = None
     sections: list[SectionSpec]
     # Content
     coverage: list[CoverageTopic]
@@ -132,6 +168,112 @@ class DocumentSummary(BaseModel):
     topics: list[DocumentTopic]
     # True when the file has little real content (e.g. a cover page only).
     low_content: bool
+
+
+# =============================================================================
+# Lecture Knowledge Profile (built once per course-material document)
+# =============================================================================
+#
+# The model analyses a lecture one section at a time (SegmentKnowledge), then
+# relates the merged topics (LectureSynthesis). Everything is assembled, checked
+# and stored by app/services/lecture_knowledge.py. `locations` are always the
+# labels the section was given ("Slide 12", "Pages 3–4"): never invented.
+
+# Where an item comes from: the lecture itself, or ProfPilot's own pedagogical suggestion.
+KnowledgeOrigin = Literal["lecture", "ai_suggestion"]
+
+
+class KnowledgeConcept(BaseModel):
+    name: str
+    kind: Literal[
+        "definition", "term", "method", "algorithm", "principle", "theorem", "property",
+        "classification", "assumption", "limitation", "exception", "observation", "other",
+    ]  # fmt: skip
+    # Faithful to the lecture, including the conditions under which it holds.
+    description: str
+    locations: list[str]
+
+
+class KnowledgeFormula(BaseModel):
+    name: str
+    # As written in the lecture (LaTeX where possible); never "corrected".
+    expression: str
+    # e.g. "η: learning rate"
+    variables: list[str]
+    conditions: str | None
+    locations: list[str]
+    # True when the extracted text may have garbled it (e.g. a broken PDF text layer).
+    uncertain: bool
+    # For an uncertain formula: its standard form (LaTeX) only when the lecture's intent is
+    # unambiguous; null otherwise. Never replaces `expression`, the evidence, and stays
+    # unverified until the professor confirms it. (Profiles built before this field lack it.)
+    normalized: str | None = None
+
+
+class KnowledgeExample(BaseModel):
+    title: str
+    kind: Literal["worked_example", "application", "case_study", "calculation", "comparison", "demonstration", "dataset"]
+    description: str
+    locations: list[str]
+
+
+class KnowledgeVisual(BaseModel):
+    """A figure, table or diagram the text refers to or contains."""
+
+    description: str
+    locations: list[str]
+    # False when the text only hints at it (its content needs the original page).
+    interpretable: bool
+
+
+class KnowledgeMisconception(BaseModel):
+    description: str
+    origin: KnowledgeOrigin
+    locations: list[str]
+
+
+class BloomOpportunity(BaseModel):
+    """What a question at this level could ask, supported by the lecture. Not a quota."""
+
+    level: CognitiveLevel
+    idea: str
+
+
+class KnowledgeTopic(BaseModel):
+    name: str
+    section: str | None
+    summary: str
+    locations: list[str]
+    concepts: list[KnowledgeConcept]
+    formulas: list[KnowledgeFormula]
+    examples: list[KnowledgeExample]
+    visuals: list[KnowledgeVisual]
+    misconceptions: list[KnowledgeMisconception]
+    bloom_opportunities: list[BloomOpportunity]
+
+
+class SegmentKnowledge(BaseModel):
+    """One section of a lecture, analysed in full."""
+
+    topics: list[KnowledgeTopic]
+    warnings: list[str]
+
+
+class KnowledgeRelation(BaseModel):
+    source_topic: str
+    target_topic: str
+    kind: Literal["prerequisite", "builds_on", "contrasts_with", "generalizes", "causes", "trade_off", "applies_to", "related"]
+    note: str
+
+
+class LectureSynthesis(BaseModel):
+    """The whole lecture, from its merged topic inventory."""
+
+    title: str
+    overview: str
+    sections: list[str]
+    learning_objectives: list[str]
+    relations: list[KnowledgeRelation]
 
 
 class StyleTrait(BaseModel):
@@ -177,12 +319,15 @@ class PlannedQuestion(BaseModel):
     points: float = Field(gt=0, le=1000)
     topic: str
     learning_objective: str
-    cognitive_level: CognitiveLevel
+    cognitive_level: PlannedLevel
     # Which uploaded material it should draw on (file name and pages/slides).
     source_hint: str | None
     estimated_minutes: float = Field(gt=0, le=600)
     # id of an uploaded image attachment the question should show, if any.
     figure_document_id: str | None
+    # Lecture-knowledge topic ids it draws on (e.g. "L2.t5"), from the LECTURE KNOWLEDGE
+    # inventory. (The default keeps plans saved before this field existed valid.)
+    knowledge_refs: list[str] = Field(default_factory=list)
 
 
 class ExamPlan(BaseModel):
@@ -226,6 +371,9 @@ class QuestionContent(BaseModel):
 
     type: QuestionType
     difficulty: Difficulty
+    # The Bloom's level the question genuinely assesses (null only for questions
+    # stored before levels were recorded).
+    cognitive_level: CognitiveLevel | None
     points: float = Field(gt=0, le=1000)
     prompt: str
     choices: list[ChoiceOut] | None
@@ -303,6 +451,7 @@ IssueCategory = Literal[
     "version_consistency",
     "solution",
     "rubric",
+    "cognitive_level",
     "other",
 ]
 
@@ -310,7 +459,9 @@ IssueCategory = Literal[
 class QuestionFix(BaseModel):
     """A small, safe repair the reviewer proposes. Applied only when it passes validation."""
 
-    kind: Literal["correct_answer_key", "clarify_wording", "fix_solution", "fix_rubric"]
+    kind: Literal["correct_answer_key", "clarify_wording", "fix_solution", "fix_rubric", "relabel_cognitive_level"]
+    # relabel_cognitive_level: the level the question actually assesses.
+    cognitive_level: CognitiveLevel | None
     correct_choice: str | None
     prompt: str | None
     answer: str | None

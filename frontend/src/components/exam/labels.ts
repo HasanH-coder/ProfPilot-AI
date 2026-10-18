@@ -75,6 +75,8 @@ export function builderToolStatus(name: string, args: Record<string, unknown>): 
       return `Deleting ${question}…`;
     case "move_question":
       return `Moving ${question}…`;
+    case "undo_question_change":
+      return `Undoing the last change to ${question}…`;
     case "finish_exam":
       return "Finishing the exam…";
     default:
@@ -93,6 +95,8 @@ export function builderToolFailure(name: string): string {
       return "The answer key couldn't be updated.";
     case "review_question":
       return "The question couldn't be reviewed.";
+    case "undo_question_change":
+      return "The change couldn't be undone.";
     default:
       return "That couldn't be done.";
   }

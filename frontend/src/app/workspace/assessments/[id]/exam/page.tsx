@@ -8,15 +8,14 @@ import { getAssessment } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 
 export async function generateMetadata({ params }: PageProps<"/workspace/assessments/[id]/exam">): Promise<Metadata> {
-  await getCurrentProfessor();
-  const assessment = await getAssessment((await params).id);
+  const { id } = await params;
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   return { title: assessment ? `Exam · ${assessmentTitle(assessment.draft.examName)}` : "Assessment not found" };
 }
 
 export default async function ExamPage({ params }: PageProps<"/workspace/assessments/[id]/exam">) {
-  await getCurrentProfessor();
   const { id } = await params;
-  const assessment = await getAssessment(id);
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   if (!assessment) notFound();
   const course = assessment.course ? [assessment.course.code, assessment.course.name].filter(Boolean).join(" · ") : null;
 

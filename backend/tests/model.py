@@ -11,6 +11,9 @@ import re
 from typing import Any
 
 from app.schemas.ai import (
+    COGNITIVE_LEVELS,
+    BloomOpportunity,
+    BloomSpec,
     ChoiceOut,
     CoverageTopic,
     DifficultySpec,
@@ -21,6 +24,12 @@ from app.schemas.ai import (
     FormatSpec,
     GeneratedQuestion,
     InterpretationOutput,
+    KnowledgeConcept,
+    KnowledgeFormula,
+    KnowledgeMisconception,
+    KnowledgeRelation,
+    KnowledgeTopic,
+    LectureSynthesis,
     PlannedQuestion,
     PlannedSection,
     QuestionBatch,
@@ -28,6 +37,7 @@ from app.schemas.ai import (
     ReviewOutput,
     RevisedQuestion,
     RubricItem,
+    SegmentKnowledge,
     SolutionKey,
     SpecItem,
     StyleProfile,
@@ -62,6 +72,10 @@ REVISION_STEMS = [
 ]
 
 
+# What the scripted interpreter recommends when the learning focus is automatic.
+AUTOMATIC_BLOOM = [10, 20, 30, 20, 10, 10]
+
+
 def _setting(text: str, label: str) -> str | None:
     match = re.search(rf"- {re.escape(label)}: (.+)", text)
     value = match.group(1).strip() if match else None
@@ -82,6 +96,15 @@ def well_behaved_interpretation(call: dict[str, Any]) -> InterpretationOutput:
     if difficulty:
         easy, medium, hard = (int(n) for n in re.findall(r"(\d+)%", difficulty)[:3])
         difficulty_spec = DifficultySpec(easy_percent=easy, medium_percent=medium, hard_percent=hard, source="professor")
+    # A split given in the settings is copied; for automatic, a recommendation.
+    focus = _setting(text, "Learning focus (Bloom's levels, share of marks)") or ""
+    given = [int(n) for n in re.findall(r"(\d+)% (?:remember|understand|apply|analyze|evaluate|create)", focus)]
+    shares = given if len(given) == 6 else AUTOMATIC_BLOOM
+    bloom = BloomSpec(
+        focus="custom" if given else "automatic",
+        **{f"{level}_percent": share for level, share in zip(COGNITIVE_LEVELS, shares, strict=True)},
+        source="professor" if given else "ai_inferred",
+    )
     files = re.findall(r'\d+\. "([^"]+)"', text)
     return InterpretationOutput(
         enhanced_prompt=(
@@ -102,6 +125,7 @@ def well_behaved_interpretation(call: dict[str, Any]) -> InterpretationOutput:
             question_count_source="ai_assumption",
             question_format=question_format,
             difficulty=difficulty_spec,
+            bloom=bloom,
             sections=[],
             coverage=[CoverageTopic(topic="gradient descent", emphasis="high", source_documents=files[:1], source="ai_inferred")],
             learning_emphasis=[SpecItem(text="Application over memorization", source="professor")],
@@ -135,6 +159,11 @@ def well_behaved_plan(call: dict[str, Any]) -> ExamPlan:
         + ["hard"] * (difficulty["hard_percent"] // 10)
     )
     minutes = (spec.get("duration_minutes") or 100) * 0.8 / 10
+    # Bloom's levels in order, lowest first, so the MCQs (numbered first) never get Create.
+    bloom = spec.get("bloom") or {}
+    cognitive = [level for level in COGNITIVE_LEVELS for _ in range(bloom.get(f"{level}_percent", 0) // 10)]
+    if len(cognitive) != 10:
+        cognitive = ["apply"] * 10
     questions = []
     for number in range(1, 11):
         is_mcq = number <= mcq_count
@@ -147,7 +176,7 @@ def well_behaved_plan(call: dict[str, Any]) -> ExamPlan:
                 points=10,
                 topic=f"topic {number}",
                 learning_objective=f"apply concept {number}",
-                cognitive_level="application",
+                cognitive_level="analyze" if is_mcq and cognitive[number - 1] == "create" else cognitive[number - 1],
                 source_hint="Lecture 1",
                 estimated_minutes=minutes,
                 figure_document_id=None,
@@ -175,6 +204,7 @@ def make_content(
     label: str = "",
     refs: list[str] | None = None,
     stems: list[str] = STEMS,
+    cognitive_level: str = "apply",
 ) -> QuestionContent:
     stem = stems[(number - 1 + stem_offset) % len(stems)].format(topic=f"concept {number}")
     prompt = f"{label}{stem}."
@@ -183,6 +213,7 @@ def make_content(
         return QuestionContent(
             type="mcq",
             difficulty=difficulty,
+            cognitive_level=cognitive_level,
             points=points,
             prompt=prompt,
             choices=[ChoiceOut(id=letter, text=f"Option {letter} for item {number}{label}") for letter in "ABCD"],
@@ -202,6 +233,7 @@ def make_content(
     return QuestionContent(
         type=question_type,
         difficulty=difficulty,
+        cognitive_level=cognitive_level,
         points=points,
         prompt=prompt,
         choices=None,
@@ -219,7 +251,7 @@ def make_content(
     )
 
 
-_PLAN_LINE = re.compile(r"^(\d+)\. \[[^\]]*\] (\w+), (\w+), ([\d.]+) pts", re.M)
+_PLAN_LINE = re.compile(r"^(\d+)\. \[[^\]]*\] (\w+), (\w+), ([\d.]+) pts.*Bloom's level: (\w+)", re.M)
 
 
 def well_behaved_batch(call: dict[str, Any]) -> QuestionBatch:
@@ -227,46 +259,57 @@ def well_behaved_batch(call: dict[str, Any]) -> QuestionBatch:
     targets = text.split("WRITE THESE QUESTIONS NOW (exactly as planned)\n", 1)[1]
     refs = re.findall(r"id (S\d+)", text)[:2]
     questions = []
-    for number, question_type, difficulty, points in _PLAN_LINE.findall(targets):
-        content = make_content(int(number), question_type, difficulty, float(points), refs=refs)
+    for number, question_type, difficulty, points, level in _PLAN_LINE.findall(targets):
+        content = make_content(int(number), question_type, difficulty, float(points), refs=refs, cognitive_level=level)
         questions.append(GeneratedQuestion(number=int(number), **content.model_dump()))
     return QuestionBatch(questions=questions, warnings=[])
 
 
 def well_behaved_single(call: dict[str, Any]) -> QuestionBatch:
     text = call["input"]
-    match = re.search(r"Write question (\d+): type (\w+), difficulty (\w+), ([\d.]+) points", text)
-    number, question_type, difficulty, points = int(match.group(1)), match.group(2), match.group(3), float(match.group(4))
+    match = re.search(r"Write question (\d+): type (\w+), difficulty (\w+), Bloom's level (\w+), ([\d.]+) points", text)
+    number, question_type, difficulty = int(match.group(1)), match.group(2), match.group(3)
+    level, points = match.group(4), float(match.group(5))
     offset = 5 if "practical" in text.lower() else 0
-    content = make_content(number, question_type, difficulty, points, stem_offset=offset)
+    content = make_content(number, question_type, difficulty, points, stem_offset=offset, cognitive_level=level)
     return QuestionBatch(questions=[GeneratedQuestion(number=number, **content.model_dump())], warnings=[])
 
 
-_QUESTION_HEADER = re.compile(r"^Q(\d+) \[(\w+), (\w+), ([\d.]+) pts\]", re.M)
+_QUESTION_HEADER = re.compile(r"^Q(\d+) \[(\w+), (\w+)(?:, Bloom's level: (\w+))?, ([\d.]+) pts\]", re.M)
 
 
 def well_behaved_variants(call: dict[str, Any]) -> VariantBatch:
     label = re.search(r"Write the Version (\w) equivalent", call["input"]).group(1)
     variants = []
-    for number, question_type, difficulty, points in _QUESTION_HEADER.findall(call["input"]):
-        content = make_content(int(number), question_type, difficulty, float(points), stem_offset=7, label=f"[{label}] ")
+    for number, question_type, difficulty, level, points in _QUESTION_HEADER.findall(call["input"]):
+        content = make_content(
+            int(number),
+            question_type,
+            difficulty,
+            float(points),
+            stem_offset=7,
+            label=f"[{label}] ",
+            cognitive_level=level or "apply",
+        )
         variants.append(VersionVariant(source_number=int(number), question=content, variation="new scenario"))
     return VariantBatch(variants=variants)
 
 
 def well_behaved_revision(call: dict[str, Any]) -> RevisedQuestion:
     text = call["input"]
-    number, question_type, difficulty, points = _QUESTION_HEADER.search(text).groups()
+    number, question_type, difficulty, level, points = _QUESTION_HEADER.search(text).groups()
     target = re.search(r"Its difficulty becomes (\w+)", text)
     new_difficulty = target.group(1) if target else difficulty
-    content = make_content(int(number), question_type, new_difficulty, float(points), stems=REVISION_STEMS)
+    content = make_content(
+        int(number), question_type, new_difficulty, float(points), stems=REVISION_STEMS, cognitive_level=level or "apply"
+    )
     return RevisedQuestion(question=content, change_summary="Raised the cognitive demand.")
 
 
 def well_behaved_solution(call: dict[str, Any]) -> SolutionKey:
     text = call["input"]
     header = _QUESTION_HEADER.search(text)
-    question_type, points = header.group(2), float(header.group(4))
+    question_type, points = header.group(2), float(header.group(5))
     subparts = len(re.findall(r"^\s+\([a-z]\) \[", text, re.M))
     if question_type == "mcq":
         return SolutionKey(
@@ -302,6 +345,66 @@ def summary_handler(call: dict[str, Any]) -> DocumentSummary:
     )
 
 
+_SEGMENT_BLOCK = re.compile(r"<<<DATA \w+ \| excerpt \| ([^>]+)>>>\n(.*?)\n<<<END DATA", re.S)
+
+
+def segment_handler(call: dict[str, Any]) -> SegmentKnowledge:
+    """One topic per excerpt of the section, citing only that excerpt's own location label."""
+    topics = []
+    for label, content in _SEGMENT_BLOCK.findall(call["input"]):
+        words = re.findall(r"[A-Za-z]{4,}", content)
+        name = " ".join(words[:3]).lower() or f"topic at {label}"
+        location = [label] if re.match(r"(Slide|Page|Section)", label) else []
+        topics.append(
+            KnowledgeTopic(
+                name=name,
+                section=None,
+                summary=content[:120],
+                locations=location,
+                concepts=[KnowledgeConcept(name=name, kind="definition", description=content[:200], locations=location)],
+                formulas=(
+                    [
+                        KnowledgeFormula(
+                            name="update rule",
+                            expression="w = w - \\eta \\nabla L",
+                            variables=["η: learning rate"],
+                            conditions=None,
+                            locations=location,
+                            uncertain=False,
+                        )
+                    ]
+                    if "rate" in content.lower()
+                    else []
+                ),
+                examples=[],
+                visuals=[],
+                misconceptions=[KnowledgeMisconception(description=f"confusing {name}", origin="ai_suggestion", locations=[])],
+                bloom_opportunities=[
+                    BloomOpportunity(level="remember", idea=f"define {name}"),
+                    BloomOpportunity(level="apply", idea=f"use {name} on a small example"),
+                    BloomOpportunity(level="analyze", idea=f"diagnose a failure of {name}"),
+                ],
+            )
+        )
+    return SegmentKnowledge(topics=topics, warnings=[])
+
+
+def synthesis_handler(call: dict[str, Any]) -> LectureSynthesis:
+    names = re.findall(r"^- (.+?)(?: \[.*?\])? \(", call["input"], re.M)
+    relations = (
+        [KnowledgeRelation(source_topic=names[0], target_topic=names[1], kind="prerequisite", note="comes first")]
+        if len(names) > 1
+        else []
+    )
+    return LectureSynthesis(
+        title="Lecture notes",
+        overview="Covers gradient descent and regression.",
+        sections=["Introduction"],
+        learning_objectives=["Apply gradient descent"],
+        relations=relations,
+    )
+
+
 def style_handler(_call: dict[str, Any]) -> StyleProfile:
     return StyleProfile(
         exams_analyzed=1,
@@ -332,6 +435,8 @@ def install_well_behaved(ai: FakeAI) -> FakeAI:
     ai.on("revise_question", well_behaved_revision)
     ai.on("regenerate_solution", well_behaved_solution)
     ai.on("summarize_document", summary_handler)
+    ai.on("analyze_lecture_segment", segment_handler)
+    ai.on("synthesize_lecture", synthesis_handler)
     ai.on("analyze_previous_exams", style_handler)
     return ai
 

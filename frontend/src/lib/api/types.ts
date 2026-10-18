@@ -1,6 +1,6 @@
 // Shapes the AI API returns (see backend/app/schemas/api.py).
 
-import type { AssessmentDraft } from "@/lib/assessments/draft";
+import type { AssessmentDraft, BloomDistribution, BloomLevel, LearningFocus } from "@/lib/assessments/draft";
 
 export type RunStatus = "running" | "succeeded" | "failed";
 
@@ -64,6 +64,8 @@ export type ExamSpec = {
   question_count_source: Provenance | null;
   question_format: { mcq_percent: number; subjective_percent: number; source: Provenance } | null;
   difficulty: { easy_percent: number; medium_percent: number; hard_percent: number; source: Provenance } | null;
+  /** Missing in plans made before the learning focus existed. */
+  bloom?: ({ focus: LearningFocus; source: Provenance } & Record<`${BloomLevel}_percent`, number>) | null;
   sections: { title: string; question_types: string[]; weight_percent: number | null; notes: string | null }[];
   coverage: { topic: string; emphasis: "high" | "normal" | "low"; source_documents: string[]; source: Provenance }[];
   learning_emphasis: SpecItem[];
@@ -119,6 +121,8 @@ export type Question = {
   position: number;
   type: QuestionType;
   difficulty: QuestionDifficulty;
+  /** null for questions written before levels were recorded. */
+  cognitiveLevel: BloomLevel | null;
   points: number;
   prompt: string;
   choices: Choice[] | null;
@@ -148,10 +152,12 @@ export type DistributionSummary = {
   easyPercent: number;
   mediumPercent: number;
   hardPercent: number;
+  /** Share of marks per Bloom's level; null while any question has no level. */
+  bloom: BloomDistribution | null;
 };
 
 export type DistributionWarning = {
-  dimension: "format" | "difficulty" | "duration";
+  dimension: "format" | "difficulty" | "bloom" | "duration";
   label: string;
   actual: number;
   target: number;
@@ -270,9 +276,48 @@ export type SetupChatReply = {
   finished: boolean;
   /** Settings answered (set or skipped) in this conversation. */
   addressed: string[];
+  /** The course sources selected after the turn ("sourceIds" is in changedFields when it changed). */
+  sourceIds: string[];
 };
 
-export type RealtimeSecret = { clientSecret: string; expiresAt: number; model: string };
+/** A lecture's reusable knowledge profile, in brief (GET /api/documents/{id}/knowledge). */
+export type LectureKnowledge = {
+  state: "none" | "building" | "ready" | "outdated" | "failed";
+  error: string | null;
+  title: string | null;
+  overview: string | null;
+  sections: string[];
+  topics: { id: string; name: string; locations: string[] }[];
+  coverage: {
+    unit: string | null;
+    totalUnits: number | null;
+    /** Pages or slides with any extracted text (titles and footers included). */
+    analysedUnits: number | null;
+    /** Pages with real content; null for files read before page-level detail existed. */
+    substantiveUnits?: number | null;
+    pageDetail?: boolean;
+    /** Page numbers by class: text, textWithFigures, figureDominated, divider, empty, uncertainMath. */
+    pages?: Partial<Record<"text" | "textWithFigures" | "figureDominated" | "divider" | "empty" | "uncertainMath", number[]>>;
+    unitsWithoutText: number[];
+    /** Slides whose pictures or charts aren't in the text (their text was analysed). */
+    unitsWithFigures: number[];
+    truncated: boolean;
+  } | null;
+  warnings: string[];
+  usage: { inputTokens: number; outputTokens: number; modelCalls: number } | null;
+  /** A rough estimate of a (re)build, shown before it starts. */
+  estimate: { modelCalls: number; inputTokens: number; outputTokens: number };
+  /** Built from text without page markers: usable, without page-level coverage. */
+  legacy?: boolean;
+  /** A rebuild running or failed beside the working profile, which stays in use meanwhile. */
+  rebuild?: { state: "building" | "failed"; error: string | null } | null;
+  /** Whether the stored text has page markers, and whether a (free) re-read can add them. */
+  extraction?: { state: "legacy" | "current" | "interrupted" | "not_applicable" | "processing"; rereadable: boolean };
+  /** A re-read makes no AI analysis call: only its new text is embedded for search. */
+  rereadEstimate?: { embeddingTokens: number };
+};
+
+export type RealtimeSecret ={ clientSecret: string; expiresAt: number; model: string };
 
 export type Preferences = {
   explicitNotes: string;

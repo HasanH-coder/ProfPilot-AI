@@ -27,6 +27,7 @@ export function makeQuestion(index: number): Question {
     position: index + 1,
     type,
     difficulty: (["medium", "easy", "hard"] as const)[index % 3],
+    cognitiveLevel: (["understand", "apply", "analyze"] as const)[index % 3],
     points: type === "mcq" ? 2 : 10,
     prompt: `${PROMPT} (Question ${index + 1})`,
     choices: type === "mcq" ? ["A", "B", "C", "D"].map((id) => ({ id, text: `Option ${id}` })) : null,
@@ -58,6 +59,7 @@ export function makeExam(questionCount: number): Exam {
     easyPercent: 0,
     mediumPercent: 0,
     hardPercent: 0,
+    bloom: null,
   };
   return {
     id: "exam-1",

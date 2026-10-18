@@ -29,6 +29,8 @@ from typing import Any
 
 from app.ai.openai_service import ToolCall, ToolLoopResult, Usage
 from app.core.errors import AIServiceError, ConflictError, InvalidInputError, NotFoundError
+from app.domain.setup import check_bloom_distribution
+from app.schemas.ai import COGNITIVE_LEVELS
 
 _clock = itertools.count()
 # Anchored at the real time, so a job started by a test is never older than the
@@ -45,6 +47,7 @@ OWNED = {
     "courses",
     "exam_projects",
     "documents",
+    "assessment_documents",
     "document_chunks",
     "assessment_style_profiles",
     "exams",
@@ -71,6 +74,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "easy_percentage": None,
         "medium_percentage": None,
         "hard_percentage": None,
+        "learning_focus": "automatic",
+        "bloom_distribution": None,
         "additional_notes": None,
         "professor_prompt": None,
         "enhanced_prompt": None,
@@ -91,6 +96,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "page_count": None,
         "extracted_characters": None,
         "summary": None,
+        "deletion_pending": False,
+        "knowledge": None,
     },
     "document_chunks": {"page_start": None, "page_end": None, "location_label": None, "token_estimate": None, "embedding": None},
     "assessment_style_profiles": {"model": None},
@@ -108,6 +115,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "exam_sections": {"instructions": None},
     "exam_questions": {
         "section_id": None,
+        "cognitive_level": None,
         "choices": None,
         "correct_choice": None,
         "subparts": None,
@@ -160,6 +168,8 @@ SETUP_COLUMNS = (
     "easy_percentage",
     "medium_percentage",
     "hard_percentage",
+    "learning_focus",
+    "bloom_distribution",
     "additional_notes",
     "professor_prompt",
 )
@@ -167,13 +177,18 @@ SETUP_COLUMNS = (
 # table -> [(child table, foreign key column, "cascade" | "set null")]
 CASCADES = {
     "exam_projects": [
+        ("assessment_documents", "exam_project_id", "cascade"),
         ("documents", "exam_project_id", "cascade"),
         ("exams", "exam_project_id", "cascade"),
         ("ai_runs", "exam_project_id", "cascade"),
         ("assessment_style_profiles", "exam_project_id", "cascade"),
         ("preference_signals", "exam_project_id", "set null"),
     ],
-    "documents": [("document_chunks", "document_id", "cascade"), ("exam_questions", "figure_document_id", "set null")],
+    "documents": [
+        ("assessment_documents", "document_id", "cascade"),
+        ("document_chunks", "document_id", "cascade"),
+        ("exam_questions", "figure_document_id", "set null"),
+    ],
     "exams": [
         ("exam_versions", "exam_id", "cascade"),
         ("exam_sections", "exam_id", "cascade"),
@@ -293,8 +308,14 @@ class FakeDatabase:
         if function == "match_document_chunks":
             query = _vector(params["p_query_embedding"])
             scored = []
+            selected_ids = {
+                link["document_id"]
+                for link in self._visible("assessment_documents")
+                if link["exam_project_id"] == params["p_exam_project_id"]
+            }
             for chunk in self._visible("document_chunks"):
-                if chunk["exam_project_id"] != params["p_exam_project_id"] or chunk["category"] not in params["p_categories"]:
+                in_scope = chunk["exam_project_id"] == params["p_exam_project_id"] or chunk["document_id"] in selected_ids
+                if not in_scope or chunk["category"] not in params["p_categories"]:
                     continue
                 if chunk.get("embedding") is None:
                     continue
@@ -357,9 +378,22 @@ class FakeDatabase:
                 raise NotFoundError()
             row["exam_project_id"] = document["exam_project_id"]
             row["category"] = document["category"]
+        if table == "assessment_documents":
+            assessment = self._owned("exam_projects", row["exam_project_id"])
+            document = self._owned("documents", row["document_id"])
+            if (
+                assessment is None
+                or document is None
+                or document.get("exam_project_id") is not None
+                or document.get("category") != "course_material"
+                or document.get("course_id") != assessment.get("course_id")
+            ):
+                raise NotFoundError()
 
     def _after_insert(self, table: str, row: dict[str, Any]) -> None:
         if table == "documents" and row.get("exam_project_id"):
+            _mark_stale(self.supabase, row["exam_project_id"])
+        if table == "assessment_documents":
             _mark_stale(self.supabase, row["exam_project_id"])
 
     def _check_constraints(self, table: str, row: dict[str, Any], replacing: dict[str, Any] | None = None) -> None:
@@ -379,11 +413,17 @@ class FakeDatabase:
             r["document_id"] == row["document_id"] and r["chunk_index"] == row["chunk_index"] for r in others
         ):
             raise ConflictError("This already exists.")
+        if table == "assessment_documents" and any(
+            r["exam_project_id"] == row["exam_project_id"] and r["document_id"] == row["document_id"] for r in others
+        ):
+            raise ConflictError("This already exists.")
         if table == "question_revisions" and any(
             r["question_id"] == row["question_id"] and r["revision_number"] == row["revision_number"] for r in others
         ):
             raise ConflictError("This already exists.")
         if table == "exam_projects" and row.get("exam_name") is not None and not str(row["exam_name"]).strip():
+            raise InvalidInputError()
+        if table == "exam_projects" and check_bloom_distribution(row["learning_focus"], row["bloom_distribution"]):
             raise InvalidInputError()
         if table == "exam_questions":
             _check_question(row)
@@ -403,12 +443,16 @@ class FakeDatabase:
                     child_row[column] = None
         if table == "documents" and row.get("exam_project_id"):
             _mark_stale(self.supabase, row["exam_project_id"])
+        if table == "assessment_documents":
+            _mark_stale(self.supabase, row["exam_project_id"])
 
 
 def _check_question(row: dict[str, Any]) -> None:
     if row["type"] not in ("mcq", "short_answer", "long_answer", "problem"):
         raise InvalidInputError()
     if row["difficulty"] not in ("easy", "medium", "hard") or row["status"] not in ("draft", "approved"):
+        raise InvalidInputError()
+    if row["cognitive_level"] is not None and row["cognitive_level"] not in COGNITIVE_LEVELS:
         raise InvalidInputError()
     if not 0 < float(row["points"]) <= 1000 or not row["prompt"]:
         raise InvalidInputError()

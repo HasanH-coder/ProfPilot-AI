@@ -2,7 +2,13 @@ import "server-only";
 
 import { cache } from "react";
 
-import type { AssessmentDraft } from "@/lib/assessments/draft";
+import {
+  LEARNING_FOCUSES,
+  specBloomDistribution,
+  type AssessmentDraft,
+  type BloomDistribution,
+  type LearningFocus,
+} from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
 import type { DocumentCategory, DocumentFile } from "@/lib/documents/files";
 import { createClient } from "@/lib/supabase/server";
@@ -27,10 +33,12 @@ export type AssessmentListItem = {
  */
 export async function getAssessments({ limit }: { limit?: number } = {}): Promise<AssessmentListItem[]> {
   const supabase = await createClient();
+  // documents!…_fkey: the assessment's own uploads. Selected course sources are
+  // linked through assessment_documents, a second path PostgREST would find ambiguous.
   let query = supabase
     .from("exam_projects")
     .select(
-      "id, exam_name, status, updated_at, duration_minutes, number_of_versions, course:courses(code), documents(count)",
+      "id, exam_name, status, updated_at, duration_minutes, number_of_versions, course:courses(code), documents!documents_exam_project_id_fkey(count)",
     )
     .order("updated_at", { ascending: false });
   if (limit) query = query.limit(limit);
@@ -58,6 +66,8 @@ export type Assessment = {
   course: Course | null;
   /** The saved settings, in the shape the Create assessment form uses. */
   draft: AssessmentDraft;
+  /** ProfPilot's recommended Bloom's split from the latest plan, when the focus was automatic. */
+  bloomRecommendation: BloomDistribution | null;
   files: DocumentFile[];
 };
 
@@ -76,13 +86,19 @@ export const getAssessment = cache(async (id: string): Promise<Assessment | null
   const { data, error } = await supabase
     .from("exam_projects")
     .select(
-      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, easy_percentage, medium_percentage, hard_percentage, additional_notes, professor_prompt, course:courses(id, code, name), documents(id, category, original_name, size_bytes)",
+      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, easy_percentage, medium_percentage, hard_percentage, learning_focus, bloom_distribution, additional_notes, professor_prompt, spec_bloom:exam_spec->spec->bloom, course:courses(id, code, name), documents!documents_exam_project_id_fkey(id, category, original_name, size_bytes)",
     )
     .eq("id", id)
     .order("created_at", { referencedTable: "documents" })
     .maybeSingle();
   if (error) throw new Error(`Could not load the assessment: ${error.message}`);
   if (!data) return null;
+
+  // The database only allows valid values (a CHECK constraint on both columns).
+  const learningFocus = (LEARNING_FOCUSES as readonly string[]).includes(data.learning_focus)
+    ? (data.learning_focus as LearningFocus)
+    : "automatic";
+  const specBloom = data.spec_bloom as { focus?: unknown } | null;
 
   return {
     id: data.id,
@@ -101,9 +117,12 @@ export const getAssessment = cache(async (id: string): Promise<Assessment | null
       easyPercentage: data.easy_percentage,
       mediumPercentage: data.medium_percentage,
       hardPercentage: data.hard_percentage,
+      learningFocus,
+      bloomDistribution: (data.bloom_distribution ?? null) as BloomDistribution | null,
       additionalNotes: data.additional_notes ?? "",
       professorPrompt: data.professor_prompt ?? "",
     },
+    bloomRecommendation: specBloom?.focus === "automatic" ? specBloomDistribution(specBloom) : null,
     files: data.documents.map((document) => ({
       id: document.id,
       // The database only allows the three categories.

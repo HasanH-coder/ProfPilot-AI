@@ -36,6 +36,12 @@
   --color-difficulty-easy: var(--difficulty-easy);
   --color-difficulty-medium: var(--difficulty-medium);
   --color-difficulty-hard: var(--difficulty-hard);
+  --color-bloom-remember: var(--bloom-remember);
+  --color-bloom-understand: var(--bloom-understand);
+  --color-bloom-apply: var(--bloom-apply);
+  --color-bloom-analyze: var(--bloom-analyze);
+  --color-bloom-evaluate: var(--bloom-evaluate);
+  --color-bloom-create: var(--bloom-create);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -85,6 +91,14 @@
   --difficulty-easy: #6da7ec;
   --difficulty-medium: #2a78d6;
   --difficulty-hard: #184f95;
+  /* Bloom's levels, coral to purple. Distinct hues, each dark enough to read
+     against white and the muted track. */
+  --bloom-remember: #e5534b;
+  --bloom-understand: #ec8a2c;
+  --bloom-apply: #d9a711;
+  --bloom-analyze: #2e9d5a;
+  --bloom-evaluate: #3b78d8;
+  --bloom-create: #8b5cf6;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -124,6 +138,13 @@
   --difficulty-easy: #1c5cab;
   --difficulty-medium: #3987e5;
   --difficulty-hard: #86b6ef;
+  /* Lighter on a dark page. */
+  --bloom-remember: #f2766f;
+  --bloom-understand: #f5a453;
+  --bloom-apply: #e9c346;
+  --bloom-analyze: #4fbf7c;
+  --bloom-evaluate: #6c9ff0;
+  --bloom-create: #a98bfa;
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);

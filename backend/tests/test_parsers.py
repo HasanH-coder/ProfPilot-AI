@@ -52,6 +52,28 @@ def test_damaged_files_fail_with_a_clear_message():
         parse_document(b"not a zip", DOCX)
 
 
+def test_pptx_pictures_are_flagged_so_their_content_is_never_assumed_covered():
+    from PIL import Image
+
+    image = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(image, format="PNG")
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Decision boundary of a linear classifier"
+    image.seek(0)
+    slide.shapes.add_picture(image, Inches(1), Inches(2))
+    buffer = io.BytesIO()
+    presentation.save(buffer)
+    text = parse_document(buffer.getvalue(), PPTX).units[0].text
+    assert "Decision boundary" in text and "[Figure on slide 1: 1 picture(s) or chart(s)" in text
+
+
+def test_chunks_never_span_a_page_without_text():
+    units = [TextUnit(text=f"page {n} text", page_start=n, page_end=n, kind="Page") for n in (1, 3, 4)]
+    labels = [chunk.location_label for chunk in chunk_units(units)]
+    assert labels == ["Page 1", "Pages 3–4"]  # never "Pages 1–4", which would claim page 2
+
+
 def test_pptx_slides_titles_tables_and_notes():
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[1])

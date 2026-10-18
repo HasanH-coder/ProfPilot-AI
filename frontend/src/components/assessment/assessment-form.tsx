@@ -37,8 +37,15 @@ import {
   ExamDuration,
   type DurationValue,
 } from "@/components/assessment/exam-duration";
-import { FormSection } from "@/components/assessment/form-section";
+import { FormSection, type SectionState } from "@/components/assessment/form-section";
 import { ImproveWithAi } from "@/components/assessment/improve-with-ai";
+import {
+  LEARNING_FOCUS_DEFAULT,
+  LearningFocus,
+  learningFocusDraft,
+  learningFocusValue,
+  type LearningFocusValue,
+} from "@/components/assessment/learning-focus";
 import {
   QuestionDistribution,
   type DistributionValue,
@@ -46,13 +53,14 @@ import {
 import { SetupAssistant, SetupAssistantPrompt } from "@/components/assessment/setup-assistant";
 import { useAssessmentDraft } from "@/components/assessment/use-assessment-draft";
 import { useDocumentAnalysis } from "@/components/assessment/use-document-analysis";
-import { useDocumentUploads } from "@/components/assessment/use-document-uploads";
+import { uploadedCount, useDocumentUploads } from "@/components/assessment/use-document-uploads";
 import {
   versionCount,
   VersionSelector,
   versionValue,
   type VersionValue,
 } from "@/components/assessment/version-selector";
+import { CourseSourceSelector } from "@/components/sources/course-source-selector";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -64,32 +72,42 @@ import {
   type SaveDraftResult,
 } from "@/lib/assessments/actions";
 import {
+  describeSettings,
   validateAssessmentDraft,
   type AssessmentDraft,
+  type AssessmentDraftErrors,
+  type BloomDistribution,
 } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
-import type { DocumentFile } from "@/lib/documents/files";
+import type { DocumentCategory, DocumentFile } from "@/lib/documents/files";
+import { setAssessmentSourceDocuments } from "@/lib/sources/actions";
+import type { CourseSource } from "@/lib/sources/types";
 import { cn } from "@/lib/utils";
 
 /** Everything the professor has entered, including UI choices such as "Custom". */
 type FormValues = {
+  /** Course sources chosen for this assessment; saved apart from the draft. */
+  sourceIds: string[];
   courseId: string | null;
   examName: string;
   duration: DurationValue;
   distribution: DistributionValue;
   versions: VersionValue;
   difficulty: DifficultyDistributionValue;
+  learningFocus: LearningFocusValue;
   additionalNotes: string;
   professorPrompt: string;
 };
 
 const EMPTY_FORM: FormValues = {
+  sourceIds: [],
   courseId: null,
   examName: "",
   duration: { choice: "none", customMinutes: "" },
   distribution: { enabled: false, mcqPercentage: 50 },
   versions: { choice: "1", customCount: "" },
   difficulty: DIFFICULTY_NOT_SPECIFIED,
+  learningFocus: LEARNING_FOCUS_DEFAULT,
   additionalNotes: "",
   professorPrompt: "",
 };
@@ -107,14 +125,16 @@ function toDraft(values: FormValues): AssessmentDraft {
       : null,
     numberOfVersions: versionCount(values.versions),
     ...difficultyPercentages(values.difficulty),
+    ...learningFocusDraft(values.learningFocus),
     additionalNotes: values.additionalNotes,
     professorPrompt: values.professorPrompt,
   };
 }
 
 /** The reverse of toDraft, to reopen a saved draft. */
-function toFormValues(draft: AssessmentDraft): FormValues {
+function toFormValues(draft: AssessmentDraft, sourceIds: string[] = []): FormValues {
   return {
+    sourceIds,
     courseId: draft.courseId,
     examName: draft.examName,
     duration: durationValue(draft.durationMinutes),
@@ -125,6 +145,7 @@ function toFormValues(draft: AssessmentDraft): FormValues {
         : { enabled: true, mcqPercentage: draft.mcqPercentage },
     versions: versionValue(draft.numberOfVersions),
     difficulty: difficultyDistributionValue(draft),
+    learningFocus: learningFocusValue(draft),
     additionalNotes: draft.additionalNotes,
     professorPrompt: draft.professorPrompt,
   };
@@ -141,9 +162,43 @@ const FIELD_GROUPS: Record<string, string> = {
   easyPercentage: "difficulty",
   mediumPercentage: "difficulty",
   hardPercentage: "difficulty",
+  learningFocus: "learningFocus",
+  bloomDistribution: "learningFocus",
   additionalNotes: "notes",
   professorPrompt: "prompt",
 };
+
+/** The form's cards, which the professor can close and open independently. */
+type SectionId =
+  | "basics"
+  | "courseMaterial"
+  | "previousExams"
+  | "examDesign"
+  | "notes"
+  | "attachments"
+  | "prompt";
+
+/** Open at first: what most assessments need. The optional extras start closed. */
+const INITIALLY_OPEN: readonly SectionId[] = ["basics", "courseMaterial", "examDesign", "prompt"];
+
+/** The card each field error is shown in, so a closed card can be opened to reveal it. */
+const ERROR_SECTIONS: Record<keyof AssessmentDraftErrors, SectionId> = {
+  courseId: "basics",
+  examName: "basics",
+  durationMinutes: "examDesign",
+  distribution: "examDesign",
+  numberOfVersions: "examDesign",
+  difficultyDistribution: "examDesign",
+  bloomDistribution: "examDesign",
+  additionalNotes: "notes",
+  professorPrompt: "prompt",
+};
+
+const sectionsWithErrors = (errors: AssessmentDraftErrors) =>
+  (Object.keys(errors) as (keyof AssessmentDraftErrors)[]).map((field) => ERROR_SECTIONS[field]);
+
+const filesSummary = (count: number, none: string) =>
+  count === 0 ? none : `${count} ${count === 1 ? "file" : "files"} uploaded`;
 
 /**
  * Puts changes from the AI assistant into the form, one part at a time, so
@@ -153,9 +208,16 @@ function applyChanges(
   current: FormValues,
   setup: AssessmentDraft,
   fields: Set<string>,
+  sourceIds: string[],
 ): FormValues {
   const next = { ...current };
-  if (fields.has("courseId")) next.courseId = setup.courseId;
+  if (fields.has("courseId") && setup.courseId !== current.courseId) {
+    next.courseId = setup.courseId;
+    // Sources belong to one course, so another course starts with none.
+    next.sourceIds = [];
+  }
+  // After the course, so sources chosen for a new course in the same turn are kept.
+  if (fields.has("sourceIds")) next.sourceIds = sourceIds;
   if (fields.has("examName")) next.examName = setup.examName;
   if (fields.has("durationMinutes"))
     next.duration = durationValue(setup.durationMinutes);
@@ -177,6 +239,8 @@ function applyChanges(
         ? { ...current.difficulty, enabled: false }
         : difficultyDistributionValue(setup);
   }
+  if (fields.has("learningFocus") || fields.has("bloomDistribution"))
+    next.learningFocus = learningFocusValue(setup);
   if (fields.has("additionalNotes"))
     next.additionalNotes = setup.additionalNotes;
   if (fields.has("professorPrompt"))
@@ -188,10 +252,17 @@ function applyChanges(
 export type SavedAssessment = DraftLocation & {
   draft: AssessmentDraft;
   files: DocumentFile[];
+  /** The course sources the draft uses. */
+  sourceIds?: string[];
+  /** ProfPilot's Bloom's split from the latest plan, shown while the focus is Automatic. */
+  bloomRecommendation?: BloomDistribution | null;
 };
 
+/** What is saved, to tell whether anything changed since. */
+const snapshotOf = (values: FormValues) => JSON.stringify({ ...toDraft(values), sourceIds: values.sourceIds });
+
 // A new, untouched form has nothing to save.
-const EMPTY_SNAPSHOT = JSON.stringify(toDraft(EMPTY_FORM));
+const EMPTY_SNAPSHOT = snapshotOf(EMPTY_FORM);
 
 const assessmentPath = (id: string) => `/workspace/assessments/${id}`;
 
@@ -201,11 +272,13 @@ let refocusSaveButton = false;
 
 type AssessmentFormProps = {
   courses: Course[];
+  /** The professor's course sources, from every course. */
+  sources?: CourseSource[];
   /** The draft to edit. Left out when creating a new assessment. */
   saved?: SavedAssessment;
 };
 
-export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
+export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormProps) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
@@ -213,11 +286,11 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   // Set when the professor opens or closes Set up with AI, to move focus after.
   const focusAfterToggle = useRef(false);
   const [values, setValues] = useState(() =>
-    saved ? toFormValues(saved.draft) : EMPTY_FORM,
+    saved ? toFormValues(saved.draft, saved.sourceIds) : EMPTY_FORM,
   );
   // The draft as it was last saved (or opened), to tell whether anything changed since.
   const [savedSnapshot, setSavedSnapshot] = useState(() =>
-    saved ? JSON.stringify(toDraft(toFormValues(saved.draft))) : null,
+    saved ? snapshotOf(toFormValues(saved.draft, saved.sourceIds)) : null,
   );
   // Field errors appear after the first attempt to save, then update while editing.
   const [showErrors, setShowErrors] = useState(false);
@@ -235,6 +308,9 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     setAssistantRequestSeen(assistantRequested);
     if (assistantRequested) setAssistantOpen(true);
   }
+  // Which cards are open: presentation only. The assessment itself lives in
+  // `values` and `uploads`, and a closed card's content stays mounted.
+  const [openSections, setOpenSections] = useState<ReadonlySet<SectionId>>(() => new Set(INITIALLY_OPEN));
   // While a voice call runs, saving must never reload the page (that would end the call).
   const callActive = useRef(false);
   const [highlighted, setHighlighted] = useState<Set<string>>(() => new Set());
@@ -271,9 +347,26 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     ? { ...clientErrors, ...saveResult.fieldErrors }
     : {};
   const course = courses.find((candidate) => candidate.id === values.courseId);
-  const hasUnsavedChanges =
-    JSON.stringify(draft) !== (savedSnapshot ?? EMPTY_SNAPSHOT);
+  const hasUnsavedChanges = snapshotOf(values) !== (savedSnapshot ?? EMPTY_SNAPSHOT);
+  const courseSources = sources.filter((source) => source.courseId === values.courseId);
+  // Shown and counted: the selected sources this page knows. Saving sends the whole selection and
+  // the server keeps what is valid, so a source added after the page loaded (for example chosen by
+  // Set up with AI) is saved, and appears with the refresh that follows the save.
+  const selectedSourceIds = values.sourceIds.filter((id) => courseSources.some((source) => source.id === id));
   const saveFailed = Boolean(saveResult.error || saveResult.fieldErrors);
+  // What closed cards show, derived from the form (never stored separately).
+  const settings = describeSettings(draft);
+  const fileCount = (category: DocumentCategory) => uploadedCount(uploads.items, category);
+  const attachments = fileCount("additional_attachment");
+  const materialFiles = fileCount("course_material");
+  const materialSummary =
+    [
+      selectedSourceIds.length > 0 &&
+        `${selectedSourceIds.length} ${selectedSourceIds.length === 1 ? "source" : "sources"} selected`,
+      materialFiles > 0 && filesSummary(materialFiles, ""),
+    ]
+      .filter(Boolean)
+      .join(" · ") || "No files uploaded";
 
   useEffect(() => {
     if (!refocusSaveButton) return;
@@ -297,9 +390,44 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     setSaveResult({});
   }
 
+  function setSectionOpen(id: SectionId, open: boolean) {
+    setOpenSections((current) => {
+      const next = new Set(current);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  /** Opens every card that holds one of these errors, leaving the others as they are. */
+  function openSectionsWithErrors(found: AssessmentDraftErrors) {
+    const ids = sectionsWithErrors(found);
+    if (ids.length > 0) setOpenSections((current) => new Set([...current, ...ids]));
+  }
+
+  /** Shows the errors (opening the cards they are in), then focuses the first field to fix. */
+  function revealErrors(found: AssessmentDraftErrors) {
+    flushSync(() => {
+      setShowErrors(true);
+      openSectionsWithErrors(found);
+    });
+    formRef.current
+      ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
+      ?.focus();
+  }
+
+  function section(id: SectionId, summary: string): SectionState {
+    return {
+      open: openSections.has(id),
+      onOpenChange: (open) => setSectionOpen(id, open),
+      summary,
+      hasError: sectionsWithErrors(errors).includes(id),
+    };
+  }
+
   /** Saves the form, creating the draft first if this is a new assessment. */
   async function saveDraft(
-    target: AssessmentDraft = draft,
+    target: FormValues = values,
   ): Promise<SaveDraftResult & { examProjectId?: string }> {
     try {
       const { draft: location, error } = await getDraft();
@@ -307,8 +435,11 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         return {
           error: error ?? "Your draft couldn't be saved. Please try again.",
         };
-      const result = await saveAssessmentDraft(location.examProjectId, target);
+      const result = await saveAssessmentDraft(location.examProjectId, toDraft(target));
       if (result.error || result.fieldErrors) return result;
+      // After the draft, so the selection is checked against its saved course.
+      const sourcesResult = await setAssessmentSourceDocuments(location.examProjectId, target.sourceIds);
+      if (sourcesResult.error) return sourcesResult;
       return { examProjectId: location.examProjectId };
     } catch (error) {
       // For example, the session ended: Next.js then opens the login page.
@@ -325,18 +456,14 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
     if (saveInProgress.current || uploads.isBusy) return;
 
     if (Object.keys(clientErrors).length > 0) {
-      // Show the errors now, then move focus to the first field that needs attention.
-      flushSync(() => setShowErrors(true));
-      formRef.current
-        ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
-        ?.focus();
+      revealErrors(clientErrors);
       return;
     }
     setShowErrors(true);
 
     saveInProgress.current = true;
     setSavingFor("stay");
-    const snapshot = JSON.stringify(draft);
+    const snapshot = snapshotOf(values);
     startSaving(async () => {
       const result = await saveDraft();
       saveInProgress.current = false;
@@ -344,6 +471,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         const { examProjectId } = result;
         if (!examProjectId) {
           setSaveResult(result);
+          if (result.fieldErrors) openSectionsWithErrors(result.fieldErrors);
           return;
         }
         setSaveResult({});
@@ -366,22 +494,21 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
    * Returns the assessment's id, or null when the form has errors or saving failed.
    */
   async function persist(): Promise<string | null> {
-    const current = toDraft(latestValues.current);
-    if (Object.keys(validateAssessmentDraft(current)).length > 0) {
-      flushSync(() => setShowErrors(true));
-      formRef.current
-        ?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")
-        ?.focus();
+    const current = latestValues.current;
+    const currentErrors = validateAssessmentDraft(toDraft(current));
+    if (Object.keys(currentErrors).length > 0) {
+      revealErrors(currentErrors);
       return null;
     }
     const result = await saveDraft(current);
     if (!result.examProjectId) {
       setShowErrors(true);
       setSaveResult(result);
+      if (result.fieldErrors) openSectionsWithErrors(result.fieldErrors);
       return null;
     }
     setSaveResult({});
-    setSavedSnapshot(JSON.stringify(current));
+    setSavedSnapshot(snapshotOf(current));
     // The address is left as it is. Rewriting it to the draft's edit address
     // without navigating (history.replaceState) made the next Server Action's
     // refresh() open the edit page instead: that remounted this form, which
@@ -428,12 +555,13 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
   function applyAssistantChanges(
     setup: AssessmentDraft,
     changedFields: string[],
+    sourceIds: string[],
   ) {
     const fields = new Set(changedFields);
     // Current right away: the next tool call in the same reply reads the form
     // before React has re-rendered it.
-    latestValues.current = applyChanges(latestValues.current, setup, fields);
-    setValues((current) => applyChanges(current, setup, fields));
+    latestValues.current = applyChanges(latestValues.current, setup, fields, sourceIds);
+    setValues((current) => applyChanges(current, setup, fields, sourceIds));
     setSaveResult({});
     setHighlighted(
       new Set(
@@ -500,6 +628,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         {assistantOpen ? (
           <SetupAssistant
             getSetup={() => toDraft(latestValues.current)}
+            getSourceIds={() => latestValues.current.sourceIds}
             onApply={applyAssistantChanges}
             ensureDraft={async () =>
               (await getDraft()).draft?.examProjectId ?? null
@@ -517,11 +646,18 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         )}
 
         <div className={changedBy("basics")}>
-          <FormSection title="Course & Assessment Details">
+          <FormSection
+            title="Course & Assessment Details"
+            {...section(
+              "basics",
+              [course?.code, values.examName.trim()].filter(Boolean).join(" · ") || "No course or name yet",
+            )}
+          >
             <AssessmentBasics
               courses={courses}
               courseId={values.courseId}
-              onCourseChange={(courseId) => update({ courseId })}
+              // Sources belong to one course, so another course starts with none.
+              onCourseChange={(courseId) => update({ courseId, sourceIds: [] })}
               examName={values.examName}
               onExamNameChange={(examName) => update({ examName })}
               errors={errors}
@@ -536,9 +672,26 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           uploads={uploads}
           analysis={analysis.documents}
           onRetryAnalysis={analysis.retry}
+          section={section("courseMaterial", materialSummary)}
+          footer={
+            courseSources.length > 0 && (
+              <div className="flex flex-col gap-2 border-t pt-3">
+                <p className="text-sm font-medium">Or use material saved in Sources</p>
+                <CourseSourceSelector
+                  sources={courseSources}
+                  selectedIds={selectedSourceIds}
+                  // Keeps selected sources this page doesn't list yet (see selectedSourceIds).
+                  onChange={(sourceIds) =>
+                    update({ sourceIds: [...sourceIds, ...values.sourceIds.filter((id) => !selectedSourceIds.includes(id))] })
+                  }
+                />
+              </div>
+            )
+          }
         />
         <DocumentUploadSection
           title="Previous assessments"
+          section={section("previousExams", filesSummary(fileCount("previous_exam"), "No previous assessments"))}
           description="Optional. Upload previous exams, quizzes, or answer keys so ProfPilot can learn your assessment style and difficulty. They guide the style; they aren't copied."
           category="previous_exam"
           uploads={uploads}
@@ -558,6 +711,16 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
         <FormSection
           title="Exam design"
           description="Optional. Set only what you already know."
+          {...section(
+            "examDesign",
+            [
+              settings.duration,
+              settings.versions && `${settings.versions} ${settings.versions === "1" ? "version" : "versions"}`,
+              `${settings.learningFocus} learning focus`,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          )}
         >
           <div className={changedBy("duration")}>
             <ExamDuration
@@ -587,6 +750,14 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
               error={errors.difficultyDistribution}
             />
           </div>
+          <div id="learning-focus" className={changedBy("learningFocus")}>
+            <LearningFocus
+              value={values.learningFocus}
+              onChange={(learningFocus) => update({ learningFocus })}
+              recommendation={saved?.bloomRecommendation}
+              error={errors.bloomDistribution}
+            />
+          </div>
         </FormSection>
 
         <div className={changedBy("notes")}>
@@ -594,6 +765,8 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
             value={values.additionalNotes}
             onChange={(additionalNotes) => update({ additionalNotes })}
             error={errors.additionalNotes}
+            // Only that notes exist: their text can be long or private.
+            section={section("notes", values.additionalNotes.trim() ? "Notes added" : "No additional notes")}
           />
         </div>
 
@@ -604,6 +777,10 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           uploads={uploads}
           analysis={analysis.documents}
           onRetryAnalysis={analysis.retry}
+          section={section(
+            "attachments",
+            attachments === 0 ? "No attachments" : `${attachments} ${attachments === 1 ? "attachment" : "attachments"}`,
+          )}
         />
 
         <div
@@ -615,6 +792,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
             value={values.professorPrompt}
             onChange={(professorPrompt) => update({ professorPrompt })}
             error={errors.professorPrompt}
+            section={section("prompt", values.professorPrompt.trim() ? "Instructions written" : "No instructions yet")}
           />
           <ImproveWithAi
             ensureSaved={persist}
@@ -627,6 +805,7 @@ export function AssessmentForm({ courses, saved }: AssessmentFormProps) {
           draft={draft}
           course={course}
           files={uploads.items}
+          sourceCount={selectedSourceIds.length}
         />
         {saveResult.error && (
           <Alert variant="destructive">

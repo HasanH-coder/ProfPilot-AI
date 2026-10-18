@@ -243,15 +243,60 @@ export type Database = {
           },
         ];
       };
+      assessment_documents: {
+        Row: {
+          created_at: string;
+          document_id: string;
+          exam_project_id: string;
+          professor_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          document_id: string;
+          exam_project_id: string;
+          professor_id?: string;
+        };
+        Update: {
+          created_at?: string;
+          document_id?: string;
+          exam_project_id?: string;
+          professor_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "assessment_documents_document_id_fkey";
+            columns: ["document_id"];
+            isOneToOne: false;
+            referencedRelation: "documents";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "assessment_documents_exam_project_id_fkey";
+            columns: ["exam_project_id"];
+            isOneToOne: false;
+            referencedRelation: "exam_projects";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "assessment_documents_professor_id_fkey";
+            columns: ["professor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       documents: {
         Row: {
           category: string;
           content_sha256: string | null;
           course_id: string | null;
           created_at: string;
+          deletion_pending: boolean;
           exam_project_id: string | null;
           extracted_characters: number | null;
           id: string;
+          knowledge: Json | null;
           mime_type: string | null;
           original_name: string;
           page_count: number | null;
@@ -268,9 +313,11 @@ export type Database = {
           content_sha256?: string | null;
           course_id?: string | null;
           created_at?: string;
+          deletion_pending?: boolean;
           exam_project_id?: string | null;
           extracted_characters?: number | null;
           id?: string;
+          knowledge?: Json | null;
           mime_type?: string | null;
           original_name: string;
           page_count?: number | null;
@@ -287,9 +334,11 @@ export type Database = {
           content_sha256?: string | null;
           course_id?: string | null;
           created_at?: string;
+          deletion_pending?: boolean;
           exam_project_id?: string | null;
           extracted_characters?: number | null;
           id?: string;
+          knowledge?: Json | null;
           mime_type?: string | null;
           original_name?: string;
           page_count?: number | null;
@@ -373,6 +422,7 @@ export type Database = {
       exam_projects: {
         Row: {
           additional_notes: string | null;
+          bloom_distribution: Json | null;
           course_id: string | null;
           created_at: string;
           difficulty: string | null;
@@ -384,6 +434,7 @@ export type Database = {
           generation_mode: string | null;
           hard_percentage: number | null;
           id: string;
+          learning_focus: string;
           mcq_percentage: number | null;
           medium_percentage: number | null;
           number_of_versions: number;
@@ -398,6 +449,7 @@ export type Database = {
         };
         Insert: {
           additional_notes?: string | null;
+          bloom_distribution?: Json | null;
           course_id?: string | null;
           created_at?: string;
           difficulty?: string | null;
@@ -409,6 +461,7 @@ export type Database = {
           generation_mode?: string | null;
           hard_percentage?: number | null;
           id?: string;
+          learning_focus?: string;
           mcq_percentage?: number | null;
           medium_percentage?: number | null;
           number_of_versions?: number;
@@ -423,6 +476,7 @@ export type Database = {
         };
         Update: {
           additional_notes?: string | null;
+          bloom_distribution?: Json | null;
           course_id?: string | null;
           created_at?: string;
           difficulty?: string | null;
@@ -434,6 +488,7 @@ export type Database = {
           generation_mode?: string | null;
           hard_percentage?: number | null;
           id?: string;
+          learning_focus?: string;
           mcq_percentage?: number | null;
           medium_percentage?: number | null;
           number_of_versions?: number;
@@ -467,6 +522,7 @@ export type Database = {
         Row: {
           answer: string | null;
           choices: Json | null;
+          cognitive_level: string | null;
           concepts: string[];
           correct_choice: string | null;
           created_at: string;
@@ -496,6 +552,7 @@ export type Database = {
         Insert: {
           answer?: string | null;
           choices?: Json | null;
+          cognitive_level?: string | null;
           concepts?: string[];
           correct_choice?: string | null;
           created_at?: string;
@@ -525,6 +582,7 @@ export type Database = {
         Update: {
           answer?: string | null;
           choices?: Json | null;
+          cognitive_level?: string | null;
           concepts?: string[];
           correct_choice?: string | null;
           created_at?: string;
@@ -905,6 +963,7 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      is_bloom_distribution: { Args: { distribution: Json }; Returns: boolean };
       match_document_chunks: {
         Args: {
           p_categories?: string[];
@@ -925,6 +984,10 @@ export type Database = {
       };
       reorder_exam_questions: {
         Args: { p_question_ids: string[]; p_version_id: string };
+        Returns: undefined;
+      };
+      set_assessment_source_documents: {
+        Args: { p_document_ids?: string[]; p_exam_project_id: string };
         Returns: undefined;
       };
     };

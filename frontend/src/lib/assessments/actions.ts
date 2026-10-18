@@ -100,6 +100,8 @@ export async function saveAssessmentDraft(
       easy_percentage: draft.easyPercentage,
       medium_percentage: draft.mediumPercentage,
       hard_percentage: draft.hardPercentage,
+      learning_focus: draft.learningFocus,
+      bloom_distribution: draft.bloomDistribution,
       additional_notes: textOrNull(draft.additionalNotes),
       professor_prompt: textOrNull(draft.professorPrompt),
     })
@@ -135,7 +137,8 @@ export async function deleteAssessment(examProjectId: string): Promise<{ error?:
   // Row Level Security only finds the professor's own drafts.
   const { data: assessment, error: findError } = await supabase
     .from("exam_projects")
-    .select("id, documents(storage_path)")
+    // Only its own uploads; course sources it selected outlive it.
+    .select("id, documents!documents_exam_project_id_fkey(storage_path)")
     .eq("id", examProjectId)
     .eq("status", "draft")
     .maybeSingle();

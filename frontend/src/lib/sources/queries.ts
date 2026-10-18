@@ -1,0 +1,99 @@
+import "server-only";
+
+import { createClient } from "@/lib/supabase/server";
+import type { Tables } from "@/lib/supabase/database.types";
+import type { CourseSource, CourseWithSources, SourceStatus } from "@/lib/sources/types";
+
+// Only the lecture knowledge's status, version and size: the profile itself stays on the server.
+// (One literal, so the Supabase client can type the rows.)
+export const SOURCE_COLUMNS =
+  "id, course_id, category, original_name, size_bytes, processing_status, processing_error, page_count, summary, created_at, content_sha256, knowledge_status:knowledge->>status, knowledge_sha:knowledge->>content_sha256, knowledge_topics:knowledge->stats->>topics";
+
+type SourceRow = Pick<
+  Tables<"documents">,
+  | "id"
+  | "course_id"
+  | "original_name"
+  | "size_bytes"
+  | "processing_status"
+  | "processing_error"
+  | "page_count"
+  | "summary"
+  | "created_at"
+  | "content_sha256"
+> & { knowledge_status: string | null; knowledge_sha: string | null; knowledge_topics: string | null };
+
+/** A profile built for an earlier version of the file (or by older analysis) is offered for rebuild. */
+function knowledgeOf(row: SourceRow): CourseSource["knowledge"] {
+  const topics = row.knowledge_topics === null ? null : Number(row.knowledge_topics);
+  if (row.knowledge_status === "ready") {
+    return { state: row.knowledge_sha === row.content_sha256 ? "ready" : "outdated", topics };
+  }
+  if (row.knowledge_status === "building" || row.knowledge_status === "failed") return { state: row.knowledge_status, topics };
+  return { state: "none", topics: null };
+}
+
+export function toCourseSource(row: SourceRow): CourseSource {
+  const summary = row.summary && typeof row.summary === "object" && !Array.isArray(row.summary) ? row.summary : null;
+  return {
+    knowledge: knowledgeOf(row),
+    id: row.id,
+    courseId: row.course_id ?? "",
+    category: "course_material",
+    name: row.original_name,
+    size: row.size_bytes,
+    status: row.processing_status as SourceStatus,
+    error: row.processing_error,
+    pageCount: row.page_count,
+    title: summary && typeof summary.title === "string" ? summary.title : null,
+    createdAt: row.created_at,
+  };
+}
+
+/** A course's reusable sources: course material not owned by any one assessment. */
+function sourcesQuery(supabase: Awaited<ReturnType<typeof createClient>>) {
+  return supabase
+    .from("documents")
+    .select(SOURCE_COLUMNS)
+    .is("exam_project_id", null)
+    .eq("category", "course_material")
+    .not("course_id", "is", null)
+    .order("created_at", { ascending: false });
+}
+
+export async function getCoursesWithSources(): Promise<CourseWithSources[]> {
+  const supabase = await createClient();
+  const [{ data: courses, error: coursesError }, { data: documents, error: documentsError }] = await Promise.all([
+    supabase.from("courses").select("id, code, name").order("code"),
+    sourcesQuery(supabase),
+  ]);
+  if (coursesError) throw new Error(`Could not load courses: ${coursesError.message}`);
+  if (documentsError) throw new Error(`Could not load course sources: ${documentsError.message}`);
+
+  const byCourse = new Map<string, CourseSource[]>();
+  for (const row of documents) {
+    const source = toCourseSource(row);
+    byCourse.set(source.courseId, [...(byCourse.get(source.courseId) ?? []), source]);
+  }
+  return courses.map((course) => ({ ...course, sources: byCourse.get(course.id) ?? [] }));
+}
+
+/** Every course's sources, for a form where the professor may still change the course. */
+export async function getSources(): Promise<CourseSource[]> {
+  const supabase = await createClient();
+  // A source whose removal didn't finish can't be selected any more.
+  const { data, error } = await sourcesQuery(supabase).eq("deletion_pending", false);
+  if (error) throw new Error(`Could not load course sources: ${error.message}`);
+  return data.map(toCourseSource);
+}
+
+export async function getAssessmentSourceDocumentIds(assessmentId: string): Promise<string[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("assessment_documents")
+    .select("document_id")
+    .eq("exam_project_id", assessmentId)
+    .order("created_at");
+  if (error) throw new Error(`Could not load selected sources: ${error.message}`);
+  return data.map((row) => row.document_id);
+}

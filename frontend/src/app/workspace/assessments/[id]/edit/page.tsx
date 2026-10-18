@@ -6,12 +6,13 @@ import { PageHeader } from "@/components/layout/page-header";
 import { getAssessment } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import { getCourses } from "@/lib/courses/queries";
+import { getAssessmentSourceDocumentIds, getSources } from "@/lib/sources/queries";
 
 export async function generateMetadata({
   params,
 }: PageProps<"/workspace/assessments/[id]/edit">): Promise<Metadata> {
-  await getCurrentProfessor();
-  const assessment = await getAssessment((await params).id);
+  const { id } = await params;
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   if (!assessment) return { title: "Assessment not found" };
   const examName = assessment.draft.examName.trim();
   return { title: examName ? `Edit ${examName}` : "Edit assessment" };
@@ -20,12 +21,14 @@ export async function generateMetadata({
 export default async function EditAssessmentPage({
   params,
 }: PageProps<"/workspace/assessments/[id]/edit">) {
-  const professor = await getCurrentProfessor();
   const { id } = await params;
   // Row Level Security hides other professors' assessments, so they are "not found" too.
-  const [assessment, courses] = await Promise.all([
+  const [professor, assessment, courses, sources, sourceIds] = await Promise.all([
+    getCurrentProfessor(),
     getAssessment(id),
     getCourses(),
+    getSources(),
+    getAssessmentSourceDocumentIds(id),
   ]);
   if (!assessment) notFound();
   // Only drafts can be changed.
@@ -41,11 +44,14 @@ export default async function EditAssessmentPage({
       />
       <AssessmentForm
         courses={courses}
+        sources={sources}
         saved={{
           examProjectId: id,
           folder: `${professor.id}/${id}`,
           draft: assessment.draft,
           files: assessment.files,
+          sourceIds,
+          bloomRecommendation: assessment.bloomRecommendation,
         }}
       />
     </div>

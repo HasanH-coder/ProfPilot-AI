@@ -102,8 +102,9 @@ Migration `supabase/migrations/20261005203838_assessment_ai_workflow.sql` adds:
 | `match_document_chunks(...)` | Similarity search (`security invoker`, so Row Level Security applies) |
 | `exam_projects.spec_status`, `spec_generated_at`, `spec_approved_at` | The plan's state: `none`, `draft`, `approved`, `stale` |
 | `assessment_style_profiles` | The cached previous-exam style profile, keyed by a hash of the files it came from |
+| `exam_projects.learning_focus`, `bloom_distribution` | The Exam Learning Focus (migration `20261016120000_bloom_learning_focus.sql`); see [Bloom's taxonomy](#blooms-taxonomy-exam-learning-focus) |
 | `exams` | One per assessment: mode, status, the approved spec it was built from, the plan, the quality-check result, `finalized_at` |
-| `exam_versions`, `exam_sections`, `exam_questions` | The exam. Equivalent questions in different versions share a `slot_id`. |
+| `exam_versions`, `exam_sections`, `exam_questions` | The exam. Equivalent questions in different versions share a `slot_id`. `exam_questions.cognitive_level` is the Bloom's level a question assesses (`null` for questions written before levels were recorded). |
 | `question_revisions` | Every earlier state of a question, with what changed it |
 | `ai_runs` | Background jobs. A partial unique index allows only one running job of each kind per assessment. |
 | `professor_preferences`, `preference_signals` | Explicit preferences and the accepted work they are learned from |
@@ -128,8 +129,26 @@ Files are read in the background as soon as they are uploaded (`POST /api/assess
 3. **Extract text.** PDF page by page (pypdf), PPTX slides, tables and speaker notes, DOCX headings and tables, TXT in common encodings. Damaged, password-protected and empty files fail with a specific message.
 4. **Scanned PDFs** (at least half the pages without a text layer): those pages are transcribed by the reasoning model, eight pages per request, up to `MAX_OCR_PAGES` (default 30) pages.
 5. **Images** are described by the reasoning model (what they show, any text, labels and data).
-6. **Chunk** (about 2,400 characters with 300 overlapping, labelled "Page 3", "Slides 1–3" or "Section: …"), **embed** in batches, and store.
-7. **Summarize** the file (title, summary, topics with locations).
+6. **Chunk** (about 2,400 characters with 300 overlapping, labelled "Page 3", "Slides 1–3" or "Section: …", never across a page without text, so a label never claims a missing page), **embed** in batches, and store. The file is now searchable ("ready").
+7. **Course material** then gets its **Lecture Knowledge Profile** (below), which also gives its title and summary. Other files get a short **summary** (title, summary, topics with locations).
+
+### Lecture knowledge
+
+Each course-material document gets one reusable, structured profile (`documents.knowledge`, built by `lecture_knowledge.py`). The chunks stay the authoritative evidence; the profile is a map of everything the lecture contains:
+
+- **Complete coverage.** The stored chunks are analysed in order, in sections of up to 24,000 characters, one call per section, so long lectures are never truncated or sampled. Every item (concepts and definitions, formulas with variables and conditions, examples and applications, figures and tables, misconceptions, and the Bloom's levels each topic can support) cites the locations its section really contains; a reply citing any other location is sent back once. Each page or slide starts with a marker in the stored text (`[Page 14]`), so items cite the exact page even inside a multi-page chunk. Misconceptions are student errors and say whether the lecture states them or ProfPilot suggests them; weaknesses of a method are concepts of kind `limitation`. Create opportunities need real grounding (a design or build task the material supports).
+- **Formula fidelity.** Formulas are kept as written (`expression`, the evidence) and flagged `uncertain` when the extracted text looks garbled. A proposed standard form goes in a separate `normalized` field, only when it's unambiguous; it never replaces the evidence and is shown as ProfPilot's reading, not the lecture's. Question writers see an unverified formula labelled as such, with its standard form (if any) apart from the extracted evidence, and are told never to quote or reconstruct it; the planner avoids questions that depend on one. Every AI-written question (generation, versions, single questions, revisions) is rejected and sent back if it contains characters copied from extracted PDF maths (`𝒇`, `𝒆`…) or quotes an unverified formula's text. The quality check warns on any question with mathematics planned on a topic with unverified formulas, asking the professor to confirm it against the original pages.
+- **Relations.** One short call over the merged topic inventory gives the title, overview, section structure, learning objectives and the relations between topics (prerequisite, builds on, contrasts with, trade-off…); relations naming unknown topics are dropped.
+- **Coverage record.** Every page or slide is classified: substantive text, text with unread figures, figure-dominated (little text beyond labels), title or divider (headers, footers and lines repeated on half the pages don't count as content), empty, plus the pages whose maths was garbled. Only substantive pages count as analysed content. The parser marks figures beyond a slide template's own images (PDF) and pictures or charts (PowerPoint). The record also says whether the file was truncated and how many tokens the build used. Files read before page markers existed only show which pages had any text, and say so (`page_detail: false`); re-reading the file gives the full detail.
+- **Once per version.** A profile is current while its version (`KNOWLEDGE_VERSION`) and the file's SHA-256 match; an identical file of the same professor reuses it: copied when the file is read, borrowed by assessments when the copy has none, and copied instead of analysed when a build is requested. Two identical copies are never analysed at once. Another professor's profile is never used. It is built automatically only when a file is first read. An outdated or failed profile is rebuilt only when the professor asks, on Sources, after seeing an estimate (`GET`/`POST /api/documents/{id}/knowledge`). Existing files are never reprocessed in bulk.
+- **Refreshing a legacy lecture.** A profile built before page markers is marked `legacy` (it works, without page-level coverage); the stored text's own state is `legacy`, `current`, `interrupted` or `not_applicable` (Word and text files). Refreshing is two separate steps, each confirmed by the professor in the profile's details on Sources:
+  1. **Re-read** (`POST /api/documents/{id}/extraction`, PDF and PowerPoint): the original file is parsed again with the current parser. No language-model call is made: only the new chunks are embedded (a fraction of a cent). The document id, file, digest, course, assessment links, summary and profile are kept. The new chunks are saved (at higher indexes) before the old ones are removed, so search never loses the file; a failure removes what was added, and an interrupted re-read (both sets present) is reported, never built on, and cleaned up by the next re-read. A file that needed AI transcription, or whose stored bytes no longer match its digest, is refused without any change.
+  2. **Rebuild** (the existing build, with its estimate): the working profile stays in place and in use until the new one is saved; a failed or interrupted rebuild is recorded beside it (`rebuild`), never replacing it. An identical copy's profile is copied instead only if it has page-level detail.
+
+  A file can't be re-read while it is being read or analysed, or analysed while it is being re-read. Nothing is re-read or rebuilt automatically.
+- **No assessment settings.** The profile lists the levels the material supports; each assessment's own Bloom's split stays in its ExamSpec.
+
+Planning uses it: the interpreter and planner see a compact map of every lecture: every topic with its id (`L2.t5`), merged locations ("Slides 3–5"), supported levels as initials, and formula, example and unreadable-figure counts; relations and warnings beyond a few are counted, not listed. No topic is ever left out (about 5,000 tokens for six 30-topic lectures), and the file overview doesn't repeat what the map says. When every lecture is mapped, the planner samples one excerpt per lecture instead of three. Each planned question cites the topics it draws on (`knowledge_refs`, checked against the inventory), and its question writer receives exactly those topics' full notes alongside the retrieved excerpts, which remain the authority. Lectures without a current profile are named, and work as before (overview and excerpts).
 
 The three categories stay separate:
 
@@ -161,7 +180,7 @@ It returns an **enhanced prompt** (a clear, complete brief the professor can edi
 | Group | Fields |
 | --- | --- |
 | Identity | `assessment_title`, `course`, `assessment_type` |
-| Format | `duration_minutes`, `versions`, `total_points`, `question_count_min/max`, `question_format` (MCQ / subjective %), `difficulty` (easy / medium / hard %), `sections` |
+| Format | `duration_minutes`, `versions`, `total_points`, `question_count_min/max`, `question_format` (MCQ / subjective %), `difficulty` (easy / medium / hard %), `bloom` (learning focus and % per Bloom's level), `sections` |
 | Content | `coverage` (topics with emphasis and source files), `learning_emphasis`, `question_style`, `professor_notes`, `professor_preferences_applied`, `source_material_guidance`, `previous_exam_style_guidance`, `constraints` |
 | Transparency | `assumptions`, `warnings`, `generation_instructions` |
 
@@ -176,6 +195,23 @@ The plan page (`[id]/plan`) shows the spec with provenance badges, the assumptio
 - **Approve & continue**; generation only starts from an approved plan.
 
 A plan becomes **out of date** when the setup changes, a file is added or removed, or a file that failed to read is now ready. The page then explains what changed and asks for a new plan; an out-of-date plan can't be approved. The staleness check runs both in the database (triggers) and in the API (`stale_reasons`).
+
+## Bloom's taxonomy (Exam Learning Focus)
+
+The professor chooses how the exam's **marks** are spread across Bloom's six levels: remember, understand, apply, analyze, evaluate, create. It is independent of difficulty, and both are respected (an analyze question can be medium; an apply question can be hard).
+
+| Focus | Stored | In the ExamSpec (`bloom`) |
+| --- | --- | --- |
+| Automatic (default) | `learning_focus = 'automatic'` | Recommended by the Prompt Interpreter from the material, objectives, formats and assessment type, in the same call (`source: ai_inferred`, `focus: automatic`) |
+| Balanced, Practical, Critical Thinking | the choice only | The preset's split, re-applied in code (`source: professor`, `focus` names the preset) |
+| Custom | `learning_focus = 'custom'` and `bloom_distribution` | The professor's six percentages, exactly (`source: professor`) |
+
+- **Feasibility is checked in code, not left to the model.** If more marks are at Create than the subjective share allows (multiple-choice questions can't assess creating), a warning on the plan page asks the professor to adjust; nothing is changed silently (`distribution.bloom_conflicts`). A plan with a multiple-choice question at Create is rejected and repaired.
+- **Planning.** Every planned question has a `cognitive_level`. The split of marks per level is compared with `spec.bloom` like the format and difficulty splits (within 6 percentage points), with the same single repair call. Plans saved earlier with the old labels (`recall`, `application`, …) still load.
+- **Writing.** Each batch is told every question's planned level, with one shared guide to what each level requires (`BLOOM_GUIDE` in `prompts.py`): a level comes from the reasoning a student must do, never from the verb in the stem. A question whose `cognitive_level` doesn't match its plan is sent back. Equivalent versions must keep the level. In Build with AI, the next level is the one furthest behind the split (`suggest_level`), or the one the professor asks for.
+- **Review.** The quality check judges whether each question really needs its labelled level. If not, it may only **relabel** it to the level it actually assesses (a safe fix, in the revision history); rewriting it to reach another level is left to the professor. The split per version is checked deterministically too, and versions whose equivalent questions differ in level are reported.
+- **Editing.** Questions show their level. AI revisions set the level of the revised question; quick actions that keep what a question tests (clearer, shorter, alternative, replace) must keep it. The professor can change it in **Edit manually**.
+- **Where it shows.** The setup form (cards, an advanced panel with six sliders and a doughnut chart), the summary, the plan page (with an **Adjust** link back to the form), question cards and the exam's **At a glance** panel.
 
 ## Generating the exam
 
@@ -203,9 +239,9 @@ If a step fails, the questions already saved are kept and the exam shows **Conti
 
 `mode: "interactive"` creates an empty exam and opens `[id]/builder`: the exam on one side, a conversation with ProfPilot on the other (tabs on a phone). The professor can type or talk. Both use the same tools, executed by FastAPI:
 
-`get_exam_state`, `generate_next_question`, `revise_question`, `approve_question`, `unlock_question`, `delete_question`, `move_question`, `review_question`, `regenerate_solution`, `finish_exam`.
+`get_exam_state`, `generate_next_question`, `revise_question`, `approve_question`, `unlock_question`, `delete_question`, `move_question`, `review_question`, `regenerate_solution`, `undo_question_change`, `finish_exam`.
 
-The assistant follows the approved plan, suggests the next question, and never changes an approved (locked) question. **Finish** creates the other versions and runs the quality check, then opens the exam editor.
+The assistant follows the approved plan, suggests the next question, and never changes an approved (locked) question. Its view of the exam lists the course material in use (direct uploads and the selected course sources) and the split by Bloom's level reached so far. **Undo** restores the version before a question's most recent change, through the same history as the editor's **Restore**. It goes back one step: because a restore is itself recorded, a second undo reverses the first, and the reply says which happened. **Finish** creates the other versions and runs the quality check, then opens the exam editor.
 
 - **The next question keeps the mix.** Unless the professor asks for a type, difficulty or topic, ProfPilot picks them (`suggest_next`): whichever difficulty is furthest behind the plan's split by marks, without repeating the previous one while another is about as far behind, and the coverage topic furthest behind its share, avoiding the previous topic and lecture. So difficulties and lectures are interleaved from the start rather than all the easy questions first. "Give me three easy questions first" or "finish Lecture 3 first" is followed as asked.
 - **Only what one question needs.** Generating or revising a question loads the stored plan, the exam and a few excerpts (in parallel), makes one reasoning call, and changes only that question and its answer key: no file is read again, nothing is re-planned, and the full quality check doesn't run.
@@ -248,9 +284,11 @@ Versions are labelled A, B, C… Equivalent questions share a `slot_id` and are 
 
 **Set up with AI** fills the form live. Each change is highlighted, listed in a change feed, and saved to the same draft as the form (an autosave). It is always offered at the top of Assessment Setup; the sidebar's **AI Assistant** opens the same page with it open.
 
-- **Brief, one question at a time.** The assistant asks about one setting per turn (course, assessment type, duration, question format, difficulty mix, versions, coverage), in a few words, without filler or repeating back what the professor said. Every tool result names the next question (`nextQuestion`), skipping settings already filled in or answered.
+- **Brief, one question at a time.** The assistant asks about one setting per turn (course, assessment type, duration, question format, difficulty mix, learning focus, versions, coverage), in a few words, without filler or repeating back what the professor said. Every tool result names the next question (`nextQuestion`), skipping settings already filled in or answered.
 - **Everything optional.** "Skip", "I don't care" or "not now" calls `skip_setting`: the setting stays empty and isn't asked about again in that conversation. "That's enough" or "finish" ends the setup right away.
 - **Exact numbers.** Values the professor states are applied exactly: "30 percent easy, 40 percent medium and 30 percent hard" sets 30 / 40 / 30. A split that doesn't add up to 100 (30 / 30 / 30) is never adjusted; nothing changes and the assistant asks one short question ("That adds up to 90%. What should the remaining 10% be?"). A missing share is asked for, and without numbers ("mostly medium") a split is only offered as a suggestion and set once the professor agrees. Numbers sent as `"30"`, `30.0` or `0.3` are read as the same 30%.
+- **Learning focus (Bloom's Taxonomy).** `set_learning_focus` sets Automatic, Balanced, Practical & Problem-Solving, Critical Thinking, or a custom split of all six levels, with the same exact-number rules as difficulty. It is asked about once, after the difficulty mix, and only when the form still has the default (Automatic); skipping it keeps the professor's current choice.
+- **Course sources.** `list_course_sources` lists the chosen course's ready sources from the database, and `set_course_sources` adds, removes or replaces the selection using only those ids. The form sends its current selection with each request; the result's `sourceIds` (with `sourceIds` in `changedFields`) updates the Course material card, and saving goes through the same `setAssessmentSourceDocuments` as a manual selection. Changing the course clears the selection, as on the form.
 
 **Fallbacks.** If voice isn't supported, the microphone is blocked or missing, or the connection fails, the panel says why and offers the **text chat**, which uses the same tools through `POST /api/setup-assistant/messages` or `/api/exams/{id}/builder/messages`. The call has **Mute** / **Unmute** and **End call**, the call's duration, who is speaking, and live captions when transcription is available.
 
@@ -349,6 +387,7 @@ The interactive documentation is at http://localhost:8000/docs while the backend
 ## Cost controls
 
 - Files are read once; identical files are reused by hash; the style profile is cached.
+- A lecture's knowledge profile is built once per file version (its summary comes with it, not as a separate call) and reused by every assessment; rebuilds happen only on request, after an estimate. Each build records its token usage on the profile and logs a `lecture_knowledge` timing line.
 - Retrieval sends only the most relevant excerpts, within a character budget.
 - Reasoning effort is set per task (see [Models](#models)); verbosity is kept low where possible.
 - Independent reads (the assessment, its files, the style profile, preferences; the exam's parts; one similarity search per query) run in parallel.
@@ -362,7 +401,7 @@ The interactive documentation is at http://localhost:8000/docs while the backend
 From `backend/` with the virtual environment active:
 
 ```bash
-pytest                 # 157 tests, plus 2 live tests that are skipped by default; OpenAI and Supabase are replaced by fakes
+pytest                 # 214 tests, plus 2 live tests that are skipped by default; OpenAI and Supabase are replaced by fakes
 ruff check . && ruff format --check .
 ```
 
@@ -370,9 +409,10 @@ ruff check . && ruff format --check .
 - `tests/test_isolation.py` acts as a second professor and makes 30 requests against the first professor's assessment, exam, questions, job and voice credentials: every attempt gets `404`, the first professor's data is unchanged, their Storage files can't be read, and requests without a token get `401`.
 - `tests/test_security.py` covers token verification (expired, wrong audience, wrong issuer, `anon` role, anonymous users, a non-UUID subject, a token signed by another key, symmetric and unsigned tokens), protected endpoints without a valid bearer token, and error responses that never echo submitted values.
 - The other suites cover parsing, ingestion, the interpreter and staleness, generation and resume, the quality check and its safe fixes, revisions and history, the builder and setup tools, voice credentials and their rate limit, personalization, jobs, and export.
+- `tests/test_bloom.py` covers the learning focus: its rules, older records, provenance (custom, presets, automatic), conflicts, staleness, the split by marks, plans, generation, versions, Build with AI and editing.
 - `tests/test_planning.py` covers question order (mixed plans, explicit orders kept, Build with AI's next question) and `tests/test_latency.py` checks that one-question operations make one model call and no heavy work, that batches and versions are written concurrently, and that the chat reports a tool before the AI returns.
 
-The frontend has component tests (from `frontend/`: `npm test`), run with Vitest in Chromium: Set up with AI on Create assessment and through the sidebar, the sidebar's links, the conversation log's scrolling, the builder's statuses, the builder page's height at 390–1440 px, and that captions during a call don't re-render the form or the exam preview.
+The frontend has component tests (from `frontend/`: `npm test`), run with Vitest in Chromium: Set up with AI on Create assessment and through the sidebar, the Exam Learning Focus (choices, sliders and boxes, validation, save and reopen, the plan page, phone width), the sidebar's links, the conversation log's scrolling, the builder's statuses, the builder page's height at 390–1440 px, and that captions during a call don't re-render the form or the exam preview.
 
 **Live smoke test.** `tests/test_live_smoke.py` makes two small real calls (one structured output, one Realtime client secret). It is skipped unless enabled explicitly:
 
@@ -397,5 +437,6 @@ Automated tests can't use a real microphone. Before a demo, in Chrome or Safari:
 - Jobs run inside the FastAPI process. A restart interrupts running jobs, which then show as interrupted and can be started again. A production deployment would use a job queue.
 - Jobs act with the professor's access token, which lasts about an hour. The browser refreshes the session before starting a job, which covers normal generation times.
 - Only voice credentials are rate-limited. AI revisions and other endpoints are not.
+- Bloom's levels are recorded per question, not per subpart (a question's level is the highest it needs). Set up with AI doesn't set the learning focus by voice or chat yet, the PDFs don't print levels, and personalization doesn't learn a cognitive mix. Adjusting the split on the plan page means editing the setup, which asks for a new plan.
 - Live captions depend on the transcription model. If they don't appear, set `REALTIME_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe`.
 - PDF support for non-Latin scripts depends on the fallback font.

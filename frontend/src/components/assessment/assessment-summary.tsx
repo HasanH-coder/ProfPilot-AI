@@ -3,7 +3,7 @@
 import { ClipboardList } from "lucide-react";
 import { useId, type ReactNode } from "react";
 
-import type { UploadItem } from "@/components/assessment/use-document-uploads";
+import { uploadedCount, type UploadItem } from "@/components/assessment/use-document-uploads";
 import {
   describeSettings,
   type AssessmentDraft,
@@ -17,6 +17,8 @@ type AssessmentSummaryProps = {
   course: Course | undefined;
   /** The files added on the page. Only uploads Supabase has confirmed are counted. */
   files: UploadItem[];
+  /** Course sources selected from the library, counted with the course material. */
+  sourceCount?: number;
   className?: string;
   /** Actions shown under the summary, such as the Save button. */
   children?: ReactNode;
@@ -27,6 +29,7 @@ export function AssessmentSummary({
   draft,
   course,
   files,
+  sourceCount = 0,
   className,
   children,
 }: AssessmentSummaryProps) {
@@ -34,9 +37,7 @@ export function AssessmentSummary({
   const settings = describeSettings(draft);
 
   function fileCount(category: DocumentCategory) {
-    const count = files.filter(
-      (file) => file.category === category && file.documentId,
-    ).length;
+    const count = uploadedCount(files, category);
     return count > 0 ? `${count} ${count === 1 ? "file" : "files"}` : undefined;
   }
 
@@ -50,7 +51,10 @@ export function AssessmentSummary({
     { term: "Assessment", value: draft.examName.trim() },
     {
       term: "Course material",
-      value: fileCount("course_material"),
+      value:
+        [fileCount("course_material"), sourceCount > 0 && `${sourceCount} ${sourceCount === 1 ? "source" : "sources"}`]
+          .filter(Boolean)
+          .join(" · ") || undefined,
       empty: "None uploaded",
     },
     {
@@ -62,6 +66,7 @@ export function AssessmentSummary({
     { term: "Format", value: settings.distribution },
     { term: "Versions", value: settings.versions },
     { term: "Difficulty", value: settings.difficulty },
+    { term: "Learning focus", value: settings.learningFocus, detail: settings.bloom },
     {
       term: "Attachments",
       value: fileCount("additional_attachment"),

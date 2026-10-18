@@ -2,7 +2,7 @@
 
 import { useId } from "react";
 
-import { FormSection } from "@/components/assessment/form-section";
+import { FormSection, type SectionState } from "@/components/assessment/form-section";
 import { Field, FieldError } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { LIMITS } from "@/lib/assessments/draft";
@@ -18,15 +18,17 @@ type AdditionalNotesProps = {
   value: string;
   onChange: (value: string) => void;
   error?: string;
+  section: SectionState;
 };
 
-export function AdditionalNotes({ value, onChange, error }: AdditionalNotesProps) {
+export function AdditionalNotes({ value, onChange, error, section }: AdditionalNotesProps) {
   const textareaId = useId();
   const descriptionId = useId();
   const errorId = useId();
 
   return (
     <FormSection
+      {...section}
       title="Additional notes"
       description="Optional. Specific requests or constraints for this assessment."
       descriptionId={descriptionId}

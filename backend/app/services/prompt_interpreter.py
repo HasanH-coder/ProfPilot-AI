@@ -10,6 +10,7 @@ The professor's explicit settings are binding: after the model answers, they
 are applied again in code, so the AI can never change them.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,7 +20,8 @@ from app.core.config import settings
 from app.core.errors import ConflictError
 from app.core.timing import timed
 from app.db.supabase import Database
-from app.schemas.ai import DifficultySpec, ExamSpec, FormatSpec, InterpretationOutput
+from app.domain.distribution import bloom_conflicts
+from app.schemas.ai import BloomSpec, DifficultySpec, ExamSpec, FormatSpec, InterpretationOutput
 from app.services.assessment_context import (
     AssessmentContextService,
     AssessmentRecord,
@@ -33,6 +35,7 @@ from app.services.assessment_context import (
 from app.services.document_ingestion import DocumentIngestionService
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
 from app.services.jobs import RunContext
+from app.services.lecture_knowledge import mapped_ids, render_inventory
 from app.services.style_analysis import StyleAnalysisService
 
 SPEC_ENVELOPE_VERSION = 1
@@ -97,13 +100,14 @@ class PromptInterpreterService:
         if run:
             await run.stage("interpreting")
         framer = DataFramer()
-        excerpts = await self._excerpts(record, documents)
+        excerpts, knowledge = await asyncio.gather(self._excerpts(record, documents), self.context.get_knowledge(documents))
         attachments = [doc for doc in documents if doc.category == "additional_attachment" and doc.processing_status == "ready"]
         sections = [
             render_settings(record),
             render_professor_instructions(record),
             render_preferences(preferences),
-            render_material_overview(documents, framer),
+            render_material_overview(documents, framer, mapped=mapped_ids(documents, knowledge)),
+            render_inventory(documents, knowledge, framer),
             render_style_profile(style, framer),
             render_excerpts(excerpts, framer),
             (
@@ -273,6 +277,10 @@ def _interpretation_problems(output: InterpretationOutput, record: AssessmentRec
         problems.append("question_format percentages must add up to 100.")
     if spec.difficulty and spec.difficulty.easy_percent + spec.difficulty.medium_percent + spec.difficulty.hard_percent != 100:
         problems.append("difficulty percentages must add up to 100.")
+    if spec.bloom is None:
+        problems.append("exam_spec.bloom is required: give the split of marks across the six Bloom's levels.")
+    elif sum(spec.bloom.shares().values()) != 100:
+        problems.append("bloom percentages must add up to 100.")
     if (
         spec.question_count_min is not None
         and spec.question_count_max is not None
@@ -311,6 +319,21 @@ def apply_professor_settings(spec: ExamSpec, record: AssessmentRecord) -> ExamSp
             hard_percent=setup.hard_percentage,
             source="professor",
         )
+    chosen = setup.resolved_bloom()
+    if chosen is not None:
+        # A preset or the professor's own split. The focus records which.
+        spec.bloom = BloomSpec(
+            focus=setup.learning_focus,  # type: ignore[arg-type]
+            **{f"{level}_percent": share for level, share in chosen.items()},
+            source="professor",
+        )
+    elif spec.bloom is not None:
+        # Automatic: ProfPilot's recommendation, keeping the model's provenance
+        # (a split the professor wrote in their instructions stays theirs).
+        spec.bloom = spec.bloom.model_copy(update={"focus": "automatic"})
+    for conflict in bloom_conflicts(spec):
+        if conflict not in spec.warnings:
+            spec.warnings.append(conflict)
     if (
         spec.question_count_min is not None
         and spec.question_count_max is not None

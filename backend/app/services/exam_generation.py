@@ -21,17 +21,19 @@ import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.ai.openai_service import Effort, OpenAIService, Usage, gather_limited, get_openai_service
 from app.ai.prompts import DataFramer, generator_instructions, planner_instructions, variant_instructions
 from app.core.config import settings
-from app.core.errors import AppError, ConflictError
+from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
+from app.domain.setup import BLOOM_PRESETS
 from app.schemas.ai import (
+    COGNITIVE_LEVELS,
     QUESTION_TYPES,
     ExamPlan,
     ExamSpec,
@@ -63,6 +65,16 @@ from app.services.exam_store import (
     similar,
 )
 from app.services.jobs import RunContext
+from app.services.lecture_knowledge import (
+    lecture_refs,
+    mapped_ids,
+    matching_refs,
+    render_inventory,
+    render_topics,
+    topic_index,
+    unverified_expressions,
+    unverified_formula_problems,
+)
 from app.services.prompt_interpreter import PromptInterpreterService
 
 logger = logging.getLogger("profpilot.generation")
@@ -81,6 +93,20 @@ class GenerationContext:
     documents: list[DocumentRecord]
     style: StyleProfile | None
     preferences: PreferenceProfile
+    # Lecture knowledge profiles of the course material, by document id (see lecture_knowledge.py).
+    knowledge: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @property
+    def knowledge_refs(self) -> set[str]:
+        """Every topic id the planner may cite (e.g. 'L2.t5')."""
+        return set(topic_index(lecture_refs(self.documents, self.knowledge)))
+
+    def formula_problems(self, questions: Iterable[tuple[str, QuestionContent]]) -> list[str]:
+        """(label, question) pairs that quote an unverified lecture formula's garbled extracted text."""
+        expressions = unverified_expressions(self.documents, self.knowledge)
+        if not expressions:
+            return []
+        return [problem for label, content in questions for problem in unverified_formula_problems(content, expressions, label)]
 
     @property
     def document_names(self) -> dict[str, str]:
@@ -142,6 +168,7 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
         documents=documents,
         style=style[0] if style else None,
         preferences=preferences,
+        knowledge=await context.get_knowledge(documents),
     )
 
 
@@ -323,8 +350,10 @@ def interleave_plan(plan: ExamPlan, document_names: list[str]) -> ExamPlan:
 # =============================================================================
 
 
-def plan_problems(plan: ExamPlan, spec: ExamSpec, figure_ids: set[str]) -> tuple[list[str], list[str]]:
-    """(structural problems, softer target misses) for a plan."""
+def plan_problems(
+    plan: ExamPlan, spec: ExamSpec, figure_ids: set[str], knowledge_refs: set[str] | None = None
+) -> tuple[list[str], list[str]]:
+    """(structural problems, softer target misses) for a plan. `knowledge_refs`: the topic ids it may cite."""
     hard: list[str] = []
     soft: list[str] = []
     questions = plan.questions
@@ -340,21 +369,24 @@ def plan_problems(plan: ExamPlan, spec: ExamSpec, figure_ids: set[str]) -> tuple
     for q in questions:
         if q.section_index >= len(plan.sections):
             hard.append(f"Question {q.number} points to a section that doesn't exist.")
+        if q.type == "mcq" and q.cognitive_level == "create":
+            hard.append(f"Question {q.number} is multiple choice, which can't assess Create; change its type or level.")
         if q.section_index < previous_section:
             hard.append("Keep each section's questions together, in section order.")
             break
         previous_section = q.section_index
         if q.figure_document_id and q.figure_document_id not in figure_ids:
             hard.append(f"Question {q.number} uses figure id {q.figure_document_id}, which isn't an image attachment.")
+        unknown = [ref for ref in q.knowledge_refs if ref not in (knowledge_refs or set())]
+        if unknown:
+            hard.append(
+                f"Question {q.number} cites {', '.join(unknown)}, which aren't topic ids from the LECTURE KNOWLEDGE "
+                "inventory; use ids exactly as listed (or none if there is no inventory)."
+            )
 
-    summary = distribution.summarize(
-        [
-            {"type": q.type, "difficulty": q.difficulty, "points": q.points, "estimated_minutes": q.estimated_minutes}
-            for q in questions
-        ]
-    )
+    summary = distribution.summarize(questions)
     for warning in distribution.compare(summary, spec, tolerance=_PLAN_TOLERANCE):
-        soft.append(warning["message"] + " Adjust question types, difficulties or points.")
+        soft.append(warning["message"] + " Adjust question types, difficulties, Bloom's levels or points.")
     if spec.duration_minutes and summary["estimatedMinutes"] > spec.duration_minutes:
         soft.append(
             f"The questions need about {summary['estimatedMinutes']:g} minutes, more than the "
@@ -379,17 +411,23 @@ class ExamPlanningService:
         framer = DataFramer()
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
         course_ids = [doc.id for doc in ctx.documents if doc.category == "course_material" and doc.processing_status == "ready"]
+        mapped = mapped_ids(ctx.documents, ctx.knowledge)
+        # Lectures in the LECTURE KNOWLEDGE map need only a taste of their wording here: the map gives
+        # their full coverage, and each question's writer retrieves its own excerpts.
+        per_document = 1 if course_ids and set(course_ids) <= mapped else 3
         spread = assign_refs(
-            await retrieval.spread(course_ids, document_names=ctx.document_names, per_document=3, max_chars=18_000)
+            await retrieval.spread(course_ids, document_names=ctx.document_names, per_document=per_document, max_chars=18_000)
         )
         sections = [
             *ctx.common_sections(framer),
-            render_material_overview(ctx.documents, framer),
+            render_material_overview(ctx.documents, framer, mapped=mapped_ids(ctx.documents, ctx.knowledge)),
+            render_inventory(ctx.documents, ctx.knowledge, framer),
             render_excerpts(spread, framer, title="SAMPLE OF THE COURSE MATERIAL"),
             "Plan the exam now.",
         ]
         base_input = "\n\n".join(sections)
         figure_ids = ctx.figure_ids
+        known = ctx.knowledge_refs
 
         plan = await self.ai.parse(
             purpose="plan_exam",
@@ -398,10 +436,10 @@ class ExamPlanningService:
             schema=ExamPlan,
             effort="high",
             max_output_tokens=24_000,
-            validate=lambda result: plan_problems(result, ctx.spec, figure_ids)[0],
+            validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known)[0],
             usage=self.usage,
         )
-        _, soft = plan_problems(plan, ctx.spec, figure_ids)
+        _, soft = plan_problems(plan, ctx.spec, figure_ids, known)
         if soft:
             # One focused repair for targets the plan misses.
             try:
@@ -425,10 +463,10 @@ class ExamPlanningService:
                     schema=ExamPlan,
                     effort="high",
                     max_output_tokens=24_000,
-                    validate=lambda result: plan_problems(result, ctx.spec, figure_ids)[0],
+                    validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known)[0],
                     usage=self.usage,
                 )
-                remaining = plan_problems(repaired, ctx.spec, figure_ids)[1]
+                remaining = plan_problems(repaired, ctx.spec, figure_ids, known)[1]
                 if len(remaining) <= len(soft):
                     plan, soft = repaired, remaining
             except AppError:
@@ -460,6 +498,8 @@ def batch_problems(batch: QuestionBatch, planned: list[PlannedQuestion], others:
         content = normalize_content(question)
         if content.type != slot.type or content.difficulty != slot.difficulty:
             problems.append(f"{label} must be type {slot.type} and difficulty {slot.difficulty}, as planned.")
+        if content.cognitive_level != slot.cognitive_level:
+            problems.append(f"{label} must assess the {slot.cognitive_level} level, as planned.")
         if abs(content.points - slot.points) > 0.01:
             problems.append(f"{label} must be worth {slot.points:g} points, as planned.")
         if (content.figure_document_id or None) != (slot.figure_document_id or None):
@@ -485,6 +525,8 @@ def variant_problems(batch: VariantBatch, sources: dict[int, dict[str, Any]]) ->
         content = normalize_content(variant.question)
         if content.type != source["type"] or content.difficulty != source["difficulty"]:
             problems.append(f"{label} must keep type {source['type']} and difficulty {source['difficulty']}.")
+        if source.get("cognitive_level") and content.cognitive_level != source["cognitive_level"]:
+            problems.append(f"{label} must assess the same Bloom's level ({source['cognitive_level']}).")
         if abs(content.points - float(source["points"])) > 0.01:
             problems.append(f"{label} must keep {float(source['points']):g} points.")
         if similar(content.prompt, source["prompt"]) > 0.95:
@@ -583,7 +625,13 @@ class ExamGenerationService:
     ) -> tuple[list[GeneratedQuestion], list[Excerpt]]:
         framer = DataFramer()
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
-        queries = [f"{slot.topic}. {slot.learning_objective}. {slot.source_hint or ''}" for slot in batch]
+        refs = [ref for slot in batch for ref in slot.knowledge_refs]
+        topics = topic_index(lecture_refs(ctx.documents, ctx.knowledge))
+        queries = [
+            f"{slot.topic}. {slot.learning_objective}. {slot.source_hint or ''} "
+            + " ".join(topics[ref][1]["name"] for ref in slot.knowledge_refs if ref in topics)
+            for slot in batch
+        ]
         excerpts = assign_refs(
             await retrieval.search(
                 ctx.record.id, queries, document_names=ctx.document_names, per_query=5, max_excerpts=10, max_chars=18_000
@@ -592,7 +640,9 @@ class ExamGenerationService:
         plan_lines = [
             f"{q.number}. [{plan.sections[q.section_index].title if q.section_index < len(plan.sections) else ''}] "
             f"{q.type}, {q.difficulty}, {q.points:g} pts, ~{q.estimated_minutes:g} min — {q.topic}: {q.learning_objective}"
-            f" (level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'})"
+            f" (Bloom's level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'}"
+            + (f"; lecture knowledge: {', '.join(q.knowledge_refs)}" if q.knowledge_refs else "")
+            + ")"
             for q in plan.questions
         ]
         targets = [line for line in plan_lines if int(line.split(".", 1)[0]) in {slot.number for slot in batch}]
@@ -603,6 +653,7 @@ class ExamGenerationService:
             "QUESTIONS ALREADY WRITTEN (don't repeat them)\n"
             + ("\n".join(f"- {text[:240]}" for text in others[-40:]) if others else "(none yet)"),
             render_excerpts(excerpts, framer),
+            render_topics(refs, ctx.documents, ctx.knowledge, framer),
             (
                 ""
                 if ctx.has_course_material
@@ -618,7 +669,10 @@ class ExamGenerationService:
             schema=QuestionBatch,
             effort=batch_effort(batch),
             max_output_tokens=48_000,
-            validate=lambda result: batch_problems(result, batch, others),
+            validate=lambda result: (
+                batch_problems(result, batch, others)
+                + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)
+            ),
             usage=self.usage,
         )
         return batch_result.questions, excerpts
@@ -680,7 +734,12 @@ class ExamGenerationService:
             schema=VariantBatch,
             effort="medium",
             max_output_tokens=40_000,
-            validate=lambda batch: variant_problems(batch, sources),
+            validate=lambda batch: (
+                variant_problems(batch, sources)
+                + ctx.formula_problems(
+                    (f"The variant of question {v.source_number}", normalize_content(v.question)) for v in batch.variants
+                )
+            ),
             usage=self.usage,
         )
         return [(sources[v.source_number], normalize_content(v.question)) for v in result.variants]
@@ -707,6 +766,7 @@ class ExamGenerationService:
         difficulty: str | None,
         topic: str | None,
         points: float | None,
+        cognitive_level: str | None = None,
         full: FullExam | None = None,
     ) -> dict[str, Any]:
         """Writes the next Build with AI question. Only what one question needs is
@@ -720,6 +780,12 @@ class ExamGenerationService:
         slot_type = question_type if question_type in QUESTION_TYPES else suggestion["type"]
         slot_difficulty = difficulty if difficulty in ("easy", "medium", "hard") else suggestion["difficulty"]
         slot_points = points if points and points > 0 else suggestion["points"]
+        slot_level = cognitive_level if cognitive_level in COGNITIVE_LEVELS else suggest_level(ctx.spec, existing, slot_type)
+        if slot_type == "mcq" and slot_level == "create":
+            if question_type == "mcq":
+                raise InvalidInputError("A multiple-choice question can't assess the Create level. Choose another type or level.")
+            slot_type = "short_answer"
+            slot_points = points if points and points > 0 else _POINTS[slot_type]
         # The suggested topic only when the professor named none (their request may imply one).
         topic = topic or (None if instructions else suggestion["topic"])
         framer = DataFramer()
@@ -739,14 +805,15 @@ class ExamGenerationService:
             points=slot_points,
             topic=topic or "the next most useful topic from the coverage list",
             learning_objective="as the professor asks, consistent with the spec",
-            cognitive_level="application",
+            cognitive_level=slot_level,  # type: ignore[arg-type]
             source_hint=None,
             estimated_minutes=max(1.0, slot_points * 1.5),
             figure_document_id=None,
         )
         others = [q["prompt"] for q in existing]
         request = [
-            f"Write question {number}: type {slot_type}, difficulty {slot_difficulty}, {slot_points:g} points.",
+            f"Write question {number}: type {slot_type}, difficulty {slot_difficulty}, Bloom's level {slot_level}, "
+            f"{slot_points:g} points.",
             f"Topic: {topic}" if topic else "Topic: choose the most useful topic not yet covered, following the coverage list.",
             f"The professor's request: {instructions}" if instructions else "",
             "Concepts already covered: " + (", ".join(dict.fromkeys(covered)) if covered else "none yet"),
@@ -760,13 +827,18 @@ class ExamGenerationService:
                     *ctx.common_sections(framer),
                     "QUESTIONS ALREADY IN THE EXAM\n" + ("\n".join(f"- {t[:240]}" for t in others) if others else "(none yet)"),
                     render_excerpts(excerpts, framer),
+                    # The lecture topics closest to what was asked, from the stored profiles (no extra call).
+                    render_topics(matching_refs(query, ctx.documents, ctx.knowledge), ctx.documents, ctx.knowledge, framer),
                     "\n".join(part for part in request if part),
                 ]
             ),
             schema=QuestionBatch,
             effort=question_effort(slot_type, slot_difficulty),
             max_output_tokens=24_000,
-            validate=lambda batch: _single_problems(batch, slot, others, ctx.figure_ids),
+            validate=lambda batch: (
+                _single_problems(batch, slot, others, ctx.figure_ids)
+                + ctx.formula_problems(("The question", normalize_content(q)) for q in batch.questions)
+            ),
             usage=self.usage,
         )
         content = normalize_content(result.questions[0])
@@ -789,6 +861,8 @@ def _single_problems(batch: QuestionBatch, slot: PlannedQuestion, others: list[s
     problems = []
     if question.type != slot.type or question.difficulty != slot.difficulty:
         problems.append(f"The question must be type {slot.type} and difficulty {slot.difficulty}.")
+    if question.cognitive_level != slot.cognitive_level:
+        problems.append(f"The question must assess the {slot.cognitive_level} level.")
     if abs(question.points - slot.points) > 0.01:
         problems.append(f"The question must be worth {slot.points:g} points.")
     if question.figure_document_id and question.figure_document_id not in figure_ids:
@@ -867,6 +941,23 @@ def suggest_next(spec: ExamSpec, existing: list[dict[str, Any]]) -> dict[str, An
         "points": _POINTS[question_type],
         "topic": _next_topic(spec, existing),
     }
+
+
+def suggest_level(spec: ExamSpec, existing: list[dict[str, Any]], question_type: str) -> str:
+    """The Bloom's level furthest behind the plan's split by marks (the Balanced preset
+    when the plan has none), avoiding the previous question's level while another
+    is about as far behind. Multiple choice never gets Create."""
+    targets = spec.bloom.shares() if spec.bloom else BLOOM_PRESETS["balanced"]
+    shares = distribution.summarize(existing)["bloom"] or dict.fromkeys(COGNITIVE_LEVELS, 0.0)
+    levels = [level for level in COGNITIVE_LEVELS if targets[level] > 0 and not (question_type == "mcq" and level == "create")]
+    if not levels:
+        return "apply"
+    deficits = {level: targets[level] - shares[level] for level in levels}
+    ranked = sorted(levels, key=lambda level: deficits[level], reverse=True)
+    previous = existing[-1].get("cognitive_level") if existing else None
+    if ranked[0] == previous and len(ranked) > 1 and deficits[ranked[0]] - deficits[ranked[1]] <= 10:
+        return ranked[1]
+    return ranked[0]
 
 
 def _words(text: str) -> set[str]:

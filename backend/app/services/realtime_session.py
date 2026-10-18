@@ -84,6 +84,7 @@ class RealtimeSessionService:
         assessment_id: str | None = None,
         exam_id: str | None = None,
         addressed: list[str] | None = None,
+        selected_sources: int = 0,
     ) -> dict[str, Any]:
         _check_rate_limit(self.db.professor_id)
         context = AssessmentContextService(self.db)
@@ -93,7 +94,7 @@ class RealtimeSessionService:
             courses = await context.list_courses()
             current = setup or AssessmentSetup()
             instructions = setup_voice_instructions(
-                describe_setup(current, courses),
+                describe_setup(current, courses, selected_sources),
                 describe_courses(courses),
                 next_setup_question(current, courses, addressed),
             )

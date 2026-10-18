@@ -17,7 +17,7 @@ ProfPilot-AI/
 │       ├── proxy.ts          Refreshes the login session and redirects on every request
 │       ├── app/              Pages: landing, /login, /signup, /auth/confirm, and the workspace:
 │       │                     /workspace, /courses, /preferences, /assessments (list, new, [id],
-│       │                     [id]/edit, [id]/plan, [id]/exam, [id]/builder)
+│       │                     [id]/edit, [id]/plan, [id]/exam, [id]/builder), and /sources
 │       ├── components/       Assessment form and uploads, Set up with AI, plan review, exam editor,
 │       │                     Build with AI, voice call controls, preferences, layout, shadcn/ui
 │       └── lib/
@@ -60,6 +60,7 @@ Browser ──(publishable key, session)─────────────�
 
 - [docs/assessment-agent.md](docs/assessment-agent.md): the AI workflow end to end, the models, voice, security, the API and how it is tested
 - [docs/assessment-setup.md](docs/assessment-setup.md): the assessment setup flow, drafts, uploaded files and the private bucket, and how to test it
+- [docs/course-sources.md](docs/course-sources.md): reusable course materials, selection, RLS, and assessment integration
 - [docs/authentication.md](docs/authentication.md): sign-up, login, data isolation, and how FastAPI verifies professors
 
 ## Frontend stack
@@ -167,6 +168,7 @@ Real `.env` files are ignored by git; never commit secrets or API keys.
 - A profile created automatically for every new professor
 - Protected Professor Workspace with a sidebar (Home, Courses, Assessments), showing the professor's name, email and institution
 - Course management: add, edit and delete courses
+- Reusable Course Sources: upload and index course materials once, view/manage them by course, and select canonical document ids for agent workflows
 - Assessment setup ([details](docs/assessment-setup.md)):
   - the full form: course, name, course material, previous assessments, exam design, notes, attachments, and instructions;
   - drafts that can be saved, reopened, edited and deleted;
@@ -178,6 +180,7 @@ Real `.env` files are ignored by git; never commit secrets or API keys.
   - uploaded files are read in the background (PDF, including scanned pages, PPTX, DOCX, TXT and images), summarized, and indexed with pgvector;
   - a style profile of the professor's previous exams;
   - **Set up with AI**: fill in the setup form by voice (OpenAI Realtime over WebRTC) or text;
+  - **Exam Learning Focus**: the exam's marks across Bloom's six levels (Automatic, three presets, or a custom split), used by planning, writing and the quality check;
   - **Improve with AI**: an enhanced prompt and an ExamSpec showing where each setting came from, to review, edit, regenerate and approve, and marked out of date when the setup or files change;
   - **Generate full exam** (plan, questions and answer keys, equivalent versions, AI quality check), or **Build with AI** question by question, by voice or text;
   - an exam editor with manual edits, AI revisions and quick actions, approve and lock, revision history and restore, version sync, reordering and distribution warnings;

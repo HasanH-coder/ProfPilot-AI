@@ -22,10 +22,8 @@ export const metadata: Metadata = { title: "Courses" };
 export default async function CoursesPage({
   searchParams,
 }: PageProps<"/workspace/courses">) {
-  await getCurrentProfessor();
-  const { search } = await searchParams;
+  const [, { search }, allCourses] = await Promise.all([getCurrentProfessor(), searchParams, getCourses()]);
   const searchText = (typeof search === "string" ? search : "").trim();
-  const allCourses = await getCourses();
   const courses = allCourses.filter(
     (course) =>
       !searchText ||

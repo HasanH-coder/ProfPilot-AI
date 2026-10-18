@@ -18,7 +18,7 @@ from app.schemas.common import parse_id
 ASSESSMENT_COLUMNS = (
     "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, "
     "subjective_percentage, number_of_versions, easy_percentage, medium_percentage, "
-    "hard_percentage, additional_notes, professor_prompt, enhanced_prompt, exam_spec, "
+    "hard_percentage, learning_focus, bloom_distribution, additional_notes, professor_prompt, enhanced_prompt, exam_spec, "
     "spec_status, spec_generated_at, spec_approved_at, generation_mode, "
     "course:courses(id, code, name)"
 )
@@ -48,6 +48,19 @@ class CourseInfo:
 
 
 @dataclass
+class SourceInfo:
+    """A course source an assessment may select: ready, and not being removed."""
+
+    id: str
+    name: str
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> "SourceInfo":
+        title = (row.get("summary") or {}).get("title")
+        return cls(id=row["id"], name=f"{title} ({row['original_name']})" if title else row["original_name"])
+
+
+@dataclass
 class AssessmentRecord:
     id: str
     setup: AssessmentSetup
@@ -70,6 +83,7 @@ class AssessmentRecord:
 class DocumentRecord:
     id: str
     exam_project_id: str | None
+    course_id: str | None
     category: str
     original_name: str
     mime_type: str | None
@@ -129,13 +143,31 @@ class AssessmentContextService:
         )
 
     async def list_documents(self, assessment_id: str) -> list[DocumentRecord]:
-        rows = await self.db.select(
+        direct_rows = await self.db.select(
             "documents",
             columns=DOCUMENT_COLUMNS,
             filters=[("exam_project_id", "eq", assessment_id), ("professor_id", "eq", self.db.professor_id)],
             order=[("created_at", "asc")],
         )
-        return [DocumentRecord.from_row(row) for row in rows]
+        links = await self.db.select(
+            "assessment_documents",
+            columns="document_id",
+            filters=[("exam_project_id", "eq", assessment_id), ("professor_id", "eq", self.db.professor_id)],
+            order=[("created_at", "asc")],
+        )
+        selected_ids = [link["document_id"] for link in links]
+        selected_rows = (
+            await self.db.select(
+                "documents",
+                columns=DOCUMENT_COLUMNS,
+                filters=[("id", "in", selected_ids), ("professor_id", "eq", self.db.professor_id)],
+                order=[("created_at", "asc")],
+            )
+            if selected_ids
+            else []
+        )
+        rows_by_id = {row["id"]: row for row in [*direct_rows, *selected_rows]}
+        return [DocumentRecord.from_row(row) for row in rows_by_id.values()]
 
     async def get_document(self, document_id: str) -> DocumentRecord:
         document_id = parse_id(document_id, what="file")
@@ -184,6 +216,70 @@ class AssessmentContextService:
         )
         return [CourseInfo(id=row["id"], code=row["code"], name=row.get("name")) for row in rows]
 
+    async def get_knowledge(self, documents: list[DocumentRecord]) -> dict[str, dict[str, Any]]:
+        """The lecture knowledge profiles of these course-material documents, by id (one query).
+
+        Loaded only where an AI task uses them, so lists of documents stay light. A document
+        without a current profile borrows the current profile of the same professor's
+        identical copy (same SHA-256), so the same lecture is never analysed twice.
+        """
+        from app.services.lecture_knowledge import is_current  # noqa: PLC0415 (lecture_knowledge imports this module)
+
+        docs = [doc for doc in documents if doc.category == "course_material" and doc.processing_status == "ready"]
+        if not docs:
+            return {}
+        rows = await self.db.select(
+            "documents",
+            columns="id, knowledge",
+            filters=[("id", "in", [doc.id for doc in docs]), ("professor_id", "eq", self.db.professor_id)],
+        )
+        found = {row["id"]: row["knowledge"] for row in rows if row.get("knowledge")}
+        missing = {
+            doc.content_sha256 for doc in docs if doc.content_sha256 and not is_current(found.get(doc.id), doc.content_sha256)
+        }
+        if missing:
+            twins = await self.db.select(
+                "documents",
+                columns="id, content_sha256, knowledge",
+                filters=[
+                    ("content_sha256", "in", sorted(missing)),
+                    ("processing_status", "eq", "ready"),
+                    ("professor_id", "eq", self.db.professor_id),
+                    ("knowledge", "cs", {"status": "ready"}),
+                ],
+            )
+            for doc in docs:
+                if doc.id in found and is_current(found[doc.id], doc.content_sha256):
+                    continue
+                twin = next(
+                    (
+                        row
+                        for row in twins
+                        if row["content_sha256"] == doc.content_sha256 and is_current(row.get("knowledge"), doc.content_sha256)
+                    ),
+                    None,
+                )
+                if twin is not None:
+                    found[doc.id] = twin["knowledge"]
+        return found
+
+    async def list_course_sources(self, course_id: str) -> list[SourceInfo]:
+        """The professor's ready sources for one course: the only ids a selection may use."""
+        rows = await self.db.select(
+            "documents",
+            columns="id, original_name, summary",
+            filters=[
+                ("course_id", "eq", course_id),
+                ("exam_project_id", "is", None),
+                ("category", "eq", "course_material"),
+                ("processing_status", "eq", "ready"),
+                ("deletion_pending", "eq", False),
+                ("professor_id", "eq", self.db.professor_id),
+            ],
+            order=[("created_at", "asc")],
+        )
+        return [SourceInfo.from_row(row) for row in rows]
+
 
 # =============================================================================
 # Rendering for prompts
@@ -200,6 +296,7 @@ def render_settings(record: AssessmentRecord) -> str:
         f"- Duration: {setup.duration_text or missing}",
         f"- Question format (share of marks): {setup.format_text or missing}",
         f"- Difficulty (share of marks): {setup.difficulty_text or missing}",
+        f"- Learning focus (Bloom's levels, share of marks): {setup.learning_focus_text}",
         f"- Number of versions: {setup.number_of_versions}",
     ]
     return "\n".join(lines)
@@ -233,8 +330,11 @@ def render_preferences(preferences: PreferenceProfile) -> str:
     )
 
 
-def render_material_overview(documents: list[DocumentRecord], framer: DataFramer) -> str:
-    """Every file, by category: what it is, how long, and what it covers."""
+def render_material_overview(documents: list[DocumentRecord], framer: DataFramer, mapped: set[str] | None = None) -> str:
+    """Every file, by category: what it is, how long, and what it covers.
+
+    Files in `mapped` (ids) are described in the LECTURE KNOWLEDGE map instead, so not twice.
+    """
     sections: list[str] = []
     for category in ("course_material", "previous_exam", "additional_attachment"):
         docs = [doc for doc in documents if doc.category == category]
@@ -251,6 +351,9 @@ def render_material_overview(documents: list[DocumentRecord], framer: DataFramer
                 header += f" (attachment id {doc.id})"
             if doc.processing_status != "ready":
                 lines.append(f"{header}: NOT READ ({doc.processing_error or doc.processing_status})")
+                continue
+            if mapped and doc.id in mapped:
+                lines.append(f"{header}: described in LECTURE KNOWLEDGE below.")
                 continue
             summary = doc.summary or {}
             text = summary.get("summary") or ""

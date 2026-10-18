@@ -148,10 +148,15 @@ def test_quality_check_applies_only_safe_fixes(api, supabase, db_a, ai):
     new_choice = next(c["id"] for c in wrong_key["choices"] if c["id"] != wrong_key["correctChoice"])
     api.put(f"/api/questions/{locked['id']}/approval", json={"approved": True}, headers=auth())
     subjective = next(q for q in questions if q["type"] != "mcq")
+    real_level = "evaluate" if subjective["cognitiveLevel"] != "evaluate" else "analyze"
+
+    def fix(kind: str, **values) -> QuestionFix:
+        empty = dict.fromkeys(["cognitive_level", "correct_choice", "prompt", "answer", "solution", "rubric"])
+        return QuestionFix(kind=kind, **{**empty, **values})
 
     def review(_call):
         return ReviewOutput(
-            summary="Two problems found.",
+            summary="Problems found.",
             estimated_total_minutes=80,
             issues=[
                 ReviewIssue(
@@ -160,9 +165,7 @@ def test_quality_check_applies_only_safe_fixes(api, supabase, db_a, ai):
                     severity="critical",
                     category="answer_key",
                     message="The marked answer is wrong.",
-                    fix=QuestionFix(
-                        kind="correct_answer_key", correct_choice=new_choice, prompt=None, answer=None, solution=None, rubric=None
-                    ),
+                    fix=fix("correct_answer_key", correct_choice=new_choice),
                 ),
                 ReviewIssue(
                     question_number=locked["number"],
@@ -170,9 +173,7 @@ def test_quality_check_applies_only_safe_fixes(api, supabase, db_a, ai):
                     severity="critical",
                     category="answer_key",
                     message="Locked question key looks wrong.",
-                    fix=QuestionFix(
-                        kind="correct_answer_key", correct_choice=new_choice, prompt=None, answer=None, solution=None, rubric=None
-                    ),
+                    fix=fix("correct_answer_key", correct_choice=new_choice),
                 ),
                 ReviewIssue(
                     question_number=subjective["number"],
@@ -180,14 +181,25 @@ def test_quality_check_applies_only_safe_fixes(api, supabase, db_a, ai):
                     severity="warning",
                     category="clarity",
                     message="Rewrite entirely.",
-                    fix=QuestionFix(
-                        kind="clarify_wording",
-                        prompt="A completely different question about poetry?",
-                        correct_choice=None,
-                        answer=None,
-                        solution=None,
-                        rubric=None,
-                    ),
+                    fix=fix("clarify_wording", prompt="A completely different question about poetry?"),
+                ),
+                # The label is corrected to the level the question really assesses…
+                ReviewIssue(
+                    question_number=subjective["number"],
+                    version_label="A",
+                    severity="warning",
+                    category="cognitive_level",
+                    message="Labelled one level, but it needs another.",
+                    fix=fix("relabel_cognitive_level", cognitive_level=real_level),
+                ),
+                # …but a multiple-choice question is never labelled Create.
+                ReviewIssue(
+                    question_number=wrong_key["number"],
+                    version_label="A",
+                    severity="warning",
+                    category="cognitive_level",
+                    message="It asks students to design something.",
+                    fix=fix("relabel_cognitive_level", cognitive_level="create"),
                 ),
             ],
         )
@@ -200,8 +212,10 @@ def test_quality_check_applies_only_safe_fixes(api, supabase, db_a, ai):
     assert by_id[wrong_key["id"]]["correctChoice"] == new_choice  # safe fix applied
     assert by_id[locked["id"]]["correctChoice"] == locked["correctChoice"]  # locked: reported only
     assert by_id[subjective["id"]]["prompt"] == subjective["prompt"]  # a different question: never applied
+    assert by_id[subjective["id"]]["cognitiveLevel"] == real_level
+    assert by_id[wrong_key["id"]]["cognitiveLevel"] == wrong_key["cognitiveLevel"]
     issues = reviewed["review"]["issues"]
-    assert [issue["fixApplied"] for issue in issues if issue["source"] == "ai"] == [True, False, False]
+    assert [issue["fixApplied"] for issue in issues if issue["source"] == "ai"] == [True, False, False, True, False]
     assert reviewed["reviewStatus"] == "needs_attention"
     revisions = api.get(f"/api/questions/{wrong_key['id']}/revisions", headers=auth()).json()
     assert revisions[0]["source"] == "ai_review_fix"

@@ -46,6 +46,8 @@ def attempts(ids):
         ("GET", f"/api/assessments/{a}/ai-status", None),
         ("POST", f"/api/assessments/{a}/documents/processing", {"retryFailed": True}),
         ("POST", f"/api/assessments/{a}/documents/processing", {"documentId": ids["document"]}),
+        ("GET", f"/api/documents/{ids['document']}/status", None),
+        ("POST", f"/api/documents/{ids['document']}/processing", None),
         ("POST", f"/api/assessments/{a}/interpretation", None),
         ("GET", f"/api/assessments/{a}/interpretation", None),
         ("PATCH", f"/api/assessments/{a}/interpretation", {"enhancedPrompt": "hijacked"}),

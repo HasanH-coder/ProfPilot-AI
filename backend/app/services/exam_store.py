@@ -17,13 +17,14 @@ from app.db.supabase import Database
 from app.domain import distribution
 from app.schemas.ai import ExamSpec, QuestionContent
 from app.schemas.common import parse_id
+from app.services.document_parsers import EXTRACTION_GLYPHS
 
 EXAM_COLUMNS = (
     "id, exam_project_id, mode, status, spec_snapshot, enhanced_prompt_snapshot, plan, review, "
     "review_status, reviewed_at, error_message, finalized_at, created_at, updated_at"
 )
 QUESTION_COLUMNS = (
-    "id, exam_id, version_id, section_id, slot_id, position, type, difficulty, points, prompt, "
+    "id, exam_id, version_id, section_id, slot_id, position, type, difficulty, cognitive_level, points, prompt, "
     "choices, correct_choice, subparts, answer, solution, rubric, explanation, concepts, "
     "learning_objectives, source_refs, figure_document_id, estimated_minutes, status, "
     "needs_solution_review, created_at, updated_at"
@@ -32,6 +33,7 @@ QUESTION_COLUMNS = (
 SNAPSHOT_FIELDS = (
     "type",
     "difficulty",
+    "cognitive_level",
     "points",
     "prompt",
     "choices",
@@ -102,6 +104,16 @@ def normalize_content(content: QuestionContent) -> QuestionContent:
     return content
 
 
+def question_texts(content: QuestionContent) -> list[str]:
+    """Every piece of text a student or marker reads."""
+    texts = [content.prompt, content.answer, content.solution, content.explanation or ""]
+    texts += [choice.text for choice in content.choices or []]
+    texts += [item.criterion for item in content.rubric or []]
+    for part in content.subparts or []:
+        texts += [part.prompt, part.answer, *(item.criterion for item in part.rubric)]
+    return [text for text in texts if text]
+
+
 def question_problems(content: QuestionContent, *, label: str = "The question", manual: bool = False) -> list[str]:
     """Business rules a question must satisfy before it is saved.
 
@@ -112,6 +124,11 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
     problems: list[str] = []
     if not content.prompt:
         problems.append(f"{label} has no question text.")
+    if not manual and any(EXTRACTION_GLYPHS.search(text) for text in question_texts(content)):
+        problems.append(
+            f"{label} contains characters copied from a PDF's extracted text (such as '𝒇' or '𝒆'), where "
+            "mathematics may be garbled; write all mathematics in LaTeX and never copy extracted formulas."
+        )
     if not content.answer and not manual:
         problems.append(f"{label} has no answer.")
     if content.type == "mcq":
@@ -127,6 +144,8 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             problems.append(f"{label} has empty or repeated choices.")
         if content.correct_choice not in ids:
             problems.append(f"{label}'s correct_choice must be one of its choice ids ({', '.join(ids)}).")
+        if content.cognitive_level == "create" and not manual:
+            problems.append(f"{label} is multiple choice, which can't assess the Create level; use another level.")
     else:
         if content.choices or content.correct_choice:
             problems.append(f"{label} is not multiple choice, so it must not have choices.")
@@ -181,6 +200,7 @@ def content_to_row(
     return {
         "type": content.type,
         "difficulty": content.difficulty,
+        "cognitive_level": content.cognitive_level,
         "points": content.points,
         "prompt": content.prompt,
         "choices": [choice.model_dump() for choice in content.choices] if content.choices else None,
@@ -204,6 +224,7 @@ def row_to_content(row: dict[str, Any]) -> QuestionContent:
         {
             "type": row["type"],
             "difficulty": row["difficulty"],
+            "cognitive_level": row.get("cognitive_level"),
             "points": float(row["points"]),
             "prompt": row["prompt"],
             "choices": row.get("choices"),
@@ -224,7 +245,8 @@ def row_to_content(row: dict[str, Any]) -> QuestionContent:
 
 def render_question(row: dict[str, Any], number: int, *, include_key: bool = True) -> str:
     """A question as plain text, for prompts."""
-    lines = [f"Q{number} [{row['type']}, {row['difficulty']}, {float(row['points']):g} pts]", row["prompt"]]
+    level = f", Bloom's level: {row['cognitive_level']}" if row.get("cognitive_level") else ""
+    lines = [f"Q{number} [{row['type']}, {row['difficulty']}{level}, {float(row['points']):g} pts]", row["prompt"]]
     for choice in row.get("choices") or []:
         lines.append(f"  {choice['id']}. {choice['text']}")
     for part in row.get("subparts") or []:
@@ -253,6 +275,7 @@ def serialize_question(row: dict[str, Any], number: int, revision_count: int = 0
         "position": row["position"],
         "type": row["type"],
         "difficulty": row["difficulty"],
+        "cognitiveLevel": row.get("cognitive_level"),
         "points": float(row["points"]),
         "prompt": row["prompt"],
         "choices": row.get("choices"),

@@ -18,16 +18,15 @@ import { timeAgo } from "@/lib/time";
 export async function generateMetadata({
   params,
 }: PageProps<"/workspace/assessments/[id]">): Promise<Metadata> {
-  await getCurrentProfessor();
-  const assessment = await getAssessment((await params).id);
+  const { id } = await params;
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   return { title: assessment ? assessmentTitle(assessment.draft.examName) : "Assessment not found" };
 }
 
 export default async function AssessmentPage({ params }: PageProps<"/workspace/assessments/[id]">) {
-  await getCurrentProfessor();
   const { id } = await params;
   // Row Level Security hides other professors' assessments, so they are "not found" too.
-  const assessment = await getAssessment(id);
+  const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
   if (!assessment) notFound();
 
   const { course, draft, files } = assessment;

@@ -24,11 +24,13 @@ export const metadata: Metadata = { title: "Assessments" };
 export default async function AssessmentsPage({
   searchParams,
 }: PageProps<"/workspace/assessments">) {
-  await getCurrentProfessor();
-  // Set after an assessment is deleted.
-  const { deleted, search } = await searchParams;
+  // `deleted` is set after an assessment is deleted.
+  const [, { deleted, search }, allAssessments] = await Promise.all([
+    getCurrentProfessor(),
+    searchParams,
+    getAssessments(),
+  ]);
   const searchText = (typeof search === "string" ? search : "").trim();
-  const allAssessments = await getAssessments();
   const assessments = allAssessments.filter(
     (assessment) =>
       !searchText ||

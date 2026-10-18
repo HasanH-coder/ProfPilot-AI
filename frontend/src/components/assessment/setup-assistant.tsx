@@ -17,8 +17,10 @@ import { useRealtimeCall, useVoiceSupported } from "@/lib/realtime/use-realtime-
 type SetupAssistantProps = {
   /** The form as it is right now. */
   getSetup: () => AssessmentDraft;
+  /** The course sources selected on the form right now. */
+  getSourceIds: () => string[];
   /** Puts the assistant's changes into the form (which saves them to the draft). */
-  onApply: (setup: AssessmentDraft, changedFields: string[]) => void;
+  onApply: (setup: AssessmentDraft, changedFields: string[], sourceIds: string[]) => void;
   /** Creates the draft if this is a new assessment; returns its id. */
   ensureDraft: () => Promise<string | null>;
   onCallActiveChange: (active: boolean) => void;
@@ -58,7 +60,14 @@ export function SetupAssistantPrompt({ onOpen, buttonRef }: { onOpen: () => void
  * "Set up with AI": the professor talks (or types) and ProfPilot fills in the
  * form, live. Everything stays editable by hand, and nothing is required.
  */
-export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveChange, onClose }: SetupAssistantProps) {
+export function SetupAssistant({
+  getSetup,
+  getSourceIds,
+  onApply,
+  ensureDraft,
+  onCallActiveChange,
+  onClose,
+}: SetupAssistantProps) {
   const headingId = useId();
   const inputId = useId();
   const [log, setLog] = useState<ConversationEntry[]>([]);
@@ -88,19 +97,25 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
       const assessmentId = await ensureDraft();
       const secret = await apiRequest<RealtimeSecret>("/api/realtime/client-secrets", {
         method: "POST",
-        body: { purpose: "setup", assessmentId, setup: getSetup(), addressed: addressed.current },
+        body: {
+          purpose: "setup",
+          assessmentId,
+          setup: getSetup(),
+          addressed: addressed.current,
+          sourceIds: getSourceIds(),
+        },
       });
       return secret.clientSecret;
     },
     onToolCall: async (name, args) => {
       const response = await apiRequest<SetupToolResult>(`/api/setup-assistant/tools/${encodeURIComponent(name)}`, {
         method: "POST",
-        body: { setup: getSetup(), arguments: args, addressed: addressed.current },
+        body: { setup: getSetup(), arguments: args, addressed: addressed.current, sourceIds: getSourceIds() },
       });
       setToolProblem(null);
       remember(response.result);
       const changed = (response.result.changedFields as string[] | undefined) ?? [];
-      if (changed.length > 0) onApply(response.setup, changed);
+      if (changed.length > 0) onApply(response.setup, changed, response.result.sourceIds as string[]);
       noteChanges(response.result);
       return response.result;
     },
@@ -150,12 +165,13 @@ export function SetupAssistant({ getSetup, onApply, ensureDraft, onCallActiveCha
         body: {
           setup: getSetup(),
           addressed: addressed.current,
+          sourceIds: getSourceIds(),
           messages: history.slice(-16).map((entry) => ({ role: entry.role, content: entry.text })),
         },
       });
       remember(reply);
       if (reply.changedFields.length > 0) {
-        onApply(reply.setup, reply.changedFields);
+        onApply(reply.setup, reply.changedFields, reply.sourceIds);
         setLog((current) => [
           ...current,
           { id: newId(), role: "change", text: `Updated: ${[...new Set(reply.changedFields.map(fieldLabel))].join(", ")}` },
@@ -287,6 +303,8 @@ const TOOL_SETTINGS: Record<string, string> = {
   set_duration: "duration",
   set_question_distribution: "question format",
   set_difficulty_distribution: "difficulty mix",
+  set_learning_focus: "learning focus",
+  set_course_sources: "course sources",
   set_versions: "number of versions",
   update_notes: "notes",
   update_professor_prompt: "instructions",
@@ -302,6 +320,9 @@ const FIELD_LABELS: Record<string, string> = {
   easyPercentage: "difficulty",
   mediumPercentage: "difficulty",
   hardPercentage: "difficulty",
+  learningFocus: "learning focus",
+  bloomDistribution: "learning focus",
+  sourceIds: "course sources",
   additionalNotes: "notes",
   professorPrompt: "instructions",
 };

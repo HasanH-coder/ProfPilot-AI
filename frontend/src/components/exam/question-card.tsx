@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { memo, useId, useState, type FormEvent } from "react";
 
+import { BloomSwatch } from "@/components/assessment/bloom-chart";
 import { FigurePreview } from "@/components/exam/figure-preview";
 import { DIFFICULTY_LABELS, marks, QUICK_ACTIONS, TYPE_LABELS, type QuickAction } from "@/components/exam/labels";
 import { QuestionEditDialog } from "@/components/exam/question-edit-dialog";
@@ -48,6 +49,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, errorMessage } from "@/lib/api/client";
 import type { DistributionWarning, Question, QuestionResult } from "@/lib/api/types";
+import { BLOOM_LABELS } from "@/lib/assessments/draft";
 import { cn } from "@/lib/utils";
 
 type QuestionCardProps = {
@@ -142,6 +144,12 @@ export const QuestionCard = memo(function QuestionCard({
           </Heading>
           <Badge variant="secondary">{TYPE_LABELS[question.type]}</Badge>
           <Badge variant="outline">{DIFFICULTY_LABELS[question.difficulty]}</Badge>
+          {question.cognitiveLevel && (
+            <Badge variant="outline" className="gap-1.5 text-muted-foreground" title="Bloom's level this question assesses">
+              <BloomSwatch level={question.cognitiveLevel} />
+              {BLOOM_LABELS[question.cognitiveLevel]}
+            </Badge>
+          )}
           <span className="text-sm text-muted-foreground">{marks(question.points)}</span>
           {question.estimatedMinutes ? (
             <span className="text-sm text-muted-foreground">· ~{question.estimatedMinutes} min</span>

@@ -25,7 +25,8 @@ from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
-from app.schemas.ai import ReviewOutput
+from app.schemas.ai import COGNITIVE_LEVELS, ReviewOutput
+from app.services.assessment_context import AssessmentContextService
 from app.services.exam_generation import ExamGenerationService, load_generation_context, suggest_next
 from app.services.exam_store import ExamStore, FullExam, render_question
 from app.services.jobs import RunContext, job_runner
@@ -46,8 +47,8 @@ BUILDER_TOOLS: list[dict[str, Any]] = [
     function_tool(
         "generate_next_question",
         "Write the next question and add it to the exam. Takes a little while. Leave question_type, difficulty, "
-        "topic and points null unless the professor asked for them: ProfPilot then picks them so the exam keeps its "
-        "planned mix, with difficulties and topics interleaved.",
+        "cognitive_level, topic and points null unless the professor asked for them: ProfPilot then picks them so "
+        "the exam keeps its planned mix, with difficulties, Bloom's levels and topics interleaved.",
         {
             "instructions": {"type": ["string", "null"], "description": "What the professor asked for, if anything."},
             "question_type": {
@@ -59,6 +60,11 @@ BUILDER_TOOLS: list[dict[str, Any]] = [
                 "type": ["string", "null"],
                 "enum": ["easy", "medium", "hard", None],
                 "description": "Only if the professor asked for this difficulty (e.g. 'three easy questions first').",
+            },
+            "cognitive_level": {
+                "type": ["string", "null"],
+                "enum": [*COGNITIVE_LEVELS, None],
+                "description": "Only if the professor asked for this Bloom's level (e.g. 'an analysis question').",
             },
             "topic": {
                 "type": ["string", "null"],
@@ -91,9 +97,17 @@ BUILDER_TOOLS: list[dict[str, Any]] = [
         {"question_number": _NUMBER, "new_position": {"type": "integer"}},
     ),
     function_tool(
-        "review_question", "Check one question for problems (answer key, clarity, difficulty).", {"question_number": _NUMBER}
+        "review_question",
+        "Check one question for problems (answer key, clarity, difficulty, Bloom's level).",
+        {"question_number": _NUMBER},
     ),
     function_tool("regenerate_solution", "Rewrite a question's answer key for its current text.", {"question_number": _NUMBER}),
+    function_tool(
+        "undo_question_change",
+        "Undo the most recent change to a question ('undo', 'go back to the previous version') by restoring the "
+        "version before it, with its answer key. One step only: undoing again reverses the undo.",
+        {"question_number": _NUMBER},
+    ),
     function_tool(
         "finish_exam",
         "Finish building: create the other versions and run the full quality check. Only when the professor is done.",
@@ -113,14 +127,21 @@ class ExamBuilderService:
 
     async def state_summary(self, exam_id: str) -> str:
         full = await self.store.load(exam_id)
-        return self._summary(full)
+        # Direct uploads and the course sources selected for the assessment, as generation uses them.
+        documents = await AssessmentContextService(self.db).list_documents(full.exam["exam_project_id"])
+        materials = [(d.summary or {}).get("title") or d.original_name for d in documents if d.category == "course_material"]
+        return self._summary(full, materials)
 
-    def _summary(self, full: FullExam) -> str:
+    def _summary(self, full: FullExam, materials: list[str]) -> str:
         spec = full.spec
         primary = full.primary_version
         questions = full.version_questions(primary["id"])
         summary = distribution.summarize(questions)
-        lines = []
+        lines = [
+            "Course material in use: " + "; ".join(materials[:12]) + "."
+            if materials
+            else "No course material is uploaded or selected for this assessment."
+        ]
         if spec:
             title = spec.assessment_title or spec.assessment_type or "Untitled assessment"
             lines.append(f"Exam: {title}" + (f" ({spec.course})" if spec.course else "") + f". Versions: {spec.versions}.")
@@ -130,6 +151,11 @@ class ExamBuilderService:
                     f"difficulty {spec.difficulty.easy_percent}/{spec.difficulty.medium_percent}/"
                     f"{spec.difficulty.hard_percent} easy/medium/hard"
                     if spec.difficulty
+                    else None
+                ),
+                (
+                    "Bloom's " + "/".join(f"{share}% {level}" for level, share in spec.bloom.shares().items())
+                    if spec.bloom
                     else None
                 ),
                 f"{spec.duration_minutes} minutes" if spec.duration_minutes else None,
@@ -146,13 +172,16 @@ class ExamBuilderService:
         for number, row in enumerate(questions, start=1):
             state = "approved" if row["status"] == "approved" else "draft"
             text = " ".join(row["prompt"].split())[:160]
-            lines.append(f"{number}. [{row['type']}, {row['difficulty']}, {float(row['points']):g} pts, {state}] {text}")
+            level = f", {row['cognitive_level']}" if row.get("cognitive_level") else ""
+            lines.append(f"{number}. [{row['type']}, {row['difficulty']}{level}, {float(row['points']):g} pts, {state}] {text}")
         if not questions:
             lines.append("(none yet)")
+        bloom = summary.get("bloom")
         lines.append(
             f"Current split by marks: {summary['mcqPercent']:g}% MCQ; {summary['easyPercent']:g}/{summary['mediumPercent']:g}/"
-            f"{summary['hardPercent']:g}% easy/medium/hard; about {summary['estimatedMinutes']:g} minutes; "
-            f"{summary['totalPoints']:g} points."
+            f"{summary['hardPercent']:g}% easy/medium/hard; "
+            + ("Bloom's " + "/".join(f"{bloom[level]:g}% {level}" for level in COGNITIVE_LEVELS) + "; " if bloom else "")
+            + f"about {summary['estimatedMinutes']:g} minutes; {summary['totalPoints']:g} points."
         )
         if spec:
             suggestion = suggest_next(spec, questions)
@@ -195,6 +224,7 @@ class ExamBuilderService:
             "number": number,
             "type": row["type"],
             "difficulty": row["difficulty"],
+            "cognitiveLevel": row.get("cognitive_level"),
             "points": float(row["points"]),
             "status": row["status"],
             "text": render_question(row, number, include_key=False)[:1200],
@@ -216,6 +246,7 @@ class ExamBuilderService:
             difficulty=arguments.get("difficulty"),
             topic=arguments.get("topic"),
             points=arguments.get("points"),
+            cognitive_level=arguments.get("cognitive_level"),
             full=full,
         )
         number = await self.store.question_number(row)
@@ -291,6 +322,26 @@ class ExamBuilderService:
         result = await QuestionRevisionService(self.db, self.ai, self.usage).regenerate_solution(row["id"])
         return {"ok": True, "question": self._brief(result["question"], number), "changedQuestionIds": [row["id"]]}
 
+    async def _tool_undo_question_change(self, exam: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
+        row, number = await self._question_by_number(exam, arguments)
+        # Each revision is the question as it was before a change (described by its instruction), newest first.
+        revisions = await self.store.revisions(row["id"])
+        if not revisions:
+            raise ConflictError(f"Question {number} hasn't been changed yet, so there's nothing to undo.", code="no_revision")
+        last = revisions[0]
+        result = await QuestionRevisionService(self.db, self.ai, self.usage).restore(row["id"], last["id"])
+        if last["source"] == "restore":
+            message = f"The last undo on question {number} was reversed, so its change is back."
+        else:
+            change = f" ({last['instruction']})" if last.get("instruction") else ""
+            message = f"Undid the last change to question {number}{change}; it is back to its previous version."
+        return {
+            "ok": True,
+            "message": message,
+            "question": self._brief(result["question"], number),
+            "changedQuestionIds": [row["id"]],
+        }
+
     async def _tool_finish_exam(self, exam: dict[str, Any], _arguments: dict[str, Any]) -> dict[str, Any]:
         full = await self.store.load(exam["id"])
         if not full.version_questions(full.primary_version["id"]):
@@ -314,9 +365,6 @@ class ExamBuilderService:
         if not message:
             raise InvalidInputError("Type a message first.")
         return message
-
-    async def chat(self, exam_id: str, message: str) -> dict[str, Any]:
-        return await self.run_chat(exam_id, await self.check_chat(exam_id, message))
 
     async def run_chat(self, exam_id: str, message: str, on_tool: ToolStarted | None = None) -> dict[str, Any]:
         """One text-chat turn, for a message check_chat accepted. `on_tool` is told as
