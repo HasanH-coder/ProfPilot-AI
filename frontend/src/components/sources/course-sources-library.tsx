@@ -150,7 +150,8 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
         const titleId = `course-sources-${course.id}`;
         const descriptionId = `${titleId}-description`;
         return (
-          <section key={course.id} className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+          // A course whose lecture knowledge is open takes the full row, so the details have room.
+          <section key={course.id} className="overflow-hidden rounded-2xl border bg-card shadow-sm lg:has-[[data-knowledge-open]]:col-span-2">
             <div className="border-b bg-gradient-to-br from-primary/[0.08] via-card to-card px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -166,7 +167,7 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
               {course.sources.length ? (
                 <ul className="divide-y rounded-xl border">
                   {course.sources.map((source) => (
-                    <li key={source.id} className="flex items-center gap-3 p-3">
+                    <li key={source.id} className="flex flex-wrap items-center gap-x-3 p-3">
                       <FileTypeIcon name={source.name} />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium" title={source.name}>{source.title || source.name}</p>
@@ -176,7 +177,6 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
                           {source.pageCount ? ` · ${source.pageCount} pages` : ""}
                         </p>
                         <SourceState source={source} />
-                        <LectureKnowledgePanel source={source} />
                       </div>
                       <Button variant="ghost" size="icon-sm" aria-label={`Open ${source.name}`} onClick={() => void openSource(source)}>
                         <ExternalLink />
@@ -190,6 +190,10 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
                       <Button variant="ghost" size="icon-sm" aria-label={`Remove ${source.name}`} onClick={() => void remove(course.id, source)}>
                         <Trash2 />
                       </Button>
+                      {/* Its own full-width line, under the file name (aligned with it from small screens up). */}
+                      <div className="min-w-0 basis-full sm:pl-12">
+                        <LectureKnowledgePanel source={source} />
+                      </div>
                     </li>
                   ))}
                 </ul>

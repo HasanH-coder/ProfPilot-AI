@@ -226,8 +226,8 @@ def test_coverage_counts_only_substantive_pages_and_warns_about_the_rest():
     assert coverage["analysed_units"] == 3 and coverage["substantive_units"] == 2
     assert coverage["units_without_text"] == [4] and coverage["pages"]["divider"] == [1]
     warnings = coverage_warnings(coverage)
-    assert any("Pages 4 had no extractable text" in warning for warning in warnings)
-    assert any("Pages 3: the mathematics wasn't reliably extracted" in warning for warning in warnings)
+    assert any("Page 4 has no extractable text" in warning for warning in warnings)
+    assert any("Page 3: the mathematics was extracted with garbled symbols, so its formulas" in w for w in warnings)
     assert not any("Page-level coverage isn't available" in warning for warning in warnings)
 
 

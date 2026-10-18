@@ -153,6 +153,17 @@ test("a failed rebuild says the previous lecture knowledge is still in use", asy
   await expect.element(screen.getByRole("button", { name: "Retry rebuild" })).toBeVisible();
 });
 
+test("open details mark the panel, so its course card can take the full row", async () => {
+  vi.mocked(apiRequest).mockResolvedValue(READY);
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "ready", topics: 2 })} />);
+  const marked = () => screen.container.querySelector("[data-knowledge-open]");
+  expect(marked()).toBeNull();
+  await screen.getByRole("button", { name: "View" }).click();
+  await expect.poll(marked).not.toBeNull();
+  await screen.getByRole("button", { name: "Hide" }).click();
+  await expect.poll(marked).toBeNull();
+});
+
 test("nothing is shown for a file that isn't read yet", async () => {
   const screen = await render(<LectureKnowledgePanel source={source({ state: "none", topics: null }, "processing")} />);
   expect(screen.getByText(/lecture knowledge/i).query()).toBeNull();
