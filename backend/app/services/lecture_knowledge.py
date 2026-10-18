@@ -51,7 +51,8 @@ _SEGMENT_CHARS = 24_000
 _SEGMENT_OUTPUT_TOKENS = 16_000
 # Rough sizes for the cost estimate shown before a build (not a guarantee).
 _INSTRUCTION_TOKENS = 1_800
-_SEGMENT_OUTPUT_ESTIMATE = 4_000
+# Output includes reasoning: a one-section, 39-page lecture used about 10k output tokens in all.
+_SEGMENT_OUTPUT_ESTIMATE = 8_000
 _SYNTHESIS_TOKENS = 4_000
 
 # Documents whose profile this server is building right now.
