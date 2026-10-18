@@ -72,6 +72,7 @@ from app.services.lecture_knowledge import (
     render_inventory,
     render_topics,
     topic_index,
+    topic_sources,
     unverified_expressions,
     unverified_formula_problems,
 )
@@ -174,6 +175,21 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
 
 def excerpt_ref_map(excerpts: list[Excerpt]) -> dict[str, dict[str, Any]]:
     return {e.ref: {"chunk_id": e.chunk_id, "document_id": e.document_id, "label": e.label} for e in excerpts}
+
+
+def excerpt_id_problems(questions: Iterable[tuple[str, QuestionContent]], excerpts: list[Excerpt]) -> list[str]:
+    """Questions citing excerpt ids that this request didn't give: sent back, never silently dropped
+    (excerpt ids are numbered per request, so an id from the brief or plan means another excerpt)."""
+    given = [e.ref for e in excerpts]
+    problems = []
+    for label, content in questions:
+        unknown = [ref for ref in dict.fromkeys(content.source_excerpt_ids) if ref not in given]
+        if unknown:
+            problems.append(
+                f"{label} cites {', '.join(unknown)} in source_excerpt_ids, but this request's excerpts are "
+                f"{', '.join(given) or 'none'}. Cite only the excerpts given here that you used (or none)."
+            )
+    return problems
 
 
 def question_effort(question_type: str, difficulty: str) -> Effort:
@@ -592,7 +608,12 @@ class ExamGenerationService:
                     exam_id,
                     primary["id"],
                     {
-                        **content_to_row(content, excerpt_refs=refs, allowed_figures=ctx.figure_ids),
+                        **content_to_row(
+                            content,
+                            excerpt_refs=refs,
+                            allowed_figures=ctx.figure_ids,
+                            topic_refs=topic_sources(slot.knowledge_refs, ctx.documents, ctx.knowledge),
+                        ),
                         "position": slot.number,
                         "section_id": section["id"],
                     },
@@ -672,6 +693,7 @@ class ExamGenerationService:
             validate=lambda result: (
                 batch_problems(result, batch, others)
                 + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)
+                + excerpt_id_problems(((f"Question {q.number}", q) for q in result.questions), excerpts)
             ),
             usage=self.usage,
         )
@@ -838,6 +860,7 @@ class ExamGenerationService:
             validate=lambda batch: (
                 _single_problems(batch, slot, others, ctx.figure_ids)
                 + ctx.formula_problems(("The question", normalize_content(q)) for q in batch.questions)
+                + excerpt_id_problems((("The question", q) for q in batch.questions), excerpts)
             ),
             usage=self.usage,
         )

@@ -151,6 +151,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
     );
   }
 
+  const reviewing = Boolean(reviewRun) || exam.reviewStatus === "running";
   const version = exam.versions.find((item) => item.id === versionId) ?? exam.versions[0];
   const questions = exam.questions
     .filter((question) => question.versionId === version?.id)
@@ -205,6 +206,16 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
           <AlertDescription>{actionError}</AlertDescription>
         </Alert>
       )}
+      {reviewing && (
+        <Alert role="status">
+          <Spinner />
+          <AlertTitle>The quality check is running</AlertTitle>
+          <AlertDescription>
+            You can keep working. A question you approve now is locked, so the check will report its issues but
+            can&apos;t fix them; approve after the check to let it apply safe fixes.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         {exam.versions.length > 1 ? (
@@ -248,6 +259,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
                   headingLevel={section.title ? 3 : 2}
                   showKey={showKey}
                   multiVersion={exam.versions.length > 1}
+                  reviewing={reviewing}
                   onChanged={() => void load()}
                   move={{
                     up: index > 0 ? () => swap(question, group[index - 1]) : null,
@@ -264,7 +276,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
           <QualityCheckPanel
             exam={exam}
             versionLabel={version?.label ?? "A"}
-            running={Boolean(reviewRun) || exam.reviewStatus === "running"}
+            running={reviewing}
             onRun={runReview}
           />
           <FinalReviewPanel exam={exam} onFinalized={() => void load()} />

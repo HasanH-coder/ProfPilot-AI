@@ -58,6 +58,8 @@ type QuestionCardProps = {
   /** Show the answer key (answers, solutions, rubrics) inline. */
   showKey: boolean;
   multiVersion: boolean;
+  /** A quality check is running: approving still works, and says what it means for the check. */
+  reviewing?: boolean;
   /** Called after any change, so the exam can be reloaded. */
   onChanged: () => void;
   highlighted?: boolean;
@@ -77,6 +79,7 @@ export const QuestionCard = memo(function QuestionCard({
   headingLevel = 2,
   showKey,
   multiVersion,
+  reviewing = false,
   onChanged,
   highlighted,
   move,
@@ -186,6 +189,11 @@ export const QuestionCard = memo(function QuestionCard({
             variant={locked ? "secondary" : "outline"}
             size="sm"
             disabled={busy !== null}
+            title={
+              reviewing && !locked
+                ? "The quality check is running: approving locks this question, so the check can report issues but not fix them."
+                : undefined
+            }
             onClick={() =>
               run(locked ? "Unlocking…" : "Approving…", () =>
                 apiRequest<QuestionResult>(`${base}/approval`, { method: "PUT", body: { approved: !locked } }),
