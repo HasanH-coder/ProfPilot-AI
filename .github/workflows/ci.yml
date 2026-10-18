@@ -61,6 +61,9 @@ jobs:
       - run: npm ci
       # The component tests run in a real Chromium (see vitest.config.mts).
       - run: npx playwright install --with-deps chromium
+      # Route types (PageProps, LayoutProps) are generated, not committed; `next dev` and
+      # `next build` make them locally, so a fresh checkout generates them before type-checking.
+      - run: npx next typegen
       - run: npx tsc --noEmit
       - run: npm run lint
       - run: npm test
