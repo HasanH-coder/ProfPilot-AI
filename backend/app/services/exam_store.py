@@ -129,6 +129,12 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             f"{label} contains characters copied from a PDF's extracted text (such as '𝒇' or '𝒆'), where "
             "mathematics may be garbled; write all mathematics in LaTeX and never copy extracted formulas."
         )
+    if not manual and any(_INTERNAL_ID.search(text) for text in question_texts(content)):
+        problems.append(
+            f"{label} writes internal ids (excerpt ids such as 'S4' or topic ids such as 'L1.t3') in its text. "
+            "ProfPilot attaches the sources with their pages itself: keep excerpt ids in source_excerpt_ids "
+            "and cite pages only where the text needs them ('page 38')."
+        )
     if not content.answer and not manual:
         problems.append(f"{label} has no answer.")
     if content.type == "mcq":
@@ -158,6 +164,13 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             total = sum(part.points for part in content.subparts)
             if abs(total - content.points) > _POINTS_TOLERANCE:
                 problems.append(f"{label}'s subpart points add up to {total:g}, but the question is worth {content.points:g}.")
+            repeated = [part.label for part in content.subparts if _restates(content.prompt, part)]
+            if repeated and not manual:
+                problems.append(
+                    f"{label}'s main prompt repeats its subpart task(s) ({', '.join(repeated)}), and students see both. "
+                    "Keep only what the subparts share (scenario, data, definitions) in the prompt; each task "
+                    "belongs once, in its subpart."
+                )
             for part in content.subparts:
                 if not part.prompt.strip() or (not part.answer.strip() and not manual):
                     problems.append(f"{label} part ({part.label}) needs a prompt and an answer.")
@@ -170,6 +183,21 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             if abs(total - content.points) > _POINTS_TOLERANCE:
                 problems.append(f"{label}'s rubric adds up to {total:g} points, but the question is worth {content.points:g}.")
     return problems
+
+
+# An internal id written into question text: a lecture topic id ("L1.t3"), or an excerpt id ("S4")
+# cited as a source ("Source: …; S4", "excerpt S2"). A bare "S1" (e.g. a state name) is not matched.
+_INTERNAL_ID = re.compile(r"\bL\d+\.t\d+\b|(?i:\b(?:sources?|excerpts?|refs?|references?)\b)[^\n]{0,80}?\bS\d{1,3}\b")
+
+
+def _restates(prompt: str, part: Any) -> bool:
+    """Whether the main prompt also states this subpart: a line opening with its label ('(a) …'),
+    or the subpart's own task text."""
+    label = re.escape(part.label.strip().strip("()").lower())
+    if re.search(rf"(?im)^\s*\(?{label}\)\s+\S", prompt):
+        return True
+    task = re.sub(r"\s+", " ", part.prompt).strip().lower()
+    return len(task) >= 40 and task[:80] in re.sub(r"\s+", " ", prompt).lower()
 
 
 def similar(a: str, b: str) -> float:
@@ -191,8 +219,10 @@ def content_to_row(
     *,
     excerpt_refs: dict[str, dict[str, Any]] | None = None,
     allowed_figures: set[str] | None = None,
+    topic_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    refs = []
+    """`topic_refs`: the planned lecture topics' exact pages (see lecture_knowledge.topic_sources)."""
+    refs = list(topic_refs or [])
     for ref in content.source_excerpt_ids:
         if excerpt_refs and ref in excerpt_refs:
             refs.append(excerpt_refs[ref])
@@ -253,6 +283,8 @@ def render_question(row: dict[str, Any], number: int, *, include_key: bool = Tru
         lines.append(f"  ({part['label']}) [{float(part['points']):g} pts] {part['prompt']}")
         if include_key:
             lines.append(f"     Answer: {part.get('answer', '')}")
+            if part.get("rubric"):
+                lines.append(f"     Rubric: {_rubric_text(part['rubric'])}")
     if include_key:
         if row.get("correct_choice"):
             lines.append(f"Correct choice: {row['correct_choice']}")
@@ -260,8 +292,24 @@ def render_question(row: dict[str, Any], number: int, *, include_key: bool = Tru
         if row.get("solution"):
             lines.append(f"Solution: {row['solution']}")
         if row.get("rubric"):
-            lines.append("Rubric: " + "; ".join(f"{item['criterion']} ({float(item['points']):g})" for item in row["rubric"]))
+            lines.append(f"Rubric: {_rubric_text(row['rubric'])}")
+        if sources := source_labels(row):
+            lines.append("Sources (attached by ProfPilot): " + "; ".join(sources))
     return "\n".join(lines)
+
+
+def _rubric_text(rubric: list[dict[str, Any]]) -> str:
+    return "; ".join(f"{item['criterion']} ({float(item['points']):g})" for item in rubric)
+
+
+def source_labels(row: dict[str, Any]) -> list[str]:
+    """A question's sources for the answer key: the exact pages of the lecture topics it was planned
+    on, then the retrieved excerpts (whose labels span their chunk's pages) of any other file."""
+    refs = row.get("source_refs") or []
+    exact = [ref for ref in refs if ref.get("topic") and ref.get("label")]
+    covered = {ref.get("document_id") for ref in exact}
+    others = [ref for ref in refs if not ref.get("topic") and ref.get("label") and ref.get("document_id") not in covered]
+    return list(dict.fromkeys(ref["label"] for ref in [*exact, *others]))
 
 
 def serialize_question(row: dict[str, Any], number: int, revision_count: int = 0) -> dict[str, Any]:
@@ -287,7 +335,7 @@ def serialize_question(row: dict[str, Any], number: int, revision_count: int = 0
         "explanation": row.get("explanation"),
         "concepts": row.get("concepts") or [],
         "learningObjectives": row.get("learning_objectives") or [],
-        "sources": [ref.get("label") for ref in row.get("source_refs") or [] if ref.get("label")],
+        "sources": source_labels(row),
         "figureDocumentId": row.get("figure_document_id"),
         "estimatedMinutes": float(row["estimated_minutes"]) if row.get("estimated_minutes") is not None else None,
         "status": row["status"],

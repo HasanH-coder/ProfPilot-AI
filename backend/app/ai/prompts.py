@@ -93,7 +93,9 @@ GROUNDING = (
     "invent specialised facts, definitions, notation or results that the material does not "
     "support. General background knowledge a student of the course would have is fine. If the "
     "material is missing or too thin for what is asked, say so in a warning instead of inventing "
-    "content."
+    "content. Refer to the material by file name and pages (or slides) and, where given, lecture "
+    "topic ids: excerpt ids (S1, S2…) are numbered for one request only, so never use them anywhere "
+    "except a question's source_excerpt_ids."
 )
 
 FORMULA_FIDELITY = (
@@ -334,7 +336,8 @@ def planner_instructions(framer: DataFramer) -> str:
         "few percentage points), the total time within the duration (leave about 10% for reading and "
         "checking), coverage proportional to emphasis, and the question count range if given. "
         "Questions of the same section should be consecutive. Use whole or half points. "
-        "Avoid two questions testing the same thing.",
+        "Give every question its own assessment target: no two questions (or subparts) test the same "
+        "fact, case or calculation.",
         "BLOOM'S PLANNING. Give each question the level its learning objective really needs, then "
         "adjust levels and points until the marks per level match spec.bloom; difficulty is planned "
         "separately and both must hold. Match levels to types: remember/understand suit MCQ and "
@@ -359,8 +362,9 @@ def planner_instructions(framer: DataFramer) -> str:
         "LECTURE KNOWLEDGE. When a LECTURE KNOWLEDGE inventory is given, build the plan from it: choose "
         "topics so the exam samples the selected lectures sensibly for its time and marks, give each "
         "question the level its topic's material actually supports, and set knowledge_refs to the ids "
-        "of the topics it draws on (e.g. ['L2.t5']; one or two, exactly as listed). Put the topic's "
-        "slides or pages in source_hint. Never assign a higher-order level to a topic that only "
+        "of the topics it draws on (e.g. ['L2.t5']; one or two, exactly as listed). Put the file and the "
+        "topic's slides or pages in source_hint, never excerpt ids (S1, S2…): those are numbered for one "
+        "request only and mean nothing to the question writer. Never assign a higher-order level to a topic that only "
         "supports recall; if the split can't be met with the material, keep the closest plan and say "
         "why in warnings. Leave knowledge_refs empty only when no inventory is given. A topic noted "
         "'unverified formulas' has mathematics that wasn't reliably extracted: don't plan a question "
@@ -385,14 +389,22 @@ def generator_instructions(framer: DataFramer) -> str:
         "question gives something to take apart, compare or debug; an evaluate question asks for a "
         "justified judgement against stated criteria; a create question asks for a design or "
         "construction. Set cognitive_level to the planned level only if the question truly meets it. "
-        "Keep difficulty as planned too. Work the solution out in full before you settle the answer "
-        "key.",
+        "Keep difficulty as planned too, independently of the level: a hard question is hard because of "
+        "what the student must work out (connecting several ideas, a fair but unfamiliar context, more "
+        "steps), never because of length. Never list in the stem the points a full answer must contain "
+        "(that turns understanding into a checklist): ask the question, and put those points in the "
+        "rubric. Work the solution out in full before you settle the answer key.",
         "QUALITY. Put the whole problem in the stem; avoid negative stems ('which is NOT') unless "
         "essential; use realistic, specific scenarios and clean numbers with units; no trivial or "
-        "artificially complicated questions, and no repeated stem patterns across the exam.",
+        "artificially complicated questions, and no repeated stem patterns across the exam. Don't "
+        "assess the same fact, case or calculation twice: not in two subparts, and not in a question "
+        "already written or planned for another number.",
         "MULTIPLE CHOICE: exactly 4 choices with ids A, B, C, D; exactly one is correct "
         "(correct_choice). Distractors must be plausible, parallel in length and form to the correct "
-        "choice, and reflect real misconceptions or likely slips; avoid 'all of the above' and 'none "
+        "choice, and reflect real misconceptions or likely slips: each is what a student with a "
+        "specific misunderstanding of the same idea would choose, of the same kind as the answer (if "
+        "the answer is a definition of a boundary, every choice describes a boundary-like idea), never "
+        "a different kind of thing that is obviously wrong; avoid 'all of the above' and 'none "
         "of the above'; vary the position of the correct answer across questions. 'answer' states "
         "the correct choice and why; 'explanation' says why each distractor is wrong. choices and "
         "correct_choice are null for every other type, and MCQs have no subparts.",
@@ -401,11 +413,16 @@ def generator_instructions(framer: DataFramer) -> str:
         "with criteria a marker can check and that reward the planned thinking (e.g. the "
         "justification in an evaluate question). If you use subparts (labels a, b, c…), their "
         "points must add up to the question's points and each subpart has its own answer and "
-        "rubric; the question-level rubric may then be null or summarise the subparts. Subparts may "
+        "rubric; the question-level rubric may then be null or summarise the subparts. With subparts, "
+        "'prompt' holds only what they share (the scenario, data, definitions); each task appears once, "
+        "in its own subpart's prompt, never also in 'prompt' (both are shown to students). Subparts may "
         "build from lower to higher levels; cognitive_level is the highest level the question needs.",
         "Each question must be self-contained, unambiguous and answerable from the course "
         "material within its estimated time. Reference the excerpts you used by their ids in "
-        "source_excerpt_ids (e.g. 'S3'). Do not mention excerpts, files or ProfPilot in the "
+        "source_excerpt_ids (e.g. 'S3'), using only ids of the excerpts given in this request: ids "
+        "mentioned in the brief or the plan belong to other requests. Never write excerpt ids, topic "
+        "ids or 'Source:' lines in the prompt, answer, solution or explanation: ProfPilot attaches the "
+        "sources with their pages itself. Do not mention excerpts, files or ProfPilot in the "
         "question text itself. Use figure_document_id only as given in the plan.",
         "LECTURE KNOWLEDGE. When structured lecture notes are given for a question, use their "
         "definitions, formulas (with their conditions), examples and misconceptions to target the "
@@ -450,7 +467,9 @@ def reviewer_instructions(framer: DataFramer) -> str:
         "ambiguity, duplicated questions, coverage gaps, difficulty and format splits that miss "
         "the spec, an infeasible total time, unclear wording, solutions or rubrics that don't "
         "match the question (rubric points must equal question points), and versions that are "
-        "not equivalent.",
+        "not equivalent. A question with subparts is marked by its subparts' rubrics; each question "
+        "lists the sources ProfPilot attached (file and pages), so don't report a missing source "
+        "reference in its text.",
         "COGNITIVE ALIGNMENT. Each question shows its intended Bloom's level; don't take the label "
         "as proof. Judge the thinking a student actually needs to answer it. If it assesses a "
         "different level (e.g. labelled analyze but answerable by recall), report it with category "

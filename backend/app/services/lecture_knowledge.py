@@ -829,6 +829,21 @@ def unverified_formula_problems(content: Any, expressions: list[str], label: str
     return []
 
 
+def topic_sources(refs: list[str], documents: list[DocumentRecord], knowledge: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The exact pages of these lecture topics, as stable source references for a question
+    (file name and pages, which don't depend on any request's excerpt numbering)."""
+    index = topic_index(lecture_refs(documents, knowledge))
+    sources = []
+    for ref in dict.fromkeys(refs):
+        doc, topic = index.get(ref, (None, None))
+        if doc is None or topic is None:
+            continue
+        pages = compact_locations(topic.get("locations") or [])
+        label = f"{doc.original_name}, {pages}" if pages else doc.original_name
+        sources.append({"document_id": doc.id, "label": label, "topic": topic["name"]})
+    return sources
+
+
 def unverified_refs(refs: list[str], documents: list[DocumentRecord], knowledge: dict[str, dict[str, Any]]) -> list[str]:
     """Which of these topic ids have unverified formulas, with where they are (for the professor)."""
     index = topic_index(lecture_refs(documents, knowledge))

@@ -20,6 +20,7 @@ from app.schemas.common import ApiModel, parse_id
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
 from app.services.exam_generation import (
     GenerationContext,
+    excerpt_id_problems,
     excerpt_ref_map,
     load_generation_context,
     question_effort,
@@ -185,6 +186,7 @@ class QuestionRevisionService:
             if any(similar(content.prompt, other) > 0.85 for other in others):
                 found.append("The revised question duplicates another question in the exam.")
             found += ctx.formula_problems([("The revised question", content)])
+            found += excerpt_id_problems([("The revised question", result.question)], excerpts)
             return found
 
         # The lecture topics closest to this question (what is verified, what isn't), from the stored profiles.
@@ -226,7 +228,13 @@ class QuestionRevisionService:
         updated = await self.store.update_question(
             question["id"],
             {
-                **content_to_row(content, excerpt_refs=excerpt_ref_map(excerpts), allowed_figures=ctx.figure_ids),
+                **content_to_row(
+                    content,
+                    excerpt_refs=excerpt_ref_map(excerpts),
+                    allowed_figures=ctx.figure_ids,
+                    # The planned topics' exact pages stay with the question through its revisions.
+                    topic_refs=[ref for ref in question.get("source_refs") or [] if ref.get("topic")],
+                ),
                 "status": "draft",
             },
         )

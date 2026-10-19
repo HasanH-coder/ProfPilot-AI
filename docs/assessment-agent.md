@@ -228,6 +228,8 @@ The professor chooses how the exam's **marks** are spread across Bloom's six lev
 
 The plan is made once, and the full quality check runs once, after every question is written.
 
+**Sources and question hygiene.** Excerpt ids (`S1`, `S2`…) are numbered per request, so the brief and plan cite files, pages and lecture topic ids instead. A question may cite only the excerpts its own request gave; any other id is sent back for repair, never silently dropped. Each planned question also keeps the exact pages of its lecture topics (`source_refs` entries with a `topic`), which the answer key shows ahead of the excerpts' page ranges and which survive revisions. Every AI-written question is rejected and repaired if its text names internal ids ("Source: …; S4", "L1.t3") or if its main prompt restates its subparts (students would see each task twice). Writers are told that a hard question is hard because of the thinking it needs, never because the stem lists what the answer must contain; that no fact, case or calculation is assessed twice; and that every distractor is a plausible misconception of the same kind as the answer.
+
 #### Question order
 
 Unless the professor asks for a particular order, an exam mixes difficulties and topics instead of following the course outline: not all the easy questions first, and not several questions in a row from the same lecture while others are available. The planner is told so, and the plan is then checked in code (`interleave_plan` in `exam_generation.py`): where every difficulty, or every lecture (from each question's source), forms one block, or a run of three or more could be broken up, the questions of that section are reordered so they spread evenly. Only the order changes (each question keeps its type, difficulty, points and topic, so the splits by marks stay exactly as planned), sections stay together, a section grouped by question type keeps that grouping, and questions are renumbered. No extra model call is needed. Small sections are left alone.
@@ -254,6 +256,8 @@ The assistant follows the approved plan, suggests the next question, and never c
 
 - **Deterministic checks:** structure, answer keys, edited questions whose key may be out of date, near-duplicates, the format and difficulty split per version, and whether the versions match.
 - **An AI review** (high reasoning effort) of every question against the course excerpts: answer-key errors, ambiguity, missing information, impossible or unanswerable questions, difficulty, clarity, rubric and solution problems, duration.
+
+The reviewer sees each question's full marking scheme (subpart rubrics included) and the sources ProfPilot attached, so it doesn't report missing rubrics or references that exist. While the check runs, the exam page says so; approving a question stays possible, and the page explains that an approved question is locked, so the check can report its issues but not fix them.
 
 Only **safe fixes** are applied automatically: correcting an answer key, rewording for clarity (only if the new text is still close to the old), fixing a solution or rubric. Locked questions are never changed. Each fix is recorded in the question's history as "Fixed by the quality check", so it can be undone. Everything else is reported for the professor to decide.
 
