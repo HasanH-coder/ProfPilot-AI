@@ -328,6 +328,9 @@ class PlannedQuestion(BaseModel):
     # Lecture-knowledge topic ids it draws on (e.g. "L2.t5"), from the LECTURE KNOWLEDGE
     # inventory. (The default keeps plans saved before this field existed valid.)
     knowledge_refs: list[str] = Field(default_factory=list)
+    # What exactly students do, on which case ("compute the loss of a confident wrong prediction"),
+    # so no two questions share one. (The default keeps plans saved before this field existed valid.)
+    assessment_target: str = ""
 
 
 class ExamPlan(BaseModel):
@@ -471,6 +474,9 @@ class QuestionFix(BaseModel):
     answer: str | None
     solution: str | None
     rubric: list[RubricItem] | None
+    # clarify_wording and fix_rubric: the label of the subpart to change ('a'); null for the question
+    # itself. (The default keeps fixes written before this field valid.)
+    subpart_label: str | None = None
 
 
 class ReviewIssue(BaseModel):

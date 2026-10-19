@@ -416,6 +416,16 @@ def plan_problems(
         soft.append(f"Plan at most {spec.question_count_max} questions.")
     if spec.total_points and abs(summary["totalPoints"] - spec.total_points) > 0.01:
         soft.append(f"The points add up to {summary['totalPoints']:g}; make them add up to {spec.total_points}.")
+    # The same task again with only its numbers changed ('… for f = 0.64', '… for f = 0.88'). Wording
+    # alone can't tell 'the mean' from 'the median' apart reliably, so nothing looser is reported.
+    targets = [(q.number, re.sub(r"\d+(?:\.\d+)?", "#", " ".join(q.assessment_target.lower().split()))) for q in questions]
+    for index, (number, target) in enumerate(targets):
+        twin = next((other for other, text in targets[index + 1 :] if target and text == target), None)
+        if twin is not None:
+            soft.append(
+                f"Questions {number} and {twin} have nearly the same assessment target. Give each its own task or "
+                "case; a concept may return only with different thinking on a different case."
+            )
     return hard, soft
 
 
@@ -665,6 +675,7 @@ class ExamGenerationService:
             f"{q.type}, {q.difficulty}, {q.points:g} pts, ~{q.estimated_minutes:g} min — {q.topic}: {q.learning_objective}"
             f" (Bloom's level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'}"
             + (f"; lecture knowledge: {', '.join(q.knowledge_refs)}" if q.knowledge_refs else "")
+            + (f"; target: {q.assessment_target}" if q.assessment_target else "")
             + ")"
             for q in plan.questions
         ]

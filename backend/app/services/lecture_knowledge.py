@@ -36,10 +36,10 @@ from app.ai.prompts import DataFramer, lecture_segment_instructions, lecture_syn
 from app.core.config import settings
 from app.core.errors import AppError
 from app.db.supabase import Database
-from app.schemas.ai import COGNITIVE_LEVELS, LectureSynthesis, SegmentKnowledge
+from app.schemas.ai import COGNITIVE_LEVELS, LectureSynthesis, QuestionContent, SegmentKnowledge
 from app.services.assessment_context import DocumentRecord
 from app.services.document_parsers import EXTRACTION_GLYPHS, FIGURE_MARKER, PAGE_MARKER
-from app.services.exam_store import question_texts
+from app.services.exam_store import canonical_maths, maths_fragments, question_texts
 
 logger = logging.getLogger("profpilot.knowledge")
 
@@ -854,6 +854,59 @@ def unverified_refs(refs: list[str], documents: list[DocumentRecord], knowledge:
             pages = compact_locations([loc for f in topic["formulas"] if is_unverified(f) for loc in f["locations"]])
             found.append(f"{topic['name']} ({pages or compact_locations(topic['locations'])})")
     return found
+
+
+# -- Formulas the professor wrote ------------------------------------------------------------
+#
+# A professor who writes the formulas to use in their own instructions or notes ("Sigmoid: g(z) =
+# 1/(1 + e^(−z))") has confirmed them, whatever the extracted slides say. Statements that forbid or
+# correct something ("Do not use the inconsistent cost scaling") confirm nothing, and calculations with
+# numbers can't be traced to a formula, so a question doing them stays flagged.
+
+_NOT_CONFIRMING = re.compile(
+    r"(?i)\b(?:don'?t|do not|never|avoid|not|instead|incorrect|wrong|inconsistent|mistakes?|errors?|"
+    r"misconceptions?|except|unlike)\b"
+)
+_FUNCTION_NAME = re.compile(r"\\(ln|log|sin|cos|tan)\b")
+# Between the pieces of one formula: equals and other relations, and list separators.
+_RELATION = re.compile(r"(?i)=|\\approx|≈|\\[lg]eq?|≤|≥|<|>|\\rightarrow|\\iff|\\to\b|,|;")
+_NOT_A_VARIABLE = re.compile(r"ln|log|sin|cos|tan|e\^|\\[a-z]+")
+
+
+def _formula_form(text: str) -> str:
+    # 'w·x + b' and 'wx + b' are the same product.
+    return canonical_maths(_FUNCTION_NAME.sub(r"\1", text)).replace("*", "")
+
+
+def professor_formula_text(texts: Iterable[str | None]) -> str:
+    """The professor's own statements (instructions, notes) that may confirm formulas, in canonical maths."""
+    statements = [line for text in texts if text for line in re.split(r"\n+|(?<=[.;])\s+", text)]
+    return " | ".join(_formula_form(line) for line in statements if line.strip() and not _NOT_CONFIRMING.search(line))
+
+
+def traced_to_professor(content: QuestionContent, professor: str) -> bool:
+    """Whether every formula a question states as correct (its prompt, key, answers, solution and rubric;
+    not its distractors) is one the professor wrote (`professor_formula_text`), and it states at least
+    one. Given values and names ('f = 0.28', 'g(z)') need no confirmation; a calculation with numbers
+    ('1 − 0.28') can't be traced, so the question isn't confirmed."""
+    key = next((c.text for c in content.choices or [] if c.id == content.correct_choice), "")
+    texts = [content.prompt, key, content.answer, content.solution, *(item.criterion for item in content.rubric or [])]
+    for part in content.subparts or []:
+        texts += [part.prompt, part.answer, *(item.criterion for item in part.rubric)]
+    traced = 0
+    for fragment in (fragment for text in texts if text for fragment in maths_fragments(text)):
+        for piece in (piece.rstrip(".:") for piece in _RELATION.split(_formula_form(fragment))):
+            bare = _NOT_A_VARIABLE.sub("", piece).lstrip("-")
+            if not re.search(r"[-+*/^]", bare):
+                continue  # a value or a name
+            if not re.search(r"[a-z]", bare):
+                return False  # a calculation with numbers
+            if len(piece) < 4:
+                continue  # too short to tell a formula from chance
+            if piece not in professor:
+                return False
+            traced += 1
+    return traced > 0
 
 
 def matching_refs(text: str, documents: list[DocumentRecord], knowledge: dict[str, dict[str, Any]], limit: int = 2) -> list[str]:
