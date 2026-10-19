@@ -31,6 +31,7 @@ from app.services.exam_store import (
     ExamStore,
     FullExam,
     answer_leaks,
+    leak_messages,
     question_problems,
     question_texts,
     render_question,
@@ -273,17 +274,20 @@ class ExamReviewService:
 
     async def _apply_ai_issues(self, full: FullExam, issues: list[ReviewIssue]) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
+        updated: dict[str, dict[str, Any]] = {}  # questions already fixed in this review, as they are now
         for issue in issues:
             label = issue.version_label or full.primary_version["label"]
             version = full.version_by_label(label) or full.primary_version
-            questions = full.version_questions(version["id"])
+            questions = [updated.get(q["id"], q) for q in full.version_questions(version["id"])]
             row = None
             if issue.question_number and 1 <= issue.question_number <= len(questions):
                 row = questions[issue.question_number - 1]
             applied = False
             if row is not None and issue.fix is not None and row["status"] != "approved":
                 try:
-                    applied = await self._apply_fix(row, issue.fix, issue.message)
+                    fixed = await self._apply_fix(row, issue.fix, issue.message, questions)
+                    if fixed is not None:
+                        updated[row["id"]], applied = fixed, True
                 except Exception as error:  # a fix that fails validation is simply not applied
                     logger.info("Review fix not applied: %s", type(error).__name__)
             results.append(
@@ -300,14 +304,36 @@ class ExamReviewService:
             )
         return results
 
-    async def _apply_fix(self, row: dict[str, Any], fix: QuestionFix, reason: str) -> bool:
+    async def _apply_fix(
+        self, row: dict[str, Any], fix: QuestionFix, reason: str, questions: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Applies a safe fix to this one question and returns it as fixed, or None when the fix isn't
+        safe: it must add no problem to the question and no give-away of (or by) another question."""
+        values = self._fix_values(row, fix)
+        if not values:
+            return None
+        fixed = {**row, **values}
+        if set(question_problems(row_to_content(fixed))) - set(question_problems(row_to_content(row))):
+            return None
+        numbers = list(range(1, len(questions) + 1))
+        number = next(n for n, q in zip(numbers, questions, strict=True) if q["id"] == row["id"])
+        before = [row_to_content(q) for q in questions]
+        after = [row_to_content(fixed) if q["id"] == row["id"] else content for q, content in zip(questions, before, strict=True)]
+        if set(leak_messages(after, numbers, only={number})) - set(leak_messages(before, numbers, only={number})):
+            return None
+        await self.store.record_revision(row, source="ai_review_fix", instruction=f"Quality check: {reason}")
+        await self.store.update_question(row["id"], values)
+        return fixed
+
+    @staticmethod
+    def _fix_values(row: dict[str, Any], fix: QuestionFix) -> dict[str, Any] | None:
         values: dict[str, Any] = {}
         choice_ids = [choice["id"] for choice in row.get("choices") or []]
         if fix.kind == "correct_answer_key":
             if row["type"] == "mcq":
                 new_choice = (fix.correct_choice or "").strip().upper()
                 if new_choice not in choice_ids or new_choice == row.get("correct_choice"):
-                    return False
+                    return None
                 values["correct_choice"] = new_choice
             if fix.answer and fix.answer.strip():
                 values["answer"] = fix.answer.strip()
@@ -320,29 +346,25 @@ class ExamReviewService:
                 values["solution"] = fix.solution.strip()
         elif fix.kind == "fix_rubric":
             if not fix.rubric or row.get("subparts"):
-                return False
+                return None
             if abs(sum(item.points for item in fix.rubric) - float(row["points"])) > 0.01:
-                return False
+                return None
             values["rubric"] = [item.model_dump() for item in fix.rubric]
         elif fix.kind == "relabel_cognitive_level":
             # Only the label changes, to the level the question really assesses;
             # rewriting it to reach another level is left to the professor.
             level = fix.cognitive_level
             if not level or level == row.get("cognitive_level") or (row["type"] == "mcq" and level == "create"):
-                return False
+                return None
             values["cognitive_level"] = level
         elif fix.kind == "clarify_wording":
             prompt = (fix.prompt or "").strip()
             old = row["prompt"]
             # Minimal rewording only: never a different question.
             if not prompt or prompt == old or similar(prompt, old) < 0.6 or not 0.6 <= len(prompt) / max(1, len(old)) <= 1.6:
-                return False
+                return None
             values["prompt"] = prompt
-        if not values:
-            return False
-        await self.store.record_revision(row, source="ai_review_fix", instruction=f"Quality check: {reason}")
-        await self.store.update_question(row["id"], values)
-        return True
+        return values or None
 
 
 def _leak_issues(full: FullExam) -> list[dict[str, Any]]:

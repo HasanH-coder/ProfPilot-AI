@@ -5,6 +5,7 @@ Examples come from several subjects on purpose: the checks must hold beyond one 
 """
 
 import asyncio
+import re
 from types import SimpleNamespace
 
 from app.ai.prompts import DataFramer, generator_instructions, planner_instructions, reviewer_instructions
@@ -222,6 +223,97 @@ def test_a_minimal_rewording_from_the_reviewer_removes_the_leak_and_the_warning(
     assert not [
         issue for issue in reviewed["review"]["issues"] if issue["category"] == "answer_leakage" and issue["source"] == "check"
     ]
+
+
+_PLAN_ENTRY = re.compile(r"^(\d+)\. \[[^\]]*\] (\w+),", re.M)
+
+
+def test_a_leak_across_batches_is_caught_by_the_final_quality_check(api, supabase, db_a, ai):
+    """Batches are written independently, so a question may print an MCQ answer from another batch;
+    the batch check can't see it, and the final quality check must."""
+    leaked: list[int] = []
+
+    def leaks_across_batches(call):
+        result = well_behaved_batch(call)
+        planned = {int(n): kind for n, kind in _PLAN_ENTRY.findall(call["input"].split("WRITE THESE QUESTIONS NOW")[0])}
+        mine = {q.number for q in result.questions}
+        elsewhere = [n for n, kind in planned.items() if kind == "mcq" and n not in mine]
+        target = next((q for q in result.questions if q.type != "mcq"), None)
+        if not leaked and elsewhere and target:
+            number = elsewhere[0]
+            target.prompt += f" Hint: Option {'ABCD'[number % 4]} for item {number}."  # that MCQ's key (tests.model)
+            leaked.append(target.number)
+        return result
+
+    ai.on("generate_questions", leaks_across_batches)
+    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    interpret_and_approve(api, assessment["id"])
+    exam = generate(api, assessment["id"])
+    assert leaked, "the plan must spread MCQs and other questions over several batches"
+    # Saved (no batch could see it), then reported by the built-in quality check as a warning.
+    leaks = [issue for issue in exam["review"]["issues"] if issue["category"] == "answer_leakage"]
+    assert [(issue["questionNumber"], issue["severity"], issue["source"]) for issue in leaks] == [(leaked[0], "warning", "check")]
+    assert exam["reviewStatus"] == "needs_attention"
+
+
+def reviewer_proposing(prompt_for, target_number: int):
+    def handler(call):
+        fix = QuestionFix(kind="clarify_wording", cognitive_level=None, correct_choice=None, prompt=prompt_for(call),
+                          answer=None, solution=None, rubric=None)  # fmt: skip
+        issue = ReviewIssue(question_number=target_number, version_label="A", severity="warning",
+                            category="clarity", message="Clearer wording.", fix=fix)  # fmt: skip
+        return ReviewOutput(summary="One rewording.", issues=[issue], estimated_total_minutes=60)
+
+    return handler
+
+
+def snapshot(exam) -> dict:
+    keys = ("prompt", "choices", "correctChoice", "answer", "solution", "rubric", "subparts", "cognitiveLevel", "points")
+    return {q["id"]: {k: q[k] for k in keys} for q in exam["questions"]}
+
+
+def test_a_reviewer_fix_that_would_give_away_another_answer_is_not_applied(api, supabase, db_a, ai):
+    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    interpret_and_approve(api, assessment["id"])
+    exam = generate(api, assessment["id"])
+    questions = sorted(exam["questions"], key=lambda q: q["number"])
+    key_question = next(q for q in questions if q["type"] == "mcq")
+    key = next(c["text"] for c in key_question["choices"] if c["id"] == key_question["correctChoice"])
+    target = next(q for q in questions if q["id"] != key_question["id"] and q["type"] != "mcq")
+    before = snapshot(exam)
+
+    # A "minimal rewording" that slips another question's answer in.
+    ai.on("review_exam", reviewer_proposing(lambda _call: f"{target['prompt']} ({key})", target["number"]))
+    reviewed = review(api, exam["id"])
+    assert snapshot(reviewed) == before  # nothing changed, in any question or answer key
+    issue = next(i for i in reviewed["review"]["issues"] if i["source"] == "ai")
+    assert issue["fixApplied"] is False
+    assert api.get(f"/api/questions/{target['id']}/revisions", headers=auth()).json() == []
+
+
+def test_a_reviewer_fix_that_adds_garbled_maths_or_internal_ids_is_not_applied(api, supabase, db_a, ai):
+    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    interpret_and_approve(api, assessment["id"])
+    exam = generate(api, assessment["id"])
+    target = sorted(exam["questions"], key=lambda q: q["number"])[1]
+    before = snapshot(exam)
+    for addition in (" Use 𝒇(𝒙) here.", " See topic L1.t3.", " (3 marks)"):
+        ai.on("review_exam", reviewer_proposing(lambda _call, a=addition: target["prompt"] + a, target["number"]))
+        assert snapshot(review(api, exam["id"])) == before, addition
+
+
+def test_a_safe_reviewer_fix_changes_only_its_own_question(api, supabase, db_a, ai):
+    exam, _, target, leaked_prompt = leaked_exam(api, supabase, db_a)
+    before = snapshot(api.get(f"/api/exams/{exam['id']}", headers=auth()).json())
+    ai.on("review_exam", reviewer_proposing(lambda _call: leaked_prompt.split(" Recall: ")[0], target["number"]))
+    after = snapshot(review(api, exam["id"]))
+    changed = [qid for qid in before if before[qid] != after[qid]]
+    assert changed == [target["id"]]  # every other question and answer key untouched
+    assert {k for k in before[target["id"]] if before[target["id"]][k] != after[target["id"]][k]} == {"prompt"}
+    assert [r["source"] for r in api.get(f"/api/questions/{target['id']}/revisions", headers=auth()).json()][0] == "ai_review_fix"
 
 
 # -- Demanding Bloom's/difficulty pairs: guidance, never a silent change -------------------------
