@@ -90,7 +90,7 @@ def test_pages_without_text_are_reported_not_silently_skipped(supabase, db_a, ai
     process(db_a, ai, source["id"])
     knowledge = knowledge_of(db_a, source["id"])
     assert knowledge["coverage"]["units_without_text"] == [2]
-    assert any("Pages 2 had no extractable text" in warning for warning in knowledge["warnings"])
+    assert any("Page 2 has no extractable text" in warning for warning in knowledge["warnings"])
 
 
 def test_invented_locations_are_sent_back_for_repair(supabase, db_a, ai):
@@ -124,7 +124,7 @@ def test_formulas_are_kept_as_written_and_uncertain_ones_are_flagged(supabase, d
     knowledge = {source["id"]: knowledge_of(db_a, source["id"])}
     rendered = render_topics(["L1.t1"], [record], knowledge, DataFramer())
     # Marked unverified, with the extracted text kept only as labelled evidence, after the warning.
-    assert "formula UNVERIFIED (garbled in the extracted text; never quote it): update rule" in rendered
+    assert "formula UNVERIFIED (extracted from the PDF, possibly garbled; never quote it): update rule" in rendered
     assert "no reliable standard form: don't base a question on this formula's exact form" in rendered
     assert rendered.index("UNVERIFIED") < rendered.index("Extracted evidence, for reference only: w = w - \\eta \\nabla L")
 
@@ -340,7 +340,7 @@ def test_slides_with_pictures_are_reported_in_the_coverage():
     # Chunks without page markers (files read earlier) can't be classified page by page, and say so.
     assert coverage["page_detail"] is False and coverage["substantive_units"] is None
     warnings = coverage_warnings(coverage)
-    assert any("Slides 2 also contain figures or images" in warning for warning in warnings)
+    assert any("Slide 2 also has figures or images that aren't in the text" in warning for warning in warnings)
     assert any("Page-level coverage isn't available" in warning for warning in warnings)
 
 

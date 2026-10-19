@@ -26,7 +26,7 @@ import logging
 import math
 import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -189,6 +189,8 @@ def merge_topics(results: list[SegmentKnowledge]) -> list[dict[str, Any]]:
     for result in results:
         for topic in result.topics:
             data = topic.model_dump()
+            for formula in data["formulas"]:
+                formula["uncertain"] = is_unverified(formula)  # PDF-letter text is never verified
             existing = merged.get(_key(topic.name))
             if existing is None:
                 merged[_key(topic.name)] = data
@@ -219,9 +221,10 @@ def page_texts(chunks: list[dict[str, Any]]) -> dict[int, str]:
 def classify_pages(pages: dict[int, str], page_count: int | None) -> dict[str, list[int]]:
     """Every page or slide in one class of PAGE_CLASSES, plus the pages whose maths is unreliable.
 
-    Lines repeated on at least half the pages (headers, footers, the course title) and all-capital
-    headings are not content: a slide with only those is a divider, or figure-dominated when it
-    also has an unread figure or leftover labels (axis ticks, stray characters).
+    Lines repeated on at least half the pages (headers, footers, the course title), all-capital
+    headings, image credits ("Adapted from …", URLs) and labels without words (axis ticks) are not
+    content: a slide with only those is a divider, or figure-dominated when it also has an unread
+    figure or such labels.
     """
     lines = {number: {line.strip() for line in text.splitlines() if line.strip()} for number, text in pages.items()}
     seen = Counter(line for page_lines in lines.values() for line in page_lines)
@@ -235,18 +238,27 @@ def classify_pages(pages: dict[int, str], page_count: int | None) -> dict[str, l
         if EXTRACTION_GLYPHS.search(text):
             classes["uncertain_math"].append(number)
         figures = bool(FIGURE_MARKER.search(text))
-        residual = " ".join(
-            line
+        residual = [
+            _CREDIT.sub("", line).strip()
             for line in (raw.strip() for raw in text.splitlines())
             if line and line not in repeated and not FIGURE_MARKER.match(line) and not _is_heading(line)
-        )
-        if len(residual) >= _SUBSTANTIVE_CHARS:
+        ]
+        prose = " ".join(line for line in residual if any(character.isalpha() for character in line))
+        labels = any(line and not any(character.isalpha() for character in line) for line in residual)
+        if len(prose) >= _SUBSTANTIVE_CHARS:
             classes["text_with_figures" if figures else "text"].append(number)
-        elif figures or any(character.isdigit() for character in residual):
+        elif figures or labels:
             classes["figure_dominated"].append(number)
         else:
             classes["divider"].append(number)
     return classes
+
+
+# An image credit and the rest of its line ("Adapted from …", "Source: …", a bare link): never content.
+_CREDIT = re.compile(
+    r"(?i)(adapted\s*from|reproduced\s*from|courtesy\s*of|image\s*(?:source|credit)s?|(?<![a-z])(?:source|credit)s?\s*:"
+    r"|https?://).*$"
+)
 
 
 def _is_heading(line: str) -> bool:
@@ -296,34 +308,49 @@ def coverage_of(
     }
 
 
+def page_list(unit: str, numbers: list[int]) -> str:
+    """'Page 29', 'Pages 1, 39', 'Pages 7–13, 15–19, 21' (consecutive numbers as ranges)."""
+    numbers = sorted(set(numbers))
+    runs: list[str] = []
+    start = previous = numbers[0]
+    for number in [*numbers[1:], None]:
+        if number is not None and number == previous + 1:
+            previous = number
+            continue
+        runs.append(str(start) if start == previous else f"{start}–{previous}")
+        if number is not None:
+            start = previous = number
+    return f"{unit}{'s' if len(numbers) > 1 else ''} {', '.join(runs)}"
+
+
 def coverage_warnings(coverage: dict[str, Any]) -> list[str]:
     warnings = []
     unit = (coverage["unit"] or "page").capitalize()
     pages = coverage.get("pages") or {}
 
-    def listed(numbers: list[int]) -> str:
-        return ", ".join(str(number) for number in numbers[:30]) + (" …" if len(numbers) > 30 else "")
+    def plural(numbers: list[int], one: str, many: str) -> str:
+        return one if len(numbers) == 1 else many
 
-    if coverage["units_without_text"]:
+    if empty := coverage["units_without_text"]:
         warnings.append(
-            f"{unit}s {listed(coverage['units_without_text'])} had no extractable text (often a figure, diagram "
-            "or scan), so their content isn't in the profile; questions about them need the original."
+            f"{page_list(unit, empty)} {plural(empty, 'has', 'have')} no extractable text (usually a picture or scan): "
+            f"{plural(empty, 'its', 'their')} content isn't in the profile, and questions about it need the original."
         )
-    if pages.get("figure_dominated"):
+    if visual := pages.get("figure_dominated"):
         warnings.append(
-            f"{unit}s {listed(pages['figure_dominated'])} are mostly figures, plots or images with little "
-            "extractable text: their content isn't in the profile and needs the original (or a figure-reading pass)."
+            f"{page_list(unit, visual)} {plural(visual, 'is', 'are')} mostly figures or images, with only titles, "
+            "captions or labels as text: what they show isn't in the profile, and questions about it need the original."
         )
     figure_pages = pages.get("text_with_figures") if coverage.get("page_detail") else coverage.get("units_with_figures")
     if figure_pages:
         warnings.append(
-            f"{unit}s {listed(figure_pages)} also contain figures or images whose content isn't in the text; their "
-            "text was analysed, but questions about the visuals need the original."
+            f"{page_list(unit, figure_pages)} also {plural(figure_pages, 'has', 'have')} figures or images that aren't "
+            "in the text: the text was analysed, but questions about the visuals need the original."
         )
-    if pages.get("uncertain_math"):
+    if garbled := pages.get("uncertain_math"):
         warnings.append(
-            f"{unit}s {listed(pages['uncertain_math'])}: the mathematics wasn't reliably extracted (garbled "
-            "symbols), so their formulas are unverified until checked against the original."
+            f"{page_list(unit, garbled)}: the mathematics was extracted with garbled symbols, so "
+            f"{plural(garbled, 'its', 'their')} formulas are unverified until checked against the original."
         )
     if coverage.get("page_detail") is False and coverage.get("total_units"):
         warnings.append(
@@ -333,6 +360,19 @@ def coverage_warnings(coverage: dict[str, Any]) -> list[str]:
     if coverage["truncated"]:
         warnings.append("The file is longer than ProfPilot reads; its end wasn't extracted or analysed.")
     return warnings
+
+
+# A remark about the answer format rather than the lecture (e.g. "The response schema has no examples field").
+_FORMAT_REMARK = re.compile(
+    r"(?i)\b(?:response|output|answer|json)\s+(?:schema|format)\b"
+    r"|\bschema\s+(?:has|contains|provides|offers)\s+no\b"
+    r"|\bno\s+\w+\s+field\s+(?:in|for)\s+(?:the\s+|this\s+)?(?:response|output|answer|schema)\b"
+)
+
+
+def material_warnings(warnings: Iterable[str]) -> list[str]:
+    """The warnings about the lecture itself: remarks about ProfPilot's answer format are dropped."""
+    return [warning for warning in dict.fromkeys(warnings) if not _FORMAT_REMARK.search(warning)]
 
 
 def estimate_build(extracted_characters: int | None) -> dict[str, int]:
@@ -443,7 +483,7 @@ class LectureKnowledgeService:
                 if _key(relation.source_topic) in names and _key(relation.target_topic) in names
             ]
             coverage = coverage_of(chunks, document.page_count, document.extracted_characters, len(segments))
-            warnings = [*coverage_warnings(coverage), *(warning for result in results for warning in result.warnings)]
+            warnings = [*coverage_warnings(coverage), *material_warnings(w for result in results for w in result.warnings)]
             if len(relations) < len(synthesis.relations):
                 warnings.append(
                     f"{len(synthesis.relations) - len(relations)} relation(s) named unknown topics and were left out."
@@ -652,7 +692,7 @@ def render_inventory(documents: list[DocumentRecord], knowledge: dict[str, dict[
                 for name, label in (("formulas", "formula"), ("examples", "example"))
                 if topic.get(name)
             ]
-            unverified = sum(1 for formula in topic.get("formulas", []) if formula.get("uncertain"))
+            unverified = sum(1 for formula in topic.get("formulas", []) if is_unverified(formula))
             if unverified:
                 extras.append(f"{unverified} unverified formula{'s' if unverified > 1 else ''}")
             if any(not visual.get("interpretable", True) for visual in topic.get("visuals", [])):
@@ -667,7 +707,7 @@ def render_inventory(documents: list[DocumentRecord], knowledge: dict[str, dict[
             [f"{r['source_topic']} {r['kind'].replace('_', ' ')} {r['target_topic']}" for r in profile.get("relations", [])],
             _INVENTORY_RELATIONS,
         )
-        lines += _capped("Warnings", list(dict.fromkeys(profile.get("warnings", []))), _INVENTORY_WARNINGS)
+        lines += _capped("Warnings", material_warnings(profile.get("warnings", [])), _INVENTORY_WARNINGS)
         blocks.append(framer.block("lecture_knowledge", f'{ref} | "{doc.original_name}"', "\n".join(lines)))
     missing = [
         doc.original_name
@@ -736,14 +776,20 @@ def render_topics(
     )
 
 
+def is_unverified(formula: dict[str, Any]) -> bool:
+    """Flagged by the analysis, or still written in a PDF's mathematical letters ('𝒛=𝒘.𝒙+𝒃'): such text
+    is extraction output, never proven faithful, so it is evidence only, whatever the flag says."""
+    return bool(formula.get("uncertain") or EXTRACTION_GLYPHS.search(formula.get("expression") or ""))
+
+
 def render_formula(formula: dict[str, Any]) -> str:
     """One formula for a question writer: a verified one as written; an unverified one clearly marked,
-    with its proposed standard form (if any) kept apart from the garbled evidence."""
+    with its proposed standard form (if any) kept apart from the extracted evidence."""
     details = (f"; {', '.join(formula['variables'])}" if formula["variables"] else "") + (
-        f"; holds when {formula['conditions']}" if formula.get("conditions") else ""
+        f"; note: {formula['conditions']}" if formula.get("conditions") else ""
     )
     where = f" ({', '.join(formula['locations'])})"
-    if not formula.get("uncertain"):
+    if not is_unverified(formula):
         return f"- formula: {formula['name']}: {formula['expression']}{details}{where}"
     standard = (
         f"proposed standard form (ProfPilot's reading, not confirmed by the lecture): {formula['normalized']}"
@@ -751,7 +797,7 @@ def render_formula(formula: dict[str, Any]) -> str:
         else "no reliable standard form: don't base a question on this formula's exact form"
     )
     return (
-        f"- formula UNVERIFIED (garbled in the extracted text; never quote it): {formula['name']}: {standard}"
+        f"- formula UNVERIFIED (extracted from the PDF, possibly garbled; never quote it): {formula['name']}: {standard}"
         f"{details}{where}. Extracted evidence, for reference only: {formula['expression']}"
     )
 
@@ -762,7 +808,7 @@ def unverified_expressions(documents: list[DocumentRecord], knowledge: dict[str,
         formula["expression"]
         for _ref, (_doc, topic) in topic_index(lecture_refs(documents, knowledge)).items()
         for formula in topic.get("formulas", [])
-        if formula.get("uncertain") and formula.get("expression")
+        if is_unverified(formula) and formula.get("expression")
     ]
 
 
@@ -789,8 +835,8 @@ def unverified_refs(refs: list[str], documents: list[DocumentRecord], knowledge:
     found = []
     for ref in dict.fromkeys(refs):
         topic = index.get(ref, (None, None))[1]
-        if topic and any(formula.get("uncertain") for formula in topic.get("formulas", [])):
-            pages = compact_locations([loc for f in topic["formulas"] if f.get("uncertain") for loc in f["locations"]])
+        if topic and any(is_unverified(formula) for formula in topic.get("formulas", [])):
+            pages = compact_locations([loc for f in topic["formulas"] if is_unverified(f) for loc in f["locations"]])
             found.append(f"{topic['name']} ({pages or compact_locations(topic['locations'])})")
     return found
 
@@ -847,7 +893,7 @@ def overview(knowledge: dict[str, Any] | None, document: DocumentRecord) -> dict
             if coverage
             else None
         ),
-        "warnings": profile.get("warnings", []),
+        "warnings": material_warnings(profile.get("warnings", [])),
         "usage": (
             {"inputTokens": usage["input_tokens"], "outputTokens": usage["output_tokens"], "modelCalls": usage["model_calls"]}
             if usage

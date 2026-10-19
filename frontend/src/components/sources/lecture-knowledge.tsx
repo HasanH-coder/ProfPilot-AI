@@ -112,7 +112,7 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
   const needsRebuild = state === "ready" && !!details?.legacy && extraction?.state === "current";
   const rebuildFailed = state === "ready" && details?.rebuild?.state === "failed";
   return (
-    <div className="mt-1.5 flex flex-col gap-1.5 text-[11px]">
+    <div className="mt-1.5 flex flex-col gap-1.5 text-[11px]" data-knowledge-open={open && details ? "" : undefined}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className={cn("inline-flex items-center gap-1", state === "failed" ? "text-destructive" : "text-muted-foreground")}>
           {state === "building" ? (
@@ -233,7 +233,7 @@ function KnowledgeOverview({ knowledge }: { knowledge: LectureKnowledge }) {
         </p>
       )}
       {knowledge.topics.length > 0 && (
-        <ul className="max-h-48 list-disc overflow-y-auto pl-4">
+        <ul className="max-h-48 list-disc overflow-y-auto pl-4 md:max-h-none md:columns-2 md:gap-8 [&>li]:break-inside-avoid">
           {knowledge.topics.map((topic) => (
             <li key={topic.id}>
               {topic.name}
