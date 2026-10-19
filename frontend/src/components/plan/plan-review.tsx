@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 
 import { JobProgress } from "@/components/ai/job-progress";
+import { MathText } from "@/components/exam/question-text";
 import { SpecView } from "@/components/plan/spec-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -201,13 +202,17 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
       <ReviewSection title="Your request">
         <dl className="divide-y rounded-xl border text-sm">
           <RequestRow term="Your instructions">
-            {inputs.professor_prompt?.trim() || (
+            {(inputs.professor_prompt?.trim() && <MathText text={inputs.professor_prompt} />) || (
               <span className="text-muted-foreground">
                 None written. ProfPilot worked from your settings and files.
               </span>
             )}
           </RequestRow>
-          {inputs.additional_notes?.trim() && <RequestRow term="Your notes">{inputs.additional_notes}</RequestRow>}
+          {inputs.additional_notes?.trim() && (
+            <RequestRow term="Your notes">
+              <MathText text={inputs.additional_notes} />
+            </RequestRow>
+          )}
           <RequestRow term="Files read">
             {inputs.documents && inputs.documents.length > 0 ? (
               <ul className="flex flex-col gap-1">
@@ -253,13 +258,17 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
             {spec.warnings.map((warning, index) => (
               <Alert key={`w${index}`}>
                 <AlertTriangle />
-                <AlertDescription>{warning}</AlertDescription>
+                <AlertDescription>
+                  <MathText text={warning} />
+                </AlertDescription>
               </Alert>
             ))}
             {spec.assumptions.length > 0 && (
               <ul className="list-disc rounded-xl border px-8 py-3 text-sm">
                 {spec.assumptions.map((assumption, index) => (
-                  <li key={`a${index}`}>{assumption}</li>
+                  <li key={`a${index}`}>
+                    <MathText text={assumption} />
+                  </li>
                 ))}
               </ul>
             )}
@@ -421,17 +430,25 @@ function BriefText({ text }: { text: string }) {
     else preamble.push(line);
   }
   if (sections.length < 2) {
-    return <p className="rounded-xl border bg-card p-4 text-sm leading-relaxed break-words whitespace-pre-wrap">{text}</p>;
+    return (
+      <p className="rounded-xl border bg-card p-4 text-sm leading-relaxed break-words whitespace-pre-wrap">
+        <MathText text={text} />
+      </p>
+    );
   }
   return (
     <div className="divide-y rounded-xl border bg-card text-sm">
       {preamble.join("\n").trim() && (
-        <p className="p-4 leading-relaxed break-words whitespace-pre-wrap">{preamble.join("\n").trim()}</p>
+        <p className="p-4 leading-relaxed break-words whitespace-pre-wrap">
+          <MathText text={preamble.join("\n").trim()} />
+        </p>
       )}
       {sections.map(({ heading, body }, index) => (
         <details key={`${heading}-${index}`} open={index < 3} className="group px-4 py-3">
           <summary className="cursor-pointer font-medium marker:text-muted-foreground">{heading}</summary>
-          <p className="mt-2 leading-relaxed break-words whitespace-pre-wrap text-muted-foreground">{body.join("\n").trim()}</p>
+          <p className="mt-2 leading-relaxed break-words whitespace-pre-wrap text-muted-foreground">
+            <MathText text={body.join("\n").trim()} />
+          </p>
         </details>
       ))}
     </div>

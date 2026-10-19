@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { BloomChart } from "@/components/assessment/bloom-chart";
 import { DifficultyBar } from "@/components/assessment/difficulty-bar";
+import { MathText } from "@/components/exam/question-text";
 import { Badge } from "@/components/ui/badge";
 import type { ExamSpec, Provenance, SpecItem } from "@/lib/api/types";
 import { LEARNING_FOCUS_LABELS, specBloomDistribution } from "@/lib/assessments/draft";
@@ -54,7 +55,9 @@ function ItemList({ items }: { items: SpecItem[] }) {
     <ul className="flex flex-col gap-1.5">
       {items.map((item, index) => (
         <li key={index} className="flex flex-wrap items-start gap-x-2 gap-y-1">
-          <span className="min-w-0 break-words">{item.text}</span>
+          <span className="min-w-0 break-words">
+            <MathText text={item.text} />
+          </span>
           <ProvenanceBadge source={item.source} />
         </li>
       ))}
@@ -171,7 +174,12 @@ export function SpecView({ spec, editHref, className }: SpecViewProps) {
                 {section.weight_percent !== null && (
                   <span className="text-muted-foreground"> · {section.weight_percent}% of marks</span>
                 )}
-                {section.notes && <span className="text-muted-foreground"> · {section.notes}</span>}
+                {section.notes && (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · <MathText text={section.notes} />
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -183,7 +191,7 @@ export function SpecView({ spec, editHref, className }: SpecViewProps) {
             {spec.coverage.map((topic, index) => (
               <li key={index} className="flex flex-wrap items-start gap-x-2 gap-y-1">
                 <span className="min-w-0 break-words">
-                  {topic.topic}
+                  <MathText text={topic.topic} />
                   {topic.source_documents.length > 0 && (
                     <span className="text-muted-foreground"> · {topic.source_documents.join(", ")}</span>
                   )}

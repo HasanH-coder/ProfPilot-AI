@@ -13,6 +13,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   useTransition,
   type FormEvent,
   type ReactNode,
@@ -270,6 +271,17 @@ const assessmentPath = (id: string) => `/workspace/assessments/${id}`;
 // address. This flag lets the reopened form give keyboard focus back to Save draft.
 let refocusSaveButton = false;
 
+const subscribeNever = () => () => {};
+
+/**
+ * False in the server-rendered page until React has hydrated it, then true (and
+ * true at once when the form opens by client-side navigation). Before hydration
+ * the fields are plain HTML: what is typed there, or put back by the browser,
+ * shows on screen but never reaches the form's state, and React clears it at the
+ * next change, so it was silently not saved.
+ */
+const useHydrated = () => useSyncExternalStore(subscribeNever, () => true, () => false);
+
 type AssessmentFormProps = {
   courses: Course[];
   /** The professor's course sources, from every course. */
@@ -280,6 +292,7 @@ type AssessmentFormProps = {
 
 export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormProps) {
   const router = useRouter();
+  const hydrated = useHydrated();
   const formRef = useRef<HTMLFormElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
   const openAssistantRef = useRef<HTMLButtonElement>(null);
@@ -622,6 +635,12 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
       ref={formRef}
       onSubmit={handleSubmit}
       noValidate
+      // The form's state is the only copy of what was entered, so the browser
+      // mustn't restore old values into the fields when the page is reloaded.
+      autoComplete="off"
+      // Nothing can be entered until React controls the fields (see useHydrated).
+      inert={!hydrated}
+      aria-busy={!hydrated || undefined}
       className="assessment-form"
     >
       <div className="assessment-fields">

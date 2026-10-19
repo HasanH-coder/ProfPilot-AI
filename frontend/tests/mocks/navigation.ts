@@ -23,8 +23,9 @@ export const router = {
 
 export const navigation = {
   useRouter: () => router,
-  usePathname: () => useSyncExternalStore(subscribe, () => pathname),
-  useSearchParams: () => useSyncExternalStore(subscribe, () => searchParams),
+  // The third argument lets tests render on the "server" (renderToString) and hydrate.
+  usePathname: () => useSyncExternalStore(subscribe, () => pathname, () => pathname),
+  useSearchParams: () => useSyncExternalStore(subscribe, () => searchParams, () => searchParams),
   unstable_rethrow: () => undefined,
   redirect: (url: string) => {
     throw new Error(`redirect to ${url}`);

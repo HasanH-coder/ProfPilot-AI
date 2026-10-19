@@ -47,6 +47,8 @@ These changes are in migration `supabase/migrations/20261005194656_optional_asse
 
 **One assessment is always one draft.** A new assessment gets its `exam_projects` row the first time the professor uploads a file or saves, whichever comes first (`createAssessmentDraft`), even if no course or name has been given yet. Every later upload and save reuses that row; saving only ever updates it (`saveAssessmentDraft`). Double clicks and parallel uploads share the same request, so they can't create a second draft.
 
+**The form takes input only once it is interactive.** The page is rendered on the server, and until React hydrates it the fields are plain HTML: text typed there (or put back by the browser after a reload) would show on screen without reaching the form's state, and React would clear it at the next change. That is how two assessments lost their names. So the form is `inert` until hydrated (normally a fraction of a second; at once after client-side navigation), and `autocomplete="off"` stops the browser restoring values into it. Regression tests: `frontend/tests/assessment-name.test.tsx`.
+
 **Files are saved as soon as they upload**, independently of **Save draft**. Removing a file deletes it right away. So an assessment's files are never "unsaved", and a draft created by an upload keeps its files even if the professor leaves without saving.
 
 **Deleting an assessment** (overview, **Delete**, then confirm) removes its files from Storage first, including any file an interrupted upload left in its folder. Then it deletes the `exam_projects` row, which deletes its `documents` rows too (`on delete cascade`). If removing the files fails, nothing is deleted.
