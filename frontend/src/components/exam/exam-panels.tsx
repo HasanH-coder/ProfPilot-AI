@@ -17,6 +17,7 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 
 import { BloomSwatch } from "@/components/assessment/bloom-chart";
 import { DifficultyBar } from "@/components/assessment/difficulty-bar";
+import { MathText } from "@/components/exam/question-text";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -171,7 +172,9 @@ export function QualityCheckPanel({
     >
       {review ? (
         <>
-          <p className="text-sm text-muted-foreground">{review.summary}</p>
+          <p className="text-sm text-muted-foreground">
+            <MathText text={review.summary} />
+          </p>
           {review.fixesApplied > 0 && (
             <p className="flex items-center gap-1.5 text-sm">
               <Wrench className="size-3.5 shrink-0" />
@@ -196,7 +199,7 @@ export function QualityCheckPanel({
                         Question {issue.questionNumber}:{" "}
                       </a>
                     )}
-                    {issue.message}
+                    <MathText text={issue.message} />
                     {issue.fixApplied && (
                       <Badge variant="secondary" className="ml-1.5">
                         Fixed
