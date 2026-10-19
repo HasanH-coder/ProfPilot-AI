@@ -59,9 +59,11 @@ from app.services.exam_store import (
     ExamStore,
     FullExam,
     content_to_row,
+    leak_messages,
     normalize_content,
     question_problems,
     render_question,
+    row_to_content,
     similar,
 )
 from app.services.jobs import RunContext
@@ -694,6 +696,7 @@ class ExamGenerationService:
                 batch_problems(result, batch, others)
                 + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)
                 + excerpt_id_problems(((f"Question {q.number}", q) for q in result.questions), excerpts)
+                + leak_messages([normalize_content(q) for q in result.questions], [q.number for q in result.questions])
             ),
             usage=self.usage,
         )
@@ -833,6 +836,7 @@ class ExamGenerationService:
             figure_document_id=None,
         )
         others = [q["prompt"] for q in existing]
+        existing_content = [row_to_content(q) for q in existing]
         request = [
             f"Write question {number}: type {slot_type}, difficulty {slot_difficulty}, Bloom's level {slot_level}, "
             f"{slot_points:g} points.",
@@ -861,6 +865,11 @@ class ExamGenerationService:
                 _single_problems(batch, slot, others, ctx.figure_ids)
                 + ctx.formula_problems(("The question", normalize_content(q)) for q in batch.questions)
                 + excerpt_id_problems((("The question", q) for q in batch.questions), excerpts)
+                + leak_messages(
+                    [*existing_content, *(normalize_content(q) for q in batch.questions[:1])],
+                    [*range(1, len(existing_content) + 1), number],
+                    only={number},
+                )
             ),
             usage=self.usage,
         )

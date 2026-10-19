@@ -30,6 +30,7 @@ from app.services.exam_generation import GenerationContext, load_generation_cont
 from app.services.exam_store import (
     ExamStore,
     FullExam,
+    answer_leaks,
     question_problems,
     question_texts,
     render_question,
@@ -62,7 +63,9 @@ class ExamReviewService:
         try:
             issues = self._deterministic_issues(full, ctx)
             if full.questions:
-                output = await self._ai_review(ctx, full)
+                # Leaks found in code go to the reviewer, which may remove one by a minimal rewording.
+                found = [issue["message"] for issue in _leak_issues(full)]
+                output = await self._ai_review(ctx, full, found)
                 issues.extend(await self._apply_ai_issues(full, output.issues))
                 summary = output.summary
                 minutes = output.estimated_total_minutes
@@ -73,6 +76,9 @@ class ExamReviewService:
             raise
 
         full = await self.store.load(exam_id)
+        # Checked after the reviewer's fixes, so only leaks that remain are reported.
+        issues.extend(_leak_issues(full))
+        issues.extend(_pairing_notes(full))
         spec = full.spec
         unresolved = [issue for issue in issues if issue["severity"] in ("critical", "warning") and not issue["fixApplied"]]
         review = {
@@ -222,7 +228,7 @@ class ExamReviewService:
 
     # -- AI review ----------------------------------------------------------------------
 
-    async def _ai_review(self, ctx: GenerationContext, full: FullExam) -> ReviewOutput:
+    async def _ai_review(self, ctx: GenerationContext, full: FullExam, found: list[str] | None = None) -> ReviewOutput:
         framer = DataFramer()
         concepts: list[str] = []
         for row in full.version_questions(full.primary_version["id"]):
@@ -242,13 +248,22 @@ class ExamReviewService:
             purpose="review_exam",
             instructions=reviewer_instructions(framer),
             input="\n\n".join(
-                [
+                part
+                for part in [
                     "APPROVED EXAM SPEC\n" + json.dumps(ctx.spec.model_dump(), indent=1),
                     "APPROVED BRIEF\n" + ctx.enhanced_prompt,
                     "THE EXAM TO REVIEW (with answer keys)\n" + "\n\n".join(versions_text),
                     render_excerpts(excerpts, framer, title="RELEVANT COURSE MATERIAL"),
+                    (
+                        "FOUND BY CHECKS IN CODE (reported to the professor already; don't report them again. For "
+                        "each, propose 'clarify_wording' on the revealing question only if a minimal rewording "
+                        "removes the give-away without changing what it tests)\n" + "\n".join(f"- {item}" for item in found)
+                        if found
+                        else ""
+                    ),
                     "Review the exam now.",
                 ]
+                if part
             ),
             schema=ReviewOutput,
             effort="high",
@@ -328,6 +343,62 @@ class ExamReviewService:
         await self.store.record_revision(row, source="ai_review_fix", instruction=f"Quality check: {reason}")
         await self.store.update_question(row["id"], values)
         return True
+
+
+def _leak_issues(full: FullExam) -> list[dict[str, Any]]:
+    """Every multiple-choice answer that another question of the same version gives away."""
+    issues = []
+    for version in full.versions:
+        rows = full.version_questions(version["id"])
+        numbers = list(range(1, len(rows) + 1))
+        for answer, revealing, text in answer_leaks([row_to_content(row) for row in rows]):
+            issues.append(
+                _issue(
+                    "warning",
+                    "answer_leakage",
+                    f"Question {numbers[revealing]}'s text gives away the answer to question {numbers[answer]} "
+                    f'("{text[:120]}"): remove it from question {numbers[revealing]} (e.g. name it instead) or '
+                    f"change question {numbers[answer]}.",
+                    rows[revealing],
+                    numbers[revealing],
+                    version["label"],
+                    source="check",
+                )
+            )
+    return issues
+
+
+# Bloom's level and difficulty pairs that are hard to realise well (the professor's choice is kept).
+_DEMANDING_PAIRS = {
+    ("remember", "medium"): "recalling closely related distinctions, several facts that must all be right, or "
+    "precise terms, never trick wording or hidden application",
+    ("remember", "hard"): "recalling closely related distinctions, several facts that must all be right, or "
+    "precise terms, never trick wording or hidden application",
+    ("understand", "hard"): "explaining an unfamiliar case or connecting several ideas in the student's own words, "
+    "without the stem supplying the interpretation (intermediate values, conclusions or what to mention)",
+}
+
+
+def _pairing_notes(full: FullExam) -> list[dict[str, Any]]:
+    """Suggestions (not problems) for questions whose Bloom's level and difficulty are a demanding pair."""
+    notes = []
+    for number, row in enumerate(full.version_questions(full.primary_version["id"]), start=1):
+        advice = _DEMANDING_PAIRS.get((row.get("cognitive_level"), row["difficulty"]))
+        if advice:
+            notes.append(
+                _issue(
+                    "info",
+                    "difficulty",
+                    f"Question {number} is {row['difficulty']} at the {row['cognitive_level'].capitalize()} level, a "
+                    f"demanding pair: its difficulty should come from {advice}. Check that it does; the setting itself "
+                    "is kept as you chose it.",
+                    row,
+                    number,
+                    full.primary_version["label"],
+                    source="check",
+                )
+            )
+    return notes
 
 
 def _version_summary(full: FullExam, version: dict[str, Any], spec: Any) -> dict[str, Any]:

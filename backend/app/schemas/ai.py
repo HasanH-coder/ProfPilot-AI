@@ -452,6 +452,10 @@ IssueCategory = Literal[
     "solution",
     "rubric",
     "cognitive_level",
+    # One question's text gives away another question's answer.
+    "answer_leakage",
+    # A question's points don't match the work a complete answer needs.
+    "marks",
     "other",
 ]
 

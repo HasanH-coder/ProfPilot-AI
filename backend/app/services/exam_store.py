@@ -114,6 +114,13 @@ def question_texts(content: QuestionContent) -> list[str]:
     return [text for text in texts if text]
 
 
+def student_texts(content: QuestionContent) -> list[str]:
+    """What a student reads: the prompt, the choices and the subpart prompts (never the key)."""
+    texts = [content.prompt, *(choice.text for choice in content.choices or [])]
+    texts += [part.prompt for part in content.subparts or []]
+    return [text for text in texts if text]
+
+
 def question_problems(content: QuestionContent, *, label: str = "The question", manual: bool = False) -> list[str]:
     """Business rules a question must satisfy before it is saved.
 
@@ -134,6 +141,16 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             f"{label} writes internal ids (excerpt ids such as 'S4' or topic ids such as 'L1.t3') in its text. "
             "ProfPilot attaches the sources with their pages itself: keep excerpt ids in source_excerpt_ids "
             "and cite pages only where the text needs them ('page 38')."
+        )
+    if not manual and any(_INTERNAL_ID.search(text) for text in [*content.concepts, *content.learning_objectives]):
+        problems.append(
+            f"{label}'s concepts or learning objectives contain internal ids or sources: list short concept names "
+            "(e.g. 'Sigmoid function') and objectives only."
+        )
+    if not manual and any(_MARKS_NOTE.search(text) for text in student_texts(content)):
+        problems.append(
+            f"{label} writes marks into its text (e.g. '(2 marks)'). ProfPilot shows the marks of each question "
+            "and part itself: remove them from the prompt and subpart prompts."
         )
     if not content.answer and not manual:
         problems.append(f"{label} has no answer.")
@@ -188,6 +205,101 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
 # An internal id written into question text: a lecture topic id ("L1.t3"), or an excerpt id ("S4")
 # cited as a source ("Source: …; S4", "excerpt S2"). A bare "S1" (e.g. a state name) is not matched.
 _INTERNAL_ID = re.compile(r"\bL\d+\.t\d+\b|(?i:\b(?:sources?|excerpts?|refs?|references?)\b)[^\n]{0,80}?\bS\d{1,3}\b")
+
+
+# Marks written into question text ("(2 marks)", "[3 pts]"): ProfPilot shows them itself.
+_MARKS_NOTE = re.compile(r"(?i)[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|points?|pts?)\s*[)\]]")
+
+# -- Answer leakage between questions -------------------------------------------------
+#
+# A multiple-choice question is compromised when another question's student-facing text
+# states its correct answer: verbatim, as the same mathematics written differently, or as a
+# close paraphrase. Shared vocabulary, formulas other questions legitimately need, and text
+# that matches the distractors as well as the key are not leaks.
+
+_MIN_KEY = 6  # shorter keys ('0.5', 'Class 1') match by chance
+_WORD = re.compile(r"[a-z0-9]+")
+_STOPWORDS = frozenset(
+    "the a an and or of to in on for by with as at from is are be been being it its this that these those which "
+    "who whom than then into over under each every any all some such not no can may must should would will".split()
+)
+
+
+def canonical_maths(text: str) -> str:
+    """One spelling for the same mathematics, so LaTeX and plain forms compare equal:
+    '\\frac{1}{1+e^{-z}}', '\\(\\dfrac{1}{1 + \\exp(-z)}\\)' and '1/(1 + e^(−z))' all give '1/1+e^-z'."""
+    text = text.replace("−", "-").replace("·", "*").replace("×", "*").replace("\\exp", "e^")
+    text = re.sub(r"\\[()\[\]]|\$", "", text)
+    text = re.sub(r"\\[dt]frac", r"\\frac", text)
+    text = re.sub(r"\\frac\s*", "", text).replace("}{", "}/{")
+    text = re.sub(r"\\(?:cdot|times)", "*", text)
+    text = re.sub(r"\\(?:left|right|displaystyle|[,;:! ]|q?quad)", "", text)
+    return re.sub(r"[\s{}()\[\]]", "", text).lower()
+
+
+def _keys(text: str) -> list[str]:
+    """The forms of an answer to look for: all of it, and the right side of an equation."""
+    whole = canonical_maths(text).rstrip(".")
+    keys = [whole] + ([whole.rsplit("=", 1)[1]] if "=" in whole else [])
+    return [key for key in dict.fromkeys(keys) if len(key) >= _MIN_KEY]
+
+
+def _words(text: str) -> set[str]:
+    return {word for word in _WORD.findall(text.lower()) if len(word) > 2 and word not in _STOPWORDS}
+
+
+def _covered(words: set[str], sentence: str) -> float:
+    return len(words & _words(sentence)) / len(words) if words else 0.0
+
+
+def answer_leaks(questions: list[QuestionContent]) -> list[tuple[int, int, str]]:
+    """(answer index, revealing index, the revealed answer) for every multiple-choice answer that
+    another question's student-facing text gives away. Indexes are positions in `questions`."""
+    shown = [
+        (canonical_maths(" ".join(student_texts(q))), re.split(r"(?<=[.!?])\s+|\n+", " \n".join(student_texts(q))))
+        for q in questions
+    ]
+    leaks = []
+    for index, question in enumerate(questions):
+        if question.type != "mcq" or not question.choices:
+            continue
+        key = next((choice for choice in question.choices if choice.id == question.correct_choice), None)
+        if key is None:
+            continue
+        distractors = [choice.text for choice in question.choices if choice is not key]
+        key_forms, key_words = _keys(key.text), _words(key.text)
+        for other, (maths, sentences) in enumerate(shown):
+            if other == index:
+                continue
+            # The same mathematics or wording, and not a distractor's: then it gives the answer away.
+            revealed = any(form in maths for form in key_forms) and not any(
+                form in maths for text in distractors for form in _keys(text)
+            )
+            # A paraphrase: one sentence covers most of the answer's words, and most of the words only the
+            # answer has (options that reuse the same words in another order have none, so never match).
+            distinctive = key_words - set().union(*(_words(text) for text in distractors))
+            if not revealed and len(key_words) >= 5 and len(distinctive) >= 2:
+                revealed = any(
+                    _covered(key_words, sentence) >= 0.75 and _covered(distinctive, sentence) >= 0.67 for sentence in sentences
+                )
+            if revealed:
+                leaks.append((index, other, key.text))
+    return leaks
+
+
+def leak_messages(questions: list[QuestionContent], numbers: list[int], *, only: set[int] | None = None) -> list[str]:
+    """Problems for the leaks among these questions (numbered `numbers`); with `only`, just the
+    leaks involving those question numbers."""
+    messages = []
+    for answer, revealing, text in answer_leaks(questions):
+        if only is not None and numbers[answer] not in only and numbers[revealing] not in only:
+            continue
+        messages.append(
+            f"Question {numbers[revealing]}'s text gives away the answer to question {numbers[answer]} "
+            f'("{text[:120]}"). Don\'t state what another question asks students to recall or identify: refer '
+            "to it by name (e.g. 'the sigmoid function') or let students use it from memory."
+        )
+    return messages
 
 
 def _restates(prompt: str, part: Any) -> bool:
