@@ -65,7 +65,12 @@ DIFFICULTY_GUIDE = (
     "Medium: apply concepts to a familiar situation, 2–4 steps, some interpretation needed. "
     "Hard: multi-step reasoning, synthesis across topics, transfer to an unfamiliar scenario, "
     "subtle distinctions or less direct cues. Hard questions must stay fair and answerable from "
-    "the course material."
+    "the course material. Demanding pairs keep their Bloom's level: a medium or hard Remember "
+    "question gets its difficulty from recalling closely related distinctions, several facts that "
+    "must all be right, or precise terms (never trick wording or hidden application); a hard "
+    "Understand question asks students to explain an unfamiliar case or connect several ideas in "
+    "their own words, without the stem supplying the interpretation (intermediate values, conclusions "
+    "or what to mention)."
 )
 
 DISTRIBUTION_GUIDE = (
@@ -337,7 +342,13 @@ def planner_instructions(framer: DataFramer) -> str:
         "checking), coverage proportional to emphasis, and the question count range if given. "
         "Questions of the same section should be consecutive. Use whole or half points. "
         "Give every question its own assessment target: no two questions (or subparts) test the same "
-        "fact, case or calculation.",
+        "fact, case or calculation. If a question asks students to recall or identify a formula, "
+        "definition or fact, no other question may state it: plan those questions to name it or rely "
+        "on it from memory.",
+        "POINTS follow the work: a question's points reflect the distinct, non-trivial steps or ideas a "
+        "complete answer needs at its level. Don't plan inputs that make planned steps trivial (a zero, "
+        "a one, a value exactly at a threshold, an empty case) unless that edge case is itself the "
+        "learning target, and then it is worth one step, not a whole question's marks.",
         "BLOOM'S PLANNING. Give each question the level its learning objective really needs, then "
         "adjust levels and points until the marks per level match spec.bloom; difficulty is planned "
         "separately and both must hold. Match levels to types: remember/understand suit MCQ and "
@@ -398,7 +409,14 @@ def generator_instructions(framer: DataFramer) -> str:
         "essential; use realistic, specific scenarios and clean numbers with units; no trivial or "
         "artificially complicated questions, and no repeated stem patterns across the exam. Don't "
         "assess the same fact, case or calculation twice: not in two subparts, and not in a question "
-        "already written or planned for another number.",
+        "already written or planned for another number. Never give away another question's answer: if "
+        "the FULL EXAM PLAN has a question asking students to recall or identify a formula, definition "
+        "or fact, don't state it in your questions; name it ('the sigmoid function') or let students "
+        "use it from memory. Formulas no other question asks for may be given as usual.",
+        "MARKS AND WORK. A question's points must match the work a complete answer needs: every rubric "
+        "criterion rewards a distinct, non-trivial step, never restating given values. Choose values that "
+        "make each step real work; an edge case (a boundary value, a zero, an empty input) is fine when it "
+        "tests an important idea, and it earns only the marks of the reasoning it needs.",
         "MULTIPLE CHOICE: exactly 4 choices with ids A, B, C, D; exactly one is correct "
         "(correct_choice). Distractors must be plausible, parallel in length and form to the correct "
         "choice, and reflect real misconceptions or likely slips: each is what a student with a "
@@ -422,7 +440,9 @@ def generator_instructions(framer: DataFramer) -> str:
         "source_excerpt_ids (e.g. 'S3'), using only ids of the excerpts given in this request: ids "
         "mentioned in the brief or the plan belong to other requests. Never write excerpt ids, topic "
         "ids or 'Source:' lines in the prompt, answer, solution or explanation: ProfPilot attaches the "
-        "sources with their pages itself. Do not mention excerpts, files or ProfPilot in the "
+        "sources with their pages itself. Don't write marks into the prompt or subpart prompts ('(2 "
+        "marks)'): ProfPilot shows them. concepts are short concept names ('Sigmoid function'), never "
+        "sources or ids. Do not mention excerpts, files or ProfPilot in the "
         "question text itself. Use figure_document_id only as given in the plan.",
         "LECTURE KNOWLEDGE. When structured lecture notes are given for a question, use their "
         "definitions, formulas (with their conditions), examples and misconceptions to target the "
@@ -470,6 +490,16 @@ def reviewer_instructions(framer: DataFramer) -> str:
         "not equivalent. A question with subparts is marked by its subparts' rubrics; each question "
         "lists the sources ProfPilot attached (file and pages), so don't report a missing source "
         "reference in its text.",
+        "ANSWER LEAKAGE. Check every question against every other: report with category "
+        "'answer_leakage' any question whose text states, shows or strongly hints at another "
+        "question's answer (the same formula written differently, a paraphrased definition, a value "
+        "another question asks students to find). Shared formulas or terms that no other question "
+        "asks for are fine. If a minimal rewording of the revealing question removes the give-away "
+        "without changing what it tests (e.g. naming a formula instead of printing it), propose it as "
+        "'clarify_wording'.",
+        "MARKS. Report with category 'marks' a question whose points clearly exceed (or fall short of) "
+        "the work a complete answer needs, e.g. several marks for steps its chosen values make trivial; "
+        "an edge case that tests an important idea is fine. Describe it; don't change points.",
         "COGNITIVE ALIGNMENT. Each question shows its intended Bloom's level; don't take the label "
         "as proof. Judge the thinking a student actually needs to answer it. If it assesses a "
         "different level (e.g. labelled analyze but answerable by recall), report it with category "

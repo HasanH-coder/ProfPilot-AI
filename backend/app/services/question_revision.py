@@ -29,6 +29,7 @@ from app.services.exam_store import (
     SNAPSHOT_FIELDS,
     ExamStore,
     content_to_row,
+    leak_messages,
     normalize_content,
     question_problems,
     render_question,
@@ -153,7 +154,8 @@ class QuestionRevisionService:
             load_generation_context(self.db, exam["exam_project_id"], require_approved=False), self.store.load(exam["id"])
         )
         number = _number_of(full, question)
-        others = [q["prompt"] for q in full.version_questions(question["version_id"]) if q["id"] != question["id"]]
+        siblings = full.version_questions(question["version_id"])
+        others = [q["prompt"] for q in siblings if q["id"] != question["id"]]
         framer = DataFramer()
         queries = [*(question.get("concepts") or [])[:3], instruction or question["prompt"][:400]]
         excerpts = assign_refs(
@@ -187,6 +189,11 @@ class QuestionRevisionService:
                 found.append("The revised question duplicates another question in the exam.")
             found += ctx.formula_problems([("The revised question", content)])
             found += excerpt_id_problems([("The revised question", result.question)], excerpts)
+            found += leak_messages(
+                [content if q["id"] == question["id"] else row_to_content(q) for q in siblings],
+                list(range(1, len(siblings) + 1)),
+                only={number},
+            )
             return found
 
         # The lecture topics closest to this question (what is verified, what isn't), from the stored profiles.
