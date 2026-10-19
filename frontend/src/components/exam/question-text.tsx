@@ -36,6 +36,16 @@ export function InlineQuestionText({ text }: { text: string }) {
 }
 
 /**
+ * Prose that may quote maths, such as quality-check findings and plan text. Only
+ * explicit \(…\) and \[…\] become formulas (shown inline); everything else stays
+ * plain text, so dollar amounts and names like "p2" are never mistaken for maths.
+ */
+export function MathText({ text }: { text: string }) {
+  const tokens = text.split(/(\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])/g);
+  return <>{tokens.map((token, index) => (index % 2 ? <MathFormula key={index} source={token.slice(2, -2).trim()} original={token} /> : token))}</>;
+}
+
+/**
  * Structured question content: prose, tables, LaTeX and literal code.
  */
 export function QuestionText({ text, className }: { text: string | null | undefined; className?: string }) {

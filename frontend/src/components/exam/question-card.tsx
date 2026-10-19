@@ -22,7 +22,7 @@ import { BloomSwatch } from "@/components/assessment/bloom-chart";
 import { FigurePreview } from "@/components/exam/figure-preview";
 import { DIFFICULTY_LABELS, marks, QUICK_ACTIONS, TYPE_LABELS, type QuickAction } from "@/components/exam/labels";
 import { QuestionEditDialog } from "@/components/exam/question-edit-dialog";
-import { QuestionText } from "@/components/exam/question-text";
+import { InlineQuestionText, QuestionText } from "@/components/exam/question-text";
 import { RevisionHistoryDialog } from "@/components/exam/revision-history-dialog";
 import {
   AlertDialog,
@@ -48,7 +48,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, errorMessage } from "@/lib/api/client";
-import type { DistributionWarning, Question, QuestionResult } from "@/lib/api/types";
+import type { DistributionWarning, Question, QuestionResult, RubricItem } from "@/lib/api/types";
 import { BLOOM_LABELS } from "@/lib/assessments/draft";
 import { cn } from "@/lib/utils";
 
@@ -326,6 +326,9 @@ export const QuestionCard = memo(function QuestionCard({
                   <QuestionText text={part.answer} />
                 </div>
               )}
+              {showKey && part.rubric?.length > 0 && (
+                <RubricTable items={part.rubric} points={part.points} caption={`Marking rubric for part (${part.label})`} />
+              )}
             </li>
           ))}
         </ol>
@@ -427,7 +430,6 @@ export const QuestionCard = memo(function QuestionCard({
 });
 
 function AnswerKey({ question }: { question: Question }) {
-  const hasRubric = question.rubric && question.rubric.length > 0;
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 text-sm">
       <p className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
@@ -457,29 +459,47 @@ function AnswerKey({ question }: { question: Question }) {
           <QuestionText text={question.explanation} />
         </div>
       )}
-      {hasRubric && (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-64 text-left text-sm">
-            <caption className="sr-only">Marking rubric</caption>
-            <thead className="text-xs text-muted-foreground">
-              <tr>
-                <th scope="col" className="py-1 pr-3 font-medium">Criterion</th>
-                <th scope="col" className="py-1 text-right font-medium">Marks</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {question.rubric?.map((item, index) => (
-                <tr key={index}>
-                  <td className="py-1.5 pr-3">{item.criterion}</td>
-                  <td className="py-1.5 text-right tabular-nums">{item.points}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {question.rubric && question.rubric.length > 0 && (
+        <RubricTable items={question.rubric} points={question.points} caption="Marking rubric" />
       )}
       {question.sources.length > 0 && (
         <p className="text-xs text-muted-foreground">Based on: {question.sources.join("; ")}</p>
+      )}
+    </div>
+  );
+}
+
+/** A stored marking rubric, as saved, with a note when its marks don't add up to what it is for. */
+function RubricTable({ items, points, caption }: { items: RubricItem[]; points: number; caption: string }) {
+  const total = items.reduce((sum, item) => sum + item.points, 0);
+  // Marks can be halves, so compare with a tolerance rather than exactly.
+  const addsUp = Math.abs(total - points) < 1e-6;
+  return (
+    <div className="flex flex-col gap-1 overflow-x-auto">
+      <table className="w-full min-w-64 text-left text-sm">
+        <caption className="sr-only">{caption}</caption>
+        <thead className="text-xs text-muted-foreground">
+          <tr>
+            <th scope="col" className="py-1 pr-3 font-medium">Criterion</th>
+            <th scope="col" className="py-1 text-right font-medium">Marks</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {items.map((item, index) => (
+            <tr key={index}>
+              <td className="py-1.5 pr-3 text-foreground">
+                <InlineQuestionText text={item.criterion} />
+              </td>
+              <td className="py-1.5 text-right text-foreground tabular-nums">{item.points}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {!addsUp && (
+        <p className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          This rubric adds up to {marks(total)}, but it is worth {marks(points)}.
+        </p>
       )}
     </div>
   );
