@@ -278,7 +278,7 @@ const subscribeNever = () => () => {};
  * true at once when the form opens by client-side navigation). Before hydration
  * the fields are plain HTML: what is typed there, or put back by the browser,
  * shows on screen but never reaches the form's state, and React clears it at the
- * next change. That is how assessment names were lost on save.
+ * next change, so it was silently not saved.
  */
 const useHydrated = () => useSyncExternalStore(subscribeNever, () => true, () => false);
 

@@ -460,7 +460,8 @@ function AnswerKey({ question }: { question: Question }) {
         </div>
       )}
       {question.rubric && question.rubric.length > 0 && (
-        <RubricTable items={question.rubric} points={question.points} caption="Marking rubric" />
+        // With parts, each part's rubric carries the marks (as exam_store.question_problems checks).
+        <RubricTable items={question.rubric} points={question.subparts ? undefined : question.points} caption="Marking rubric" />
       )}
       {question.sources.length > 0 && (
         <p className="text-xs text-muted-foreground">Based on: {question.sources.join("; ")}</p>
@@ -469,11 +470,14 @@ function AnswerKey({ question }: { question: Question }) {
   );
 }
 
-/** A stored marking rubric, as saved, with a note when its marks don't add up to what it is for. */
-function RubricTable({ items, points, caption }: { items: RubricItem[]; points: number; caption: string }) {
+/**
+ * A stored marking rubric, as saved. Given the marks it should add up to, it says
+ * when it doesn't (for example after a manual edit).
+ */
+function RubricTable({ items, points, caption }: { items: RubricItem[]; points?: number; caption: string }) {
   const total = items.reduce((sum, item) => sum + item.points, 0);
   // Marks can be halves, so compare with a tolerance rather than exactly.
-  const addsUp = Math.abs(total - points) < 1e-6;
+  const mismatch = points !== undefined && Math.abs(total - points) >= 1e-6;
   return (
     <div className="flex flex-col gap-1 overflow-x-auto">
       <table className="w-full min-w-64 text-left text-sm">
@@ -495,7 +499,7 @@ function RubricTable({ items, points, caption }: { items: RubricItem[]; points: 
           ))}
         </tbody>
       </table>
-      {!addsUp && (
+      {mismatch && (
         <p className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
           <AlertTriangle className="size-3.5 shrink-0" />
           This rubric adds up to {marks(total)}, but it is worth {marks(points)}.

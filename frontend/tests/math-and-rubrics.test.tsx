@@ -74,7 +74,8 @@ test("each part's marking rubric is shown with its stored marks, and a mismatch 
     points: 6,
     prompt: "Score one container.",
     answer: null,
-    rubric: null,
+    // An overall rubric beside the parts' rubrics: its marks aren't checked against the question's (as in the backend).
+    rubric: [{ criterion: "Clear working throughout", points: 1 }],
     subparts: [
       {
         label: "a", prompt: String.raw`Compute \(z\).`, points: 2, answer: String.raw`\(z = -0.700\)`,
@@ -103,8 +104,11 @@ test("each part's marking rubric is shown with its stored marks, and a mismatch 
   expect(partB.element().parentElement!.textContent).toContain("This rubric adds up to 2.5 marks, but it is worth 2 marks.");
   expect(screen.getByRole("table", { name: "Marking rubric for part (c)" }).query()).toBeNull();
 
-  // The question-level rubric is still shown as before.
-  await expect.element(screen.getByRole("table", { name: "Marking rubric", exact: true })).toBeVisible();
+  // Question-level rubrics are still shown: Question 2's, and the multi-part question's without a false warning.
+  const overall = screen.getByRole("table", { name: "Marking rubric", exact: true });
+  await expect.element(overall.first()).toBeVisible();
+  const multiPart = overall.all().find((table) => table.element().textContent?.includes("Clear working"))!;
+  expect(multiPart.element().parentElement!.textContent).not.toContain("adds up to");
   // Hiding answer keys hides the part rubrics too.
   await screen.getByRole("checkbox", { name: "Show answer keys" }).click();
   expect(screen.getByRole("table", { name: "Marking rubric for part (a)" }).query()).toBeNull();
