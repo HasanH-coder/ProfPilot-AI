@@ -8,6 +8,7 @@ correct answer must be one of its choices, etc.) apply on top of the checks here
 
 import asyncio
 import difflib
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ from app.domain import distribution
 from app.schemas.ai import ExamSpec, QuestionContent
 from app.schemas.common import parse_id
 from app.services.document_parsers import EXTRACTION_GLYPHS
+
+logger = logging.getLogger("profpilot.exams")
 
 EXAM_COLUMNS = (
     "id, exam_project_id, mode, status, spec_snapshot, enhanced_prompt_snapshot, plan, review, "
@@ -844,6 +847,45 @@ class ExamStore:
             columns="id, revision_number, source, instruction, created_at",
         )
         return rows[0]
+
+    async def change_question(
+        self, question: dict[str, Any], values: dict[str, Any], *, source: str, instruction: str | None
+    ) -> dict[str, Any] | None:
+        """Records the question's revision and applies the change, keeping the two consistent: a revision
+        stays only with its change. The change applies only if the question is still as it was read (else
+        None: a professor's edit or approval meanwhile wins). The API runs each write in its own
+        transaction, so if the change fails, its revision is removed again; if the request failed after
+        the change was saved, both are kept."""
+        revision = await self.record_revision(question, source=source, instruction=instruction)
+        filters = self._owned(("id", "eq", question["id"]), ("updated_at", "eq", question["updated_at"]))
+        try:
+            rows = await self.db.update("exam_questions", values, filters=filters, columns=QUESTION_COLUMNS)
+        except Exception:
+            current = await self._read_after_failure(question["id"])
+            if current is not None and all(current.get(name) == value for name, value in values.items()):
+                return current
+            await self._forget_revision(revision)
+            raise
+        if not rows:
+            await self._forget_revision(revision)
+            return None
+        return rows[0]
+
+    async def _read_after_failure(self, question_id: str) -> dict[str, Any] | None:
+        try:
+            return await self.db.select_one(
+                "exam_questions", columns=QUESTION_COLUMNS, filters=self._owned(("id", "eq", question_id))
+            )
+        except Exception:
+            return None
+
+    async def _forget_revision(self, revision: dict[str, Any]) -> None:
+        """Removes a revision whose change wasn't saved. If even that fails, the revision stays: its
+        snapshot is the question as it still is, so restoring it changes nothing."""
+        try:
+            await self.db.delete("question_revisions", filters=self._owned(("id", "eq", revision["id"])))
+        except Exception:
+            logger.warning("A revision without its change couldn't be removed (revision %s)", revision["id"])
 
     async def revisions(self, question_id: str) -> list[dict[str, Any]]:
         return await self.db.select(

@@ -427,3 +427,122 @@ def test_planner_writer_and_reviewer_guidance_for_partial_clues_targets_and_part
     assert "OVERLAP" in reviewer and "set subpart_label to its label" in reviewer
     assert "keep every formula, number and table as it is" in reviewer
     assert SubpartOut.model_fields["rubric"]  # the parts' rubrics the reviewer may fix exist on every part
+
+
+# -- A fix and its revision are saved together, or not at all ------------------------------------
+#
+# The API runs each write in its own transaction, so ExamStore.change_question keeps them consistent:
+# failures are injected into the fake database at the points where a real request can fail.
+
+
+def neutral_part_b():
+    return wording(PART_B.replace(r"the predicted class-\(1\) probability", "the model output"))
+
+
+def failing(monkeypatch, method: str, table: str, *, after: bool = False):
+    """Makes the fake database's `method` on `table` fail (after doing its work, with `after`)."""
+    from tests.fakes import FakeDatabase
+
+    original = getattr(FakeDatabase, method)
+
+    async def wrapper(self, name, *args, **kwargs):
+        if name != table:
+            return await original(self, name, *args, **kwargs)
+        if after:
+            await original(self, name, *args, **kwargs)
+        raise ConnectionError(f"{method} {table}: connection reset")
+
+    monkeypatch.setattr(FakeDatabase, method, wrapper)
+
+
+def reviewed_with(api, ai, exam, target, fix):
+    ai.on("review_exam", proposing(target["number"], fix))
+    reviewed = review(api, exam["id"])  # the review itself still completes
+    return reviewed, next(i for i in reviewed["review"]["issues"] if i["source"] == "ai")
+
+
+def test_a_change_that_fails_to_save_leaves_no_revision(api, supabase, db_a, ai, monkeypatch):
+    exam, target = exam_with_parts(api, supabase, db_a)
+    before = snapshot(exam)
+    failing(monkeypatch, "update", "exam_questions")
+    reviewed, issue = reviewed_with(api, ai, exam, target, neutral_part_b())
+    monkeypatch.undo()
+    assert snapshot(reviewed) == before and issue["fixApplied"] is False
+    assert revisions(api, target["id"]) == []
+
+
+def test_a_change_saved_before_the_request_failed_keeps_its_revision(api, supabase, db_a, ai, monkeypatch):
+    exam, target = exam_with_parts(api, supabase, db_a)
+    failing(monkeypatch, "update", "exam_questions", after=True)
+    reviewed, issue = reviewed_with(api, ai, exam, target, neutral_part_b())
+    monkeypatch.undo()
+    question = next(q for q in reviewed["questions"] if q["id"] == target["id"])
+    assert "the model output" in question["subparts"][1]["prompt"] and issue["fixApplied"] is True
+    assert [r["source"] for r in revisions(api, target["id"])] == ["ai_review_fix"]
+
+
+def test_a_revision_that_fails_to_save_means_no_change(api, supabase, db_a, ai, monkeypatch):
+    exam, target = exam_with_parts(api, supabase, db_a)
+    before = snapshot(exam)
+    failing(monkeypatch, "insert", "question_revisions")
+    reviewed, issue = reviewed_with(api, ai, exam, target, neutral_part_b())
+    monkeypatch.undo()
+    assert snapshot(reviewed) == before and issue["fixApplied"] is False
+    assert revisions(api, target["id"]) == []
+
+
+def test_a_professors_edit_during_the_review_wins_over_the_fix(api, supabase, db_a, ai):
+    from tests.fakes import _now
+
+    exam, target = exam_with_parts(api, supabase, db_a)
+    edited = "The two parts are independent; use natural logarithms."
+
+    def edits_then_proposes(call):
+        # The professor saves an edit while the reviewer is still working on the version it loaded.
+        row = next(r for r in supabase.tables["exam_questions"] if r["id"] == target["id"])
+        row.update({"prompt": edited, "updated_at": _now()})
+        return proposing(target["number"], neutral_part_b())(call)
+
+    ai.on("review_exam", edits_then_proposes)
+    reviewed = review(api, exam["id"])
+    question = next(q for q in reviewed["questions"] if q["id"] == target["id"])
+    assert question["prompt"] == edited and question["subparts"][1]["prompt"] == PART_B
+    assert next(i for i in reviewed["review"]["issues"] if i["source"] == "ai")["fixApplied"] is False
+    assert revisions(api, target["id"]) == []
+
+
+def test_if_even_the_cleanup_fails_the_leftover_revision_is_harmless(api, supabase, db_a, ai, monkeypatch):
+    exam, target = exam_with_parts(api, supabase, db_a)
+    before = snapshot(exam)
+    failing(monkeypatch, "update", "exam_questions")
+    failing(monkeypatch, "delete", "question_revisions")
+    reviewed, issue = reviewed_with(api, ai, exam, target, neutral_part_b())
+    monkeypatch.undo()
+    assert snapshot(reviewed) == before and issue["fixApplied"] is False
+    # The known limit without a database transaction: a revision of the question as it still is.
+    (leftover,) = revisions(api, target["id"])
+    assert leftover["snapshot"]["subparts"] == before[target["id"]]["subparts"]
+
+
+def test_successful_fixes_keep_a_correct_history_that_restores(api, supabase, db_a, ai):
+    exam, target = exam_with_parts(api, supabase, db_a)
+    original = snapshot(exam)[target["id"]]
+    half = target["points"] / 2
+    issues = [
+        ReviewIssue(question_number=target["number"], version_label="A", severity="warning", category="rubric",
+                    message="Part (a)'s rubric needs two steps.", fix=rubric_fix("a", half / 2, half / 2)),
+        ReviewIssue(question_number=target["number"], version_label="A", severity="warning", category="answer_leakage",
+                    message="Part (b) hints at another question.", fix=neutral_part_b()),
+    ]  # fmt: skip
+    ai.on("review_exam", lambda _call: ReviewOutput(summary="Two fixes.", issues=issues, estimated_total_minutes=60))
+    reviewed = review(api, exam["id"])
+    # Both fixes to one question apply, each on top of the other, each with its own revision.
+    fixed = snapshot(reviewed)[target["id"]]
+    assert len(fixed["subparts"][0]["rubric"]) == 2 and "the model output" in fixed["subparts"][1]["prompt"]
+    history = revisions(api, target["id"])
+    assert [(r["revisionNumber"], r["source"]) for r in history] == [(2, "ai_review_fix"), (1, "ai_review_fix")]
+    assert history[-1]["snapshot"]["subparts"] == original["subparts"]  # what the question was before any fix
+    # Restoring the first revision brings the question back exactly.
+    restored = api.post(f"/api/questions/{target['id']}/revisions/{history[-1]['id']}/restore", headers=auth())
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["question"]["subparts"] == original["subparts"]

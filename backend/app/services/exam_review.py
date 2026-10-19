@@ -334,9 +334,8 @@ class ExamReviewService:
             row_to_content(row), content, removes_leak=bool(leaks_before - leaks_after)
         ):
             return None
-        await self.store.record_revision(row, source="ai_review_fix", instruction=f"Quality check: {reason}")
-        await self.store.update_question(row["id"], values)
-        return fixed
+        # The revision and the change are saved together (None when the question changed meanwhile).
+        return await self.store.change_question(row, values, source="ai_review_fix", instruction=f"Quality check: {reason}")
 
     @staticmethod
     def _fix_values(row: dict[str, Any], fix: QuestionFix) -> dict[str, Any] | None:
