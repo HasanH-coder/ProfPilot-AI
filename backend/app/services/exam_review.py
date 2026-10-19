@@ -30,15 +30,17 @@ from app.services.exam_generation import GenerationContext, load_generation_cont
 from app.services.exam_store import (
     ExamStore,
     FullExam,
-    answer_leaks,
+    integrity_leaks,
     leak_messages,
+    leak_text,
     question_problems,
     question_texts,
     render_question,
+    rewording_keeps_maths,
     row_to_content,
     similar,
 )
-from app.services.lecture_knowledge import unverified_refs
+from app.services.lecture_knowledge import professor_formula_text, traced_to_professor, unverified_refs
 
 logger = logging.getLogger("profpilot.review")
 
@@ -205,20 +207,25 @@ class ExamReviewService:
         self, full: FullExam, questions: list[dict[str, Any]], ctx: GenerationContext
     ) -> list[dict[str, Any]]:
         """Questions with mathematics, planned on lecture topics whose formulas weren't reliably
-        extracted: the professor confirms them against the original pages before use."""
+        extracted: the professor confirms them against the original pages before use. A question whose
+        formulas are all ones the professor wrote in this assessment's instructions or notes is already
+        confirmed by them."""
         plan = full.exam.get("plan") or {}
         refs_by_number = {slot.get("number"): slot.get("knowledge_refs") or [] for slot in plan.get("questions", [])}
+        professor = professor_formula_text([ctx.record.setup.professor_prompt, ctx.record.setup.additional_notes])
         issues = []
         for number, row in enumerate(questions, start=1):
             topics = unverified_refs(refs_by_number.get(row.get("position"), []), ctx.documents, ctx.knowledge)
-            if topics and _MATHS.search(" ".join(question_texts(row_to_content(row)))):
+            content = row_to_content(row)
+            if topics and _MATHS.search(" ".join(question_texts(content))) and not traced_to_professor(content, professor):
                 issues.append(
                     _issue(
                         "warning",
                         "answer_key",
                         f"Question {number} uses mathematics from lecture material whose formulas weren't reliably "
                         f"extracted: {'; '.join(topics)}. Confirm its formulas and answer against the original "
-                        "slides before using it.",
+                        "slides before using it. (Questions whose formulas all match ones you wrote in your "
+                        "instructions or notes aren't flagged; calculations can't be matched that way.)",
                         row,
                         number,
                         full.primary_version["label"],
@@ -308,27 +315,40 @@ class ExamReviewService:
         self, row: dict[str, Any], fix: QuestionFix, reason: str, questions: list[dict[str, Any]]
     ) -> dict[str, Any] | None:
         """Applies a safe fix to this one question and returns it as fixed, or None when the fix isn't
-        safe: it must add no problem to the question and no give-away of (or by) another question."""
+        safe. Everything is checked before anything is saved: the question gains no problem, the whole
+        version gains no give-away, and a rewording keeps the mathematics students read."""
         values = self._fix_values(row, fix)
         if not values:
             return None
         fixed = {**row, **values}
-        if set(question_problems(row_to_content(fixed))) - set(question_problems(row_to_content(row))):
+        content = row_to_content(fixed)
+        if set(question_problems(content)) - set(question_problems(row_to_content(row))):
             return None
         numbers = list(range(1, len(questions) + 1))
-        number = next(n for n, q in zip(numbers, questions, strict=True) if q["id"] == row["id"])
         before = [row_to_content(q) for q in questions]
-        after = [row_to_content(fixed) if q["id"] == row["id"] else content for q, content in zip(questions, before, strict=True)]
-        if set(leak_messages(after, numbers, only={number})) - set(leak_messages(before, numbers, only={number})):
+        after = [content if q["id"] == row["id"] else previous for q, previous in zip(questions, before, strict=True)]
+        leaks_before, leaks_after = set(leak_messages(before, numbers)), set(leak_messages(after, numbers))
+        if leaks_after - leaks_before:
             return None
-        await self.store.record_revision(row, source="ai_review_fix", instruction=f"Quality check: {reason}")
-        await self.store.update_question(row["id"], values)
-        return fixed
+        if fix.kind == "clarify_wording" and not rewording_keeps_maths(
+            row_to_content(row), content, removes_leak=bool(leaks_before - leaks_after)
+        ):
+            return None
+        # The revision and the change are saved together (None when the question changed meanwhile).
+        return await self.store.change_question(row, values, source="ai_review_fix", instruction=f"Quality check: {reason}")
 
     @staticmethod
     def _fix_values(row: dict[str, Any], fix: QuestionFix) -> dict[str, Any] | None:
         values: dict[str, Any] = {}
         choice_ids = [choice["id"] for choice in row.get("choices") or []]
+        parts: list[dict[str, Any]] = row.get("subparts") or []
+        part = None
+        if fix.subpart_label is not None:
+            # Only wording and rubrics can be fixed part by part; the other fixes are for the whole question.
+            label = fix.subpart_label.strip().strip("()").lower()
+            part = next((index for index, p in enumerate(parts) if p["label"].strip().strip("()").lower() == label), None)
+            if part is None or fix.kind not in ("clarify_wording", "fix_rubric"):
+                return None
         if fix.kind == "correct_answer_key":
             if row["type"] == "mcq":
                 new_choice = (fix.correct_choice or "").strip().upper()
@@ -345,11 +365,21 @@ class ExamReviewService:
             if fix.solution and fix.solution.strip():
                 values["solution"] = fix.solution.strip()
         elif fix.kind == "fix_rubric":
-            if not fix.rubric or row.get("subparts"):
+            # A rubric for the question, or for one of its parts, adding up to exactly its points. A question
+            # with parts is marked by its parts' rubrics, so its own rubric isn't replaced.
+            if part is not None:
+                target = parts[part]
+            else:
+                target = None if parts else row
+            if not fix.rubric or target is None:
                 return None
-            if abs(sum(item.points for item in fix.rubric) - float(row["points"])) > 0.01:
+            if abs(sum(item.points for item in fix.rubric) - float(target["points"])) > 0.01:
                 return None
-            values["rubric"] = [item.model_dump() for item in fix.rubric]
+            rubric = [item.model_dump() for item in fix.rubric]
+            if part is None:
+                values["rubric"] = rubric
+            else:
+                values["subparts"] = [{**p, "rubric": rubric} if index == part else p for index, p in enumerate(parts)]
         elif fix.kind == "relabel_cognitive_level":
             # Only the label changes, to the level the question really assesses;
             # rewriting it to reach another level is left to the professor.
@@ -358,29 +388,32 @@ class ExamReviewService:
                 return None
             values["cognitive_level"] = level
         elif fix.kind == "clarify_wording":
+            # The question's prompt, or one part's: the part's answer, rubric and points stay as they are.
             prompt = (fix.prompt or "").strip()
-            old = row["prompt"]
+            old = row["prompt"] if part is None else parts[part]["prompt"]
             # Minimal rewording only: never a different question.
             if not prompt or prompt == old or similar(prompt, old) < 0.6 or not 0.6 <= len(prompt) / max(1, len(old)) <= 1.6:
                 return None
-            values["prompt"] = prompt
+            if part is None:
+                values["prompt"] = prompt
+            else:
+                values["subparts"] = [{**p, "prompt": prompt} if index == part else p for index, p in enumerate(parts)]
         return values or None
 
 
 def _leak_issues(full: FullExam) -> list[dict[str, Any]]:
-    """Every multiple-choice answer that another question of the same version gives away."""
+    """Every answer, result or explanation that one question of a version gives away to another."""
     issues = []
     for version in full.versions:
         rows = full.version_questions(version["id"])
         numbers = list(range(1, len(rows) + 1))
-        for answer, revealing, text in answer_leaks([row_to_content(row) for row in rows]):
+        for helped, revealing, kind, text in integrity_leaks([row_to_content(row) for row in rows]):
             issues.append(
                 _issue(
                     "warning",
                     "answer_leakage",
-                    f"Question {numbers[revealing]}'s text gives away the answer to question {numbers[answer]} "
-                    f'("{text[:120]}"): remove it from question {numbers[revealing]} (e.g. name it instead) or '
-                    f"change question {numbers[answer]}.",
+                    f"{leak_text(kind, numbers[revealing], numbers[helped], text)}: remove it from question "
+                    f"{numbers[revealing]} (e.g. name it, or use other values) or change question {numbers[helped]}.",
                     rows[revealing],
                     numbers[revealing],
                     version["label"],

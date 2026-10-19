@@ -341,10 +341,18 @@ def planner_instructions(framer: DataFramer) -> str:
         "few percentage points), the total time within the duration (leave about 10% for reading and "
         "checking), coverage proportional to emphasis, and the question count range if given. "
         "Questions of the same section should be consecutive. Use whole or half points. "
-        "Give every question its own assessment target: no two questions (or subparts) test the same "
-        "fact, case or calculation. If a question asks students to recall or identify a formula, "
+        "ASSESSMENT TARGETS. Give every question its own assessment target and write it in "
+        "assessment_target: what exactly students do, on which case (e.g. 'compute the loss of a "
+        "confident wrong prediction', 'identify which treaty clause limited imperial authority', "
+        "'predict the pH change when a buffer is diluted'). No two questions (or subparts) test the same "
+        "fact, case or calculation. A concept may return only progressively: each time with different "
+        "thinking (recall, then application, then analysis) on a different case, never the same task "
+        "again with new numbers. If a question asks students to recall or identify a formula, "
         "definition or fact, no other question may state it: plan those questions to name it or rely "
-        "on it from memory.",
+        "on it from memory. More generally, no question may supply what another asks students to "
+        "produce: its answer, a result it asks them to work out (also not as given data or in a lookup "
+        "table), or the interpretation it asks them to give. Shared scenarios and prerequisite data are "
+        "fine when they leave every question's own work to the student.",
         "POINTS follow the work: a question's points reflect the distinct, non-trivial steps or ideas a "
         "complete answer needs at its level. Don't plan inputs that make planned steps trivial (a zero, "
         "a one, a value exactly at a threshold, an empty case) unless that edge case is itself the "
@@ -412,7 +420,15 @@ def generator_instructions(framer: DataFramer) -> str:
         "already written or planned for another number. Never give away another question's answer: if "
         "the FULL EXAM PLAN has a question asking students to recall or identify a formula, definition "
         "or fact, don't state it in your questions; name it ('the sigmoid function') or let students "
-        "use it from memory. Formulas no other question asks for may be given as usual.",
+        "use it from memory. Formulas no other question asks for may be given as usual. Partial clues "
+        "count too: don't print another question's result or a key intermediate value (also not in a "
+        "lookup table or as given data), don't show notation or a term only the correct option of "
+        "another question's multiple choice has, and don't supply the interpretation or reasoning "
+        "another question asks students to give (e.g. calling a value 'the probability of class 1' "
+        "when another question asks what it means). This holds in every subject: a molar mass another "
+        "question asks students to compute, a date or clause another question asks them to identify. "
+        "Give the data your own question needs, and check it against the FULL EXAM PLAN. Each planned "
+        "question shows its target: write yours to its target and never test another's.",
         "MARKS AND WORK. A question's points must match the work a complete answer needs: every rubric "
         "criterion rewards a distinct, non-trivial step, never restating given values. Choose values that "
         "make each step real work; an edge case (a boundary value, a zero, an empty input) is fine when it "
@@ -493,10 +509,16 @@ def reviewer_instructions(framer: DataFramer) -> str:
         "ANSWER LEAKAGE. Check every question against every other: report with category "
         "'answer_leakage' any question whose text states, shows or strongly hints at another "
         "question's answer (the same formula written differently, a paraphrased definition, a value "
-        "another question asks students to find). Shared formulas or terms that no other question "
-        "asks for are fine. If a minimal rewording of the revealing question removes the give-away "
-        "without changing what it tests (e.g. naming a formula instead of printing it), propose it as "
-        "'clarify_wording'.",
+        "another question asks students to find), and partial clues that materially reduce another "
+        "question's work: one of its results in a lookup table or as given data, notation or a term "
+        "that singles out one option, or the interpretation another question asks students to give. "
+        "Shared formulas, terms, scenarios and prerequisite data that leave each question's own work "
+        "to the student are fine. If a minimal rewording of the revealing question (or of one of its "
+        "subparts) removes the give-away without changing what it tests (e.g. naming a formula instead "
+        "of printing it, or describing a value neutrally), propose it as 'clarify_wording'.",
+        "OVERLAP. Report with category 'duplication' two questions (or subparts) that test the same "
+        "case or calculation with no new thinking. One concept assessed progressively, with different "
+        "thinking on a different case, is fine.",
         "MARKS. Report with category 'marks' a question whose points clearly exceed (or fall short of) "
         "the work a complete answer needs, e.g. several marks for steps its chosen values make trivial; "
         "an edge case that tests an important idea is fine. Describe it; don't change points.",
@@ -511,9 +533,13 @@ def reviewer_instructions(framer: DataFramer) -> str:
         "fix changes: 'correct_answer_key' (set correct_choice, and answer if needed), "
         "'fix_solution' (corrected answer and/or solution), 'fix_rubric' (a corrected rubric "
         "summing to the question's points), 'clarify_wording' (a minimally reworded prompt with "
-        "the same meaning and difficulty), 'relabel_cognitive_level' (cognitive_level only). Never "
-        "propose a fix that changes what a question tests; describe such problems in the message "
-        "instead.",
+        "the same meaning and difficulty), 'relabel_cognitive_level' (cognitive_level only). For one "
+        "subpart, set subpart_label to its label: 'clarify_wording' then rewords that subpart's prompt "
+        "and 'fix_rubric' replaces that subpart's rubric (summing to its points); otherwise leave "
+        "subpart_label null. A rewording changes words only: keep every formula, number and table as "
+        "it is (removing one is accepted only when it gives something away and the answer key doesn't "
+        "use it), or the fix is rejected. Never propose a fix that changes what a question tests; "
+        "describe such problems in the message instead.",
         "Refer to questions by their number and version label. Be specific and brief.",
         FORMULA_FIDELITY,
         DISTRIBUTION_GUIDE,

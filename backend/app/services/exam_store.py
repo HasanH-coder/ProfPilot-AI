@@ -8,7 +8,9 @@ correct answer must be one of its choices, etc.) apply on top of the checks here
 
 import asyncio
 import difflib
+import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,6 +20,8 @@ from app.domain import distribution
 from app.schemas.ai import ExamSpec, QuestionContent
 from app.schemas.common import parse_id
 from app.services.document_parsers import EXTRACTION_GLYPHS
+
+logger = logging.getLogger("profpilot.exams")
 
 EXAM_COLUMNS = (
     "id, exam_project_id, mode, status, spec_snapshot, enhanced_prompt_snapshot, plan, review, "
@@ -244,6 +248,24 @@ def _keys(text: str) -> list[str]:
     return [key for key in dict.fromkeys(keys) if len(key) >= _MIN_KEY]
 
 
+# A single-letter variable in canonical maths: not part of a name or command ('gz', '\sigma'), and not
+# Euler's e of 'e^'. Each may be renamed or replaced by a number in another question.
+_VARIABLE = re.compile(r"(?<![a-z\\])(?!e\^)[a-z](?![a-z])")
+_VALUE = r"(?:-?\d+(?:\.\d+)?|[a-z])"
+
+
+def _instances(form: str) -> re.Pattern[str] | None:
+    """The same mathematics with its variables renamed or given values: '1/1+e^-z' also matches
+    '1/1+e^-t' and '1/1+e^-0.8'. None for a form without variables."""
+    parts = _VARIABLE.split(form)
+    return re.compile(_VALUE.join(re.escape(part) for part in parts)) if len(parts) > 1 else None
+
+
+def _shows(forms: list[str], maths: str) -> bool:
+    """Whether canonical maths shows one of these forms, as written or with its variables instantiated."""
+    return any(form in maths or ((pattern := _instances(form)) is not None and pattern.search(maths)) for form in forms)
+
+
 def _words(text: str) -> set[str]:
     return {word for word in _WORD.findall(text.lower()) if len(word) > 2 and word not in _STOPWORDS}
 
@@ -271,10 +293,9 @@ def answer_leaks(questions: list[QuestionContent]) -> list[tuple[int, int, str]]
         for other, (maths, sentences) in enumerate(shown):
             if other == index:
                 continue
-            # The same mathematics or wording, and not a distractor's: then it gives the answer away.
-            revealed = any(form in maths for form in key_forms) and not any(
-                form in maths for text in distractors for form in _keys(text)
-            )
+            # The same mathematics or wording (also with the variable renamed or given a value), and not
+            # a distractor's: then it gives the answer away. What fits a distractor too singles out nothing.
+            revealed = _shows(key_forms, maths) and not any(_shows(_keys(text), maths) for text in distractors)
             # A paraphrase: one sentence covers most of the answer's words, and most of the words only the
             # answer has (options that reuse the same words in another order have none, so never match).
             distinctive = key_words - set().union(*(_words(text) for text in distractors))
@@ -287,19 +308,172 @@ def answer_leaks(questions: list[QuestionContent]) -> list[tuple[int, int, str]]
     return leaks
 
 
+# -- Partial leakage ----------------------------------------------------------------------
+#
+# Short of giving an answer away, a question can hand over part of another question's work: a result
+# that question asks students to work out (in a lookup table, a given value or a worked step), or the
+# explanation a written question asks for. Data both questions are given, integers (years, counts),
+# short decimals that recur by chance, and wording a question's own text already supplies are not leaks.
+
+# A decimal number, without its sign: '−0.700', '0.449328964117', '1.022' (not '1.2.3' or a version).
+_DECIMAL = re.compile(r"(?<![\d.])(\d+)\.(\d+)(?!\.?\d)")
+# Words of marking instructions, not of the answer itself.
+_MARKING_WORDS = frozenset(
+    "award awards awarded mark marks point points credit full partial correct correctly incorrect answer answers "
+    "student students states state stating identifies identify identifying explains explain explaining gives give "
+    "giving shows show showing uses use using mentions mention notes note recognises recognizes describes describe "
+    "computes compute calculates calculate obtains obtain response one two both each".split()
+)
+_MIN_DISTINCTIVE = 4  # fewer distinctive words match by chance
+
+
+def _numbers(text: str) -> list[tuple[float, int]]:
+    """(value, decimal places) of each decimal written with at least 3 significant digits."""
+    return [
+        (float(f"{whole}.{fraction}"), len(fraction))
+        for whole, fraction in _DECIMAL.findall(text)
+        if len((whole + fraction).lstrip("0")) >= 3
+    ]
+
+
+def _same_number(a: tuple[float, int], b: tuple[float, int]) -> bool:
+    """The same value at the coarser of the two precisions (0.329 is 0.328504… rounded)."""
+    return abs(a[0] - b[0]) <= 0.5 * 10 ** -min(a[1], b[1]) + 1e-12
+
+
+def _key_choice(question: QuestionContent) -> str | None:
+    return next((choice.text for choice in question.choices or [] if choice.id == question.correct_choice), None)
+
+
+def _worked_texts(question: QuestionContent) -> list[str]:
+    """What a complete answer contains: the key, the worked solution, and what the rubric rewards."""
+    texts = [question.answer, question.solution, _key_choice(question) or ""]
+    texts += [item.criterion for item in question.rubric or []]
+    for part in question.subparts or []:
+        texts += [part.answer, *(item.criterion for item in part.rubric)]
+    return [text for text in texts if text]
+
+
+def _given_texts(question: QuestionContent) -> list[str]:
+    """What the question gives students (for a multiple-choice question, everything but its key)."""
+    key = _key_choice(question)
+    return [text for text in student_texts(question) if text != key]
+
+
+def _sentences(text: str) -> list[str]:
+    return [sentence for sentence in re.split(r"(?<=[.!?;:])\s+|\n+", text) if sentence.strip()]
+
+
+def partial_leaks(questions: list[QuestionContent]) -> list[tuple[int, int, str, str]]:
+    """(index of the question helped, index of the revealing question, kind, what is revealed) for every
+    result ('result') or explanation ('explanation') of one question that another one's student-facing
+    text supplies. Indexes are positions in `questions`."""
+    shown = [" \n".join(student_texts(question)) for question in questions]
+    leaks: list[tuple[int, int, str, str]] = []
+    for index, question in enumerate(questions):
+        given = " ".join(_given_texts(question))
+        given_numbers, given_words = _numbers(given), _words(given)
+        # Results the question asks students to work out: in its key, and not given to them.
+        results = [n for n in _numbers(" ".join(_worked_texts(question))) if not any(_same_number(n, g) for g in given_numbers)]
+        # The reasoning a written answer must supply, in words its own text doesn't give.
+        reasons: list[tuple[str, set[str]]] = []
+        if question.type != "mcq":
+            for text in [question.answer, *(part.answer for part in question.subparts or [])]:
+                for sentence in _sentences(text):
+                    distinctive = _words(sentence) - given_words - _MARKING_WORDS
+                    if len(distinctive) >= _MIN_DISTINCTIVE:
+                        reasons.append((sentence, distinctive))
+        for other, text in enumerate(shown):
+            if other == index:
+                continue
+            numbers = _numbers(text)
+            result = next((r for r in results if any(_same_number(r, n) for n in numbers)), None)
+            if result is not None:
+                leaks.append((index, other, "result", f"{result[0]:.{result[1]}f}"))
+                continue
+            sentences = _sentences(text)
+            reason = next(
+                (sentence for sentence, words in reasons if any(_covered(words, line) >= 0.75 for line in sentences)), None
+            )
+            if reason is not None:
+                leaks.append((index, other, "explanation", reason))
+    return leaks
+
+
+def integrity_leaks(questions: list[QuestionContent]) -> list[tuple[int, int, str, str]]:
+    """Every answer ('answer'), result or explanation one question gives away to another:
+    (index helped, index revealing, kind, what is revealed)."""
+    full = [(answer, revealing, "answer", text) for answer, revealing, text in answer_leaks(questions)]
+    return full + [leak for leak in partial_leaks(questions) if leak[:2] not in {(a, r) for a, r, _, _ in full}]
+
+
+def leak_text(kind: str, revealing: int, helped: int, text: str) -> str:
+    """What one question gives away to another, in words (question numbers as shown)."""
+    quoted = text if len(text) <= 120 else text[:117] + "…"
+    if kind == "result":
+        return f"Question {revealing}'s text shows {quoted}, a result question {helped} asks students to work out"
+    if kind == "explanation":
+        return f'Question {revealing}\'s text supplies the reasoning question {helped} asks students to give ("{quoted}")'
+    return f'Question {revealing}\'s text gives away the answer to question {helped} ("{quoted}")'
+
+
+_LEAK_ADVICE = {
+    "answer": "Don't state what another question asks students to recall or identify: refer to it by name (e.g. 'the "
+    "sigmoid function') or let students use it from memory.",
+    "result": "Don't print another question's results (in a lookup table, a given value or a worked step): use other "
+    "values, or let students work them out.",
+    "explanation": "Don't supply the interpretation or reasoning another question asks for: ask without it.",
+}
+
+
 def leak_messages(questions: list[QuestionContent], numbers: list[int], *, only: set[int] | None = None) -> list[str]:
     """Problems for the leaks among these questions (numbered `numbers`); with `only`, just the
     leaks involving those question numbers."""
     messages = []
-    for answer, revealing, text in answer_leaks(questions):
-        if only is not None and numbers[answer] not in only and numbers[revealing] not in only:
+    for helped, revealing, kind, text in integrity_leaks(questions):
+        if only is not None and numbers[helped] not in only and numbers[revealing] not in only:
             continue
-        messages.append(
-            f"Question {numbers[revealing]}'s text gives away the answer to question {numbers[answer]} "
-            f'("{text[:120]}"). Don\'t state what another question asks students to recall or identify: refer '
-            "to it by name (e.g. 'the sigmoid function') or let students use it from memory."
-        )
+        messages.append(f"{leak_text(kind, numbers[revealing], numbers[helped], text)}. {_LEAK_ADVICE[kind]}")
     return messages
+
+
+# -- Mathematics a rewording must keep ------------------------------------------------------
+
+# A formula in LaTeX (inline or display) or between dollar signs.
+_FORMULA = re.compile(r"\\\((.+?)\\\)|\\\[(.+?)\\\]|\$\$(.+?)\$\$|\$(.+?)\$", re.S)
+_PROSE_NUMBER = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?!\.?\d)")
+
+
+def maths_fragments(text: str) -> list[str]:
+    """The formulas written in a text, without their delimiters."""
+    return [next(group for group in match.groups() if group is not None) for match in _FORMULA.finditer(text)]
+
+
+def maths_signature(text: str) -> Counter[str]:
+    """The mathematics a text states: each formula in one notation, and each number written outside formulas
+    ('\\(0.5\\)' and '0.5' are the same)."""
+    return Counter(
+        [canonical_maths(fragment) for fragment in maths_fragments(text)] + _PROSE_NUMBER.findall(_FORMULA.sub(" ", text))
+    )
+
+
+def rewording_keeps_maths(before: QuestionContent, after: QuestionContent, *, removes_leak: bool) -> bool:
+    """Whether a rewording of what students read leaves its mathematics alone: nothing added or changed.
+    Removing something is allowed only to remove a give-away (`removes_leak`), and never something the
+    answer key works with (a value or formula students would then lack). A lone digit ('class 1') is a
+    label, not mathematics, and may go."""
+    old = maths_signature("\n".join(student_texts(before)))
+    new = maths_signature("\n".join(student_texts(after)))
+    if new - old:
+        return False
+    removed = Counter({item: count for item, count in (old - new).items() if not re.fullmatch(r"\d", item)})
+    if not removed:
+        return True
+    # Used by the key: the same formula, or a value in it ('ln(0.72) = −0.3285' when the key has 0.3285).
+    worked_text = " ".join(_worked_texts(after))
+    worked, worked_numbers = canonical_maths(worked_text), _numbers(worked_text)
+    used = any(item in worked or any(_same_number(n, w) for n in _numbers(item) for w in worked_numbers) for item in removed)
+    return removes_leak and not used
 
 
 def _restates(prompt: str, part: Any) -> bool:
@@ -673,6 +847,45 @@ class ExamStore:
             columns="id, revision_number, source, instruction, created_at",
         )
         return rows[0]
+
+    async def change_question(
+        self, question: dict[str, Any], values: dict[str, Any], *, source: str, instruction: str | None
+    ) -> dict[str, Any] | None:
+        """Records the question's revision and applies the change, keeping the two consistent: a revision
+        stays only with its change. The change applies only if the question is still as it was read (else
+        None: a professor's edit or approval meanwhile wins). The API runs each write in its own
+        transaction, so if the change fails, its revision is removed again; if the request failed after
+        the change was saved, both are kept."""
+        revision = await self.record_revision(question, source=source, instruction=instruction)
+        filters = self._owned(("id", "eq", question["id"]), ("updated_at", "eq", question["updated_at"]))
+        try:
+            rows = await self.db.update("exam_questions", values, filters=filters, columns=QUESTION_COLUMNS)
+        except Exception:
+            current = await self._read_after_failure(question["id"])
+            if current is not None and all(current.get(name) == value for name, value in values.items()):
+                return current
+            await self._forget_revision(revision)
+            raise
+        if not rows:
+            await self._forget_revision(revision)
+            return None
+        return rows[0]
+
+    async def _read_after_failure(self, question_id: str) -> dict[str, Any] | None:
+        try:
+            return await self.db.select_one(
+                "exam_questions", columns=QUESTION_COLUMNS, filters=self._owned(("id", "eq", question_id))
+            )
+        except Exception:
+            return None
+
+    async def _forget_revision(self, revision: dict[str, Any]) -> None:
+        """Removes a revision whose change wasn't saved. If even that fails, the revision stays: its
+        snapshot is the question as it still is, so restoring it changes nothing."""
+        try:
+            await self.db.delete("question_revisions", filters=self._owned(("id", "eq", revision["id"])))
+        except Exception:
+            logger.warning("A revision without its change couldn't be removed (revision %s)", revision["id"])
 
     async def revisions(self, question_id: str) -> list[dict[str, Any]]:
         return await self.db.select(
