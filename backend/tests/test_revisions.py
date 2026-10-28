@@ -4,6 +4,7 @@ import asyncio
 
 from app.core.errors import AIServiceError
 from app.schemas.ai import QuestionFix, ReviewIssue, ReviewOutput
+from app.services import exam_generation
 from tests.helpers import auth, wait_for_run
 from tests.model import well_behaved_batch
 from tests.seed import seed_assessment, seed_document
@@ -12,6 +13,10 @@ from tests.test_workflow import A_SETTINGS, generate, interpret_and_approve
 
 def run(coroutine):
     return asyncio.run(coroutine)
+
+
+async def _no_slide_images(*_args, **_kwargs):
+    return []
 
 
 def ready_exam(api, supabase, db_a, **settings) -> dict:
@@ -221,7 +226,7 @@ def test_quality_check_applies_only_safe_fixes(api, supabase, db_a, ai):
     assert revisions[0]["source"] == "ai_review_fix"
 
 
-def test_generation_that_stops_halfway_keeps_saved_questions_and_resumes(api, supabase, db_a, ai):
+def test_generation_that_stops_halfway_keeps_saved_questions_and_resumes(api, supabase, db_a, ai, monkeypatch):
     assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
     run(seed_document(supabase, db_a, assessment["id"]))
     interpret_and_approve(api, assessment["id"])
@@ -234,6 +239,8 @@ def test_generation_that_stops_halfway_keeps_saved_questions_and_resumes(api, su
         return well_behaved_batch(call)
 
     ai.on("generate_questions", flaky)
+    # Without slide images, the batches finish in a fixed order (rendering would vary it).
+    monkeypatch.setattr(exam_generation, "slide_images", _no_slide_images)
     started = api.post(f"/api/assessments/{assessment['id']}/exam", json={"mode": "full"}, headers=auth())
     failed = wait_for_run(api, started.json()["run"]["id"])
     assert failed["status"] == "failed" and "try again" in failed["errorMessage"]

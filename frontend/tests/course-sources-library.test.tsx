@@ -34,6 +34,19 @@ test("reading that was interrupted is resumed when Sources opens", async () => {
   expect(vi.mocked(apiRequest).mock.calls.some(([path]) => path === "/api/documents/ready/processing")).toBe(false);
 });
 
+test("opening Sources prepares the sources that need it, once, with a fresh session", async () => {
+  vi.mocked(apiRequest).mockImplementation(async (path) => {
+    if (path === "/api/sources/preparation") return { preparing: ["ready"] };
+    if (String(path).endsWith("/knowledge")) return { state: "none", error: null, topics: [], rebuild: null, preparation: "queued" };
+    return { status: "processing", error: null, pageCount: null, title: null };
+  });
+  const screen = await render(<CourseSourcesLibrary initialCourses={courses} professorId={professor.id} />);
+  await expect
+    .poll(() => vi.mocked(apiRequest).mock.calls.filter(([path]) => path === "/api/sources/preparation"))
+    .toEqual([["/api/sources/preparation", { method: "POST", freshSession: true }]]);
+  await expect.element(screen.getByText("Preparing for AI…")).toBeVisible();
+});
+
 test("when the AI service can't be reached, an uploaded file says so truthfully and can be retried", async () => {
   vi.mocked(apiRequest).mockRejectedValue(new Error("ProfPilot's AI service can't be reached right now."));
   const waiting = [{ ...base, id: "waiting", name: "Lecture 3.pdf", status: "pending" as const }];

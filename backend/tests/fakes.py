@@ -8,7 +8,7 @@ imitates the parts of Postgres the code relies on:
 - the constraints the app depends on (one running job per kind, one exam per
   assessment, an MCQ's answer must be one of its choices, unique positions…);
 - the triggers (ExamSpec staleness, chunk scope) and cascading deletes;
-- the two RPCs (match_document_chunks, reorder_exam_questions) and Storage.
+- the RPCs (match_document_chunks, search_document_pages, reorder_exam_questions) and Storage.
 
 FakeAI implements the OpenAIService methods. Tests register a handler per
 "purpose" that returns the structured object the model would; every call is
@@ -49,6 +49,7 @@ OWNED = {
     "documents",
     "assessment_documents",
     "document_chunks",
+    "document_pages",
     "assessment_style_profiles",
     "exams",
     "exam_versions",
@@ -100,6 +101,18 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "knowledge": None,
     },
     "document_chunks": {"page_start": None, "page_end": None, "location_label": None, "token_estimate": None, "embedding": None},
+    "document_pages": {
+        "status": "pending",
+        "text_layer": None,
+        "analysis": None,
+        "verification": None,
+        "search_text": None,
+        "error": None,
+        "attempts": 0,
+        "content_sha256": None,
+        "analysis_version": 1,
+        "model": None,
+    },
     "assessment_style_profiles": {"model": None},
     "exams": {
         "status": "generating",
@@ -187,6 +200,7 @@ CASCADES = {
     "documents": [
         ("assessment_documents", "document_id", "cascade"),
         ("document_chunks", "document_id", "cascade"),
+        ("document_pages", "document_id", "cascade"),
         ("exam_questions", "figure_document_id", "set null"),
     ],
     "exams": [
@@ -329,6 +343,27 @@ class FakeDatabase:
                 )
             scored.sort(key=lambda item: item["similarity"], reverse=True)
             return scored[: min(max(params.get("p_match_count", 12), 1), 50)]
+        if function == "search_document_pages":
+            # Postgres full-text search, imitated: pages ranked by how many of the query's words they contain.
+            words = {word for word in re.findall(r"[a-z0-9]+", params["p_query"].lower()) if len(word) > 2}
+            documents = {doc["id"]: doc for doc in self._visible("documents")}
+            selected_ids = {
+                link["document_id"]
+                for link in self._visible("assessment_documents")
+                if link["exam_project_id"] == params["p_exam_project_id"]
+            }
+            ranked = []
+            for page in self._visible("document_pages"):
+                doc = documents.get(page["document_id"])
+                if page["status"] != "analysed" or not doc or doc["category"] != "course_material" or doc["deletion_pending"]:
+                    continue
+                if doc["exam_project_id"] != params["p_exam_project_id"] and page["document_id"] not in selected_ids:
+                    continue
+                found = set(re.findall(r"[a-z0-9]+", (page.get("search_text") or "").lower())) & words
+                if found:
+                    ranked.append({**_pick(page, ("id", "document_id", "page_number", "search_text")), "rank": len(found)})
+            ranked.sort(key=lambda item: item["rank"], reverse=True)
+            return ranked[: min(max(params.get("p_match_count", 8), 1), 30)]
         if function == "reorder_exam_questions":
             ids = params["p_question_ids"]
             questions = [q for q in self._visible("exam_questions") if q["version_id"] == params["p_version_id"]]
@@ -411,6 +446,12 @@ class FakeDatabase:
             raise ConflictError("This already exists.")
         if table == "document_chunks" and any(
             r["document_id"] == row["document_id"] and r["chunk_index"] == row["chunk_index"] for r in others
+        ):
+            raise ConflictError("This already exists.")
+        if table == "document_pages" and (
+            row["status"] not in ("pending", "analysed", "blank", "failed")
+            or row["page_number"] < 1
+            or any(r["document_id"] == row["document_id"] and r["page_number"] == row["page_number"] for r in others)
         ):
             raise ConflictError("This already exists.")
         if table == "assessment_documents" and any(
@@ -544,6 +585,7 @@ class FakeAI:
 
     def __init__(self) -> None:
         self.handlers: dict[str, Handler] = {}
+        self.pending_files: list[dict[str, Any]] = []
         self.tool_scripts: dict[str, Callable[[list[dict[str, Any]]], tuple[list[tuple[str, dict[str, Any]]], str]]] = {}
         self.calls: list[dict[str, Any]] = []
         self.embedded_texts: list[str] = []
@@ -594,9 +636,28 @@ class FakeAI:
         )
 
     async def parse_with_files(
-        self, *, purpose, instructions, text, files, schema, effort="low", max_output_tokens=32_000, usage=None
+        self,
+        *,
+        purpose,
+        instructions,
+        text,
+        files,
+        schema,
+        effort="low",
+        max_output_tokens=32_000,
+        validate=None,
+        usage=None,
+        model=None,
     ):
-        return await self.parse(purpose=purpose, instructions=instructions, input=text, schema=schema, effort=effort, usage=usage)
+        # What the model was shown (pages, pictures), recorded before the handler runs, so a handler
+        # can read it (e.g. how many page images it was given).
+        self.pending_files = files
+        result = await self.parse(
+            purpose=purpose, instructions=instructions, input=text, schema=schema, effort=effort, validate=validate, usage=usage
+        )
+        self.calls[-1]["files"] = files
+        self.calls[-1]["model"] = model
+        return result
 
     async def embed(self, texts, *, usage=None):
         self.embedded_texts.extend(texts)

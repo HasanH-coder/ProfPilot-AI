@@ -38,7 +38,14 @@ from app.core.errors import AppError
 from app.db.supabase import Database
 from app.schemas.ai import COGNITIVE_LEVELS, LectureSynthesis, QuestionContent, SegmentKnowledge
 from app.services.assessment_context import DocumentRecord
-from app.services.document_parsers import EXTRACTION_GLYPHS, FIGURE_MARKER, PAGE_MARKER
+from app.services.document_parsers import (
+    DECORATIVE,
+    EXTRACTION_GLYPHS,
+    FIGURE_END,
+    FIGURE_MARKER,
+    PAGE_MARKER,
+    READ_FIGURE,
+)
 from app.services.exam_store import canonical_maths, maths_fragments, question_texts
 
 logger = logging.getLogger("profpilot.knowledge")
@@ -224,7 +231,8 @@ def classify_pages(pages: dict[int, str], page_count: int | None) -> dict[str, l
     Lines repeated on at least half the pages (headers, footers, the course title), all-capital
     headings, image credits ("Adapted from …", URLs) and labels without words (axis ticks) are not
     content: a slide with only those is a divider, or figure-dominated when it also has an unread
-    figure or such labels.
+    figure or such labels. What ProfPilot read from a page's pictures is content (only its
+    "read by ProfPilot" and end lines aren't), so a diagram that has been read makes a page substantive.
     """
     lines = {number: {line.strip() for line in text.splitlines() if line.strip()} for number, text in pages.items()}
     seen = Counter(line for page_lines in lines.values() for line in page_lines)
@@ -241,11 +249,17 @@ def classify_pages(pages: dict[int, str], page_count: int | None) -> dict[str, l
         residual = [
             _CREDIT.sub("", line).strip()
             for line in (raw.strip() for raw in text.splitlines())
-            if line and line not in repeated and not FIGURE_MARKER.match(line) and not _is_heading(line)
+            if line
+            and line not in repeated
+            and not FIGURE_MARKER.match(line)
+            and not READ_FIGURE.match(line)
+            and line != FIGURE_END
+            and not _is_heading(line)
         ]
         prose = " ".join(line for line in residual if any(character.isalpha() for character in line))
         labels = any(line and not any(character.isalpha() for character in line) for line in residual)
-        if len(prose) >= _SUBSTANTIVE_CHARS:
+        read = any(match.group(3) != DECORATIVE for match in READ_FIGURE.finditer(text))
+        if len(prose) >= _SUBSTANTIVE_CHARS or read:
             classes["text_with_figures" if figures else "text"].append(number)
         elif figures or labels:
             classes["figure_dominated"].append(number)
@@ -301,10 +315,31 @@ def coverage_of(
         "units_without_text": without_text,
         # Pages or slides whose pictures or charts the extracted text can't show.
         "units_with_figures": sorted({int(n) for chunk in chunks for n in FIGURE_MARKER.findall(chunk["content"])}),
+        # Pages or slides whose pictures ProfPilot read (what they show is in the text).
+        "units_with_read_figures": read_figure_pages(chunks),
         "locations": list(dict.fromkeys(labels)),
         "segments": segments,
         "characters": sum(len(chunk["content"]) for chunk in chunks),
         "truncated": bool(extracted_characters and extracted_characters >= settings.max_extracted_characters),
+    }
+
+
+def read_figure_pages(chunks: list[dict[str, Any]]) -> list[int]:
+    """Pages or slides whose pictures ProfPilot has read (see figure_reading.py)."""
+    return sorted({int(match.group(2)) for chunk in chunks for match in READ_FIGURE.finditer(chunk["content"])})
+
+
+def picture_overview(chunks: list[dict[str, Any]], knowledge: dict[str, Any] | None) -> dict[str, Any]:
+    """Which pages' pictures are read and which aren't yet, from a file's stored text, and whether
+    some were read after its lecture knowledge was built (a rebuild would include them)."""
+    read = read_figure_pages(chunks)
+    profile = knowledge or {}
+    coverage = profile.get("coverage") or {}
+    built_with = set(coverage.get("units_with_read_figures") or [])
+    return {
+        "unread": sorted({int(n) for chunk in chunks for n in FIGURE_MARKER.findall(chunk["content"])}),
+        "read": read,
+        "afterBuild": profile.get("status") == "ready" and bool(set(read) - built_with),
     }
 
 
@@ -463,7 +498,7 @@ class LectureKnowledgeService:
             {**kept, "rebuild": {"status": "building", "started_at": started}} if kept else {**base, "status": "building"},
         )
         try:
-            chunks = await self._chunks(document.id)
+            chunks = await self.chunks(document.id)
             if not chunks:
                 raise AppError("This file has no extracted text to analyse.")
             if extraction_state(chunks) == "interrupted":
@@ -512,7 +547,8 @@ class LectureKnowledgeService:
             logger.warning("Lecture knowledge for %s failed: %s", document.id, type(error).__name__)
             return await self._failed(document.id, base, kept, "The lecture couldn't be analysed. Try again.", tokens_before)
 
-    async def _chunks(self, document_id: str) -> list[dict[str, Any]]:
+    async def chunks(self, document_id: str) -> list[dict[str, Any]]:
+        """The document's stored text, in order."""
         return await self.db.select(
             "document_chunks",
             columns="chunk_index, content, location_label",
@@ -522,7 +558,7 @@ class LectureKnowledgeService:
 
     async def extraction(self, document_id: str) -> str:
         """The stored text's extraction state (see extraction_state)."""
-        return extraction_state(await self._chunks(document_id))
+        return extraction_state(await self.chunks(document_id))
 
     async def _analyse(
         self, framer: DataFramer, document: DocumentRecord, segment: list[dict[str, Any]], index: int, total: int
@@ -609,11 +645,20 @@ def is_extracting(document_id: str) -> bool:
 @contextmanager
 def extracting(document_id: str) -> Iterator[None]:
     """Marks a document's text as being re-read, so its profile isn't built from half-replaced chunks."""
-    _extracting.add(document_id)
+    start_extracting(document_id)
     try:
         yield
     finally:
-        _extracting.discard(document_id)
+        finish_extracting(document_id)
+
+
+def start_extracting(document_id: str) -> None:
+    """Like `extracting`, for a re-read that outlives its request (finish_extracting ends it)."""
+    _extracting.add(document_id)
+
+
+def finish_extracting(document_id: str) -> None:
+    _extracting.discard(document_id)
 
 
 # -----------------------------------------------------------------------------
@@ -956,6 +1001,7 @@ def overview(knowledge: dict[str, Any] | None, document: DocumentRecord) -> dict
                 "pages": {_camel(name): numbers for name, numbers in (coverage.get("pages") or {}).items()},
                 "unitsWithoutText": coverage.get("units_without_text", []),
                 "unitsWithFigures": coverage.get("units_with_figures", []),
+                "unitsWithReadFigures": coverage.get("units_with_read_figures", []),
                 "truncated": bool(coverage.get("truncated")),
             }
             if coverage

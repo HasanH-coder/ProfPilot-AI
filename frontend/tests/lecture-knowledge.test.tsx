@@ -77,65 +77,32 @@ test("with page-level detail, only substantive slides count and the others are n
     .toBeVisible();
 });
 
-test("building asks first, showing the estimated cost, and starts only when confirmed", async () => {
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-  vi.mocked(apiRequest).mockResolvedValue({ ...READY, state: "none", topics: [] });
-  const screen = await render(<LectureKnowledgePanel source={source({ state: "none", topics: null })} />);
-  await screen.getByRole("button", { name: "Build lecture knowledge" }).click();
-  await expect.poll(() => confirm.mock.calls.length).toBe(1);
-  expect(confirm.mock.calls[0][0]).toMatch(/2 AI calls, about 9k input and 6k output tokens/);
-  expect(vi.mocked(apiRequest).mock.calls.some(([, options]) => (options as { method?: string })?.method === "POST")).toBe(false);
-
-  confirm.mockReturnValue(true);
-  await screen.getByRole("button", { name: "Build lecture knowledge" }).click();
-  await expect
-    .poll(() => vi.mocked(apiRequest).mock.calls.filter(([, options]) => (options as { method?: string })?.method === "POST"))
-    .toEqual([["/api/documents/lecture-1/knowledge", { method: "POST" }]]);
-  await expect.element(screen.getByText("Building lecture knowledge…")).toBeVisible();
-});
-
-test("a legacy lecture refreshes in two confirmed steps: a free re-read, then a paid rebuild", async () => {
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-  let extraction: "legacy" | "current" = "legacy";
-  vi.mocked(apiRequest).mockImplementation(async (path, options) => {
-    if ((options as { method?: string } | undefined)?.method === "POST") {
-      if (String(path).endsWith("/extraction")) extraction = "current";
-      return { state: "building" };
-    }
-    return {
-      ...READY,
-      legacy: true,
-      rebuild: null,
-      extraction: { state: extraction, rereadable: true },
-      rereadEstimate: { embeddingTokens: 15000 },
-    };
+test("a lecture PDF's pictures are seen as its questions are written, not left unread", async () => {
+  vi.mocked(apiRequest).mockResolvedValue({
+    ...READY,
+    coverage: { ...READY.coverage!, unit: "page", substantiveUnits: 11, pageDetail: true, pages: { text: [1, 3], textWithFigures: [2, 4] } },
   });
   const screen = await render(<LectureKnowledgePanel source={source({ state: "ready", topics: 2 })} />);
   await screen.getByRole("button", { name: "View" }).click();
-  await expect.element(screen.getByText(/Step 1 \(free\): re-read it/)).toBeVisible();
+  await expect
+    .element(screen.getByText(/11 of 12 pages have substantive text · pictures \(seen as questions are written\) on pages 2, 4/))
+    .toBeVisible();
+});
 
-  await screen.getByRole("button", { name: "Re-read file" }).click();
-  await expect.poll(() => confirm.mock.calls.length).toBe(1);
-  expect(confirm.mock.calls[0][0]).toMatch(/No AI analysis is done[\s\S]*about 15k tokens, well under one cent/);
-  expect(confirm.mock.calls[0][0]).toMatch(/current lecture knowledge stay as they are/);
-  await expect.element(screen.getByText(/Step 2: rebuild the lecture knowledge/)).toBeVisible();
-  // The re-read never starts the paid build.
-  expect(
-    vi.mocked(apiRequest).mock.calls.some(
-      ([path, options]) => String(path).endsWith("/knowledge") && (options as { method?: string })?.method === "POST",
-    ),
-  ).toBe(false);
-
-  await screen.getByRole("button", { name: "Rebuild lecture knowledge" }).click();
-  await expect.poll(() => confirm.mock.calls.length).toBe(2);
-  expect(confirm.mock.calls[1][0]).toMatch(/Estimated cost: 2 AI calls/);
-  expect(confirm.mock.calls[1][0]).toMatch(/stays in use until the new one is ready, and is kept if this fails/);
+test("a lecture whose knowledge is missing can be built at once, with no question asked", async () => {
+  const confirm = vi.spyOn(window, "confirm");
+  let started = false;
+  vi.mocked(apiRequest).mockImplementation(async (_path, options) => {
+    if ((options as { method?: string } | undefined)?.method === "POST") started = true;
+    return { ...READY, state: started ? "building" : "none", topics: [] };
+  });
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "none", topics: null })} />);
+  await screen.getByRole("button", { name: "Build lecture knowledge" }).click();
   await expect
     .poll(() => vi.mocked(apiRequest).mock.calls.filter(([, options]) => (options as { method?: string })?.method === "POST"))
-    .toEqual([
-      ["/api/documents/lecture-1/extraction", { method: "POST" }],
-      ["/api/documents/lecture-1/knowledge", { method: "POST" }],
-    ]);
+    .toEqual([["/api/documents/lecture-1/knowledge", { method: "POST", freshSession: true }]]);
+  await expect.element(screen.getByText("Building lecture knowledge…")).toBeVisible();
+  expect(confirm).not.toHaveBeenCalled();
 });
 
 test("a failed rebuild says the previous lecture knowledge is still in use", async () => {
@@ -167,4 +134,52 @@ test("open details mark the panel, so its course card can take the full row", as
 test("nothing is shown for a file that isn't read yet", async () => {
   const screen = await render(<LectureKnowledgePanel source={source({ state: "none", topics: null }, "processing")} />);
   expect(screen.getByText(/lecture knowledge/i).query()).toBeNull();
+});
+
+test("while Sources prepares a lecture, it shows what's under way until it's done, with nothing to press", async () => {
+  let checks = 0;
+  vi.mocked(apiRequest).mockImplementation(async () => {
+    checks += 1;
+    const pictures = { readable: true, unread: [], read: [2, 4], afterBuild: false, error: null };
+    if (checks === 1) return { ...READY, preparation: "running", pictures: { ...pictures, state: "reading", read: [] } };
+    return { ...READY, preparation: null, pictures: { ...pictures, state: "idle" } };
+  });
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "none", topics: null })} preparing />);
+  // Checked straight away, then every few seconds until it's done.
+  await expect.element(screen.getByText("Reading the pictures in this lecture…")).toBeVisible();
+  await expect.element(screen.getByText("Lecture knowledge · 2 topics"), { timeout: 6000 }).toBeVisible();
+  expect(screen.getByRole("button", { name: /Build|Rebuild|Retry|Try again/ }).query()).toBeNull();
+});
+
+test("while Sources is still checking which files to prepare, nothing is offered to press", async () => {
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "none", topics: null })} checking />);
+  await expect.element(screen.getByText("No lecture knowledge yet")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Build lecture knowledge" }).query()).toBeNull();
+});
+
+test("coverage names the pages whose pictures were read", async () => {
+  vi.mocked(apiRequest).mockResolvedValue({
+    ...READY,
+    coverage: { ...READY.coverage!, substantiveUnits: 11, pageDetail: true, pages: { text: [2, 3, 4] }, unitsWithReadFigures: [2, 4] },
+  });
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "ready", topics: 2 })} />);
+  await screen.getByRole("button", { name: "View" }).click();
+  await expect.element(screen.getByText(/11 of 12 slides have substantive text · pictures read on slides 2, 4/)).toBeVisible();
+});
+
+test("a failed picture reading says why, and is tried again at once", async () => {
+  const confirm = vi.spyOn(window, "confirm");
+  vi.mocked(apiRequest).mockImplementation(async (_path, options) =>
+    (options as { method?: string } | undefined)?.method === "POST"
+      ? { state: "reading" }
+      : { ...READY, pictures: { state: "idle", readable: true, unread: [5], read: [], afterBuild: false, error: "The AI service is busy." } },
+  );
+  const screen = await render(<LectureKnowledgePanel source={source({ state: "ready", topics: 2 })} />);
+  await screen.getByRole("button", { name: "View" }).click();
+  await expect.element(screen.getByText(/Reading the pictures failed: The AI service is busy./)).toBeVisible();
+  await screen.getByRole("button", { name: "Try again" }).click();
+  await expect
+    .poll(() => vi.mocked(apiRequest).mock.calls.filter(([, options]) => (options as { method?: string })?.method === "POST"))
+    .toEqual([["/api/documents/lecture-1/figures", { method: "POST", freshSession: true }]]);
+  expect(confirm).not.toHaveBeenCalled();
 });

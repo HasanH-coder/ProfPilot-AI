@@ -7,12 +7,26 @@ relevant chunks, within a size budget. The search runs in Postgres
 """
 
 import asyncio
+import logging
+import re
 from dataclasses import dataclass
 
 from app.ai.openai_service import OpenAIService, Usage
 from app.ai.prompts import DataFramer
+from app.core.errors import AppError
 from app.db.supabase import Database
 from app.services.document_ingestion import vector_literal
+
+logger = logging.getLogger("profpilot.retrieval")
+
+# Reciprocal rank fusion: a result's score is the sum of 1 / (K + its rank) in each list it's in.
+_FUSION_K = 60
+# Words too common to search a lecture by.
+_STOP = {
+    "this", "that", "with", "from", "what", "which", "when", "where", "about", "into", "their", "there", "these",
+    "those", "than", "then", "them", "they", "will", "would", "should", "could", "have", "each", "every",
+    "apply", "explain", "describe", "question", "lecture", "topic", "concept", "student", "students", "using",
+}  # fmt: skip
 
 
 @dataclass
@@ -25,10 +39,16 @@ class Excerpt:
     similarity: float
     # A short id the model can cite, e.g. "S3". Assigned per request.
     ref: str = ""
+    # The pages it spans (first, last), when known.
+    pages: tuple[int | None, int | None] = (None, None)
 
     @property
     def label(self) -> str:
         return f"{self.document_name}, {self.location}" if self.location else self.document_name
+
+    def covers(self, document_id: str, page: int) -> bool:
+        first, last = self.pages
+        return self.document_id == document_id and first is not None and first <= page <= (last or first)
 
 
 class DocumentRetrievalService:
@@ -49,30 +69,38 @@ class DocumentRetrievalService:
         max_chars: int = 24_000,
         exclude: set[str] | None = None,
     ) -> list[Excerpt]:
-        """The most relevant chunks for any of the queries, best first."""
+        """The most relevant material for any of the queries, best first.
+
+        Hybrid: the chunks closest in meaning (embeddings), and the slides that contain the queries'
+        words (full-text search over every slide's words), merged by reciprocal rank.
+        A page already inside a chosen chunk lifts that chunk instead of repeating it.
+        """
         queries = [query.strip()[:4000] for query in queries if query and query.strip()]
         if not queries:
             return []
         self.usage.retrievals += 1
         vectors = await self.ai.embed(queries, usage=self.usage)
-        # One similarity search per query, all at once (each is a read as the professor).
-        results = await asyncio.gather(
-            *(
-                self.db.rpc(
-                    "match_document_chunks",
-                    {
-                        "p_exam_project_id": assessment_id,
-                        "p_query_embedding": vector_literal(vector),
-                        "p_categories": list(categories),
-                        "p_match_count": per_query,
-                    },
-                )
-                for vector in vectors
+        # One similarity search and one word search per query, all at once (each a read as the professor).
+        searches = [
+            self.db.rpc(
+                "match_document_chunks",
+                {
+                    "p_exam_project_id": assessment_id,
+                    "p_query_embedding": vector_literal(vector),
+                    "p_categories": list(categories),
+                    "p_match_count": per_query,
+                },
             )
-        )
+            for vector in vectors
+        ]
+        if "course_material" in categories:
+            searches += [self._page_search(assessment_id, query, per_query) for query in queries]
+        results = await asyncio.gather(*searches)
+        chunk_results, page_results = results[: len(vectors)], results[len(vectors) :]
         best: dict[str, Excerpt] = {}
-        for rows in results:
-            for row in rows or []:
+        score: dict[str, float] = {}
+        for rows in chunk_results:
+            for rank, row in enumerate(rows or []):
                 if exclude and row["id"] in exclude:
                     continue
                 similarity = float(row.get("similarity") or 0)
@@ -85,9 +113,45 @@ class DocumentRetrievalService:
                         location=row.get("location_label"),
                         content=row["content"],
                         similarity=similarity,
+                        pages=(row.get("page_start"), row.get("page_end")),
                     )
-        ranked = sorted(best.values(), key=lambda excerpt: excerpt.similarity, reverse=True)
+                score[row["id"]] = score.get(row["id"], 0.0) + 1 / (_FUSION_K + rank)
+        for rows in page_results:
+            for rank, row in enumerate(rows or []):
+                key = next((e.chunk_id for e in best.values() if e.covers(row["document_id"], row["page_number"])), None)
+                if key is None:
+                    key = row["id"]
+                    if exclude and key in exclude:
+                        continue
+                    best.setdefault(
+                        key,
+                        Excerpt(
+                            chunk_id=key,
+                            document_id=row["document_id"],
+                            document_name=document_names.get(row["document_id"], "Uploaded file"),
+                            location=f"Page {row['page_number']}",
+                            content=f"[Page {row['page_number']}]\n{row['search_text']}",
+                            similarity=0.0,
+                            pages=(row["page_number"], row["page_number"]),
+                        ),
+                    )
+                score[key] = score.get(key, 0.0) + 1 / (_FUSION_K + rank)
+        ranked = sorted(best.values(), key=lambda excerpt: (score.get(excerpt.chunk_id, 0.0), excerpt.similarity), reverse=True)
         return _fit(ranked, max_excerpts, max_chars)
+
+    async def _page_search(self, assessment_id: str, query: str, count: int) -> list[dict]:
+        """Analysed pages containing the query's words (any of them), best first; [] if unavailable."""
+        words = list(dict.fromkeys(word for word in re.findall(r"[A-Za-z][A-Za-z0-9-]{3,}", query.lower()) if word not in _STOP))
+        if not words:
+            return []
+        try:
+            return await self.db.rpc(
+                "search_document_pages",
+                {"p_exam_project_id": assessment_id, "p_query": " or ".join(words[:16]), "p_match_count": count},
+            )
+        except AppError as error:  # e.g. the document_pages migration isn't applied yet: meaning search alone
+            logger.warning("Page word search unavailable: %s", error.code)
+            return []
 
     async def spread(
         self,

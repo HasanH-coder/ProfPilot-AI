@@ -14,6 +14,7 @@ recorded in the question's revision history. Anything bigger is reported to
 the professor instead of changed.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -41,6 +42,7 @@ from app.services.exam_store import (
     similar,
 )
 from app.services.lecture_knowledge import professor_formula_text, traced_to_professor, unverified_refs
+from app.services.slides import REVIEW_IMAGES, image_parts, question_slides, render_question_sources, slide_images
 
 logger = logging.getLogger("profpilot.review")
 
@@ -242,25 +244,32 @@ class ExamReviewService:
         for row in full.version_questions(full.primary_version["id"]):
             concepts.extend((row.get("concepts") or [])[:2])
         queries = list(dict.fromkeys(concepts))[:12] or [ctx.enhanced_prompt[:500]]
-        excerpts = assign_refs(
-            await DocumentRetrievalService(self.db, self.ai, self.usage).search(
+        # Each question's slides, as its writer saw them, to check its answer key against them.
+        slides = ctx.slides
+        cited = question_slides(full.version_questions(full.primary_version["id"]), slides)
+        found_excerpts, images = await asyncio.gather(
+            DocumentRetrievalService(self.db, self.ai, self.usage).search(
                 ctx.record.id, queries, document_names=ctx.document_names, per_query=3, max_excerpts=14, max_chars=24_000
-            )
+            ),
+            slide_images(self.db, slides, [ref for _, refs in cited for ref in refs], limit=REVIEW_IMAGES, files=ctx.files),
         )
+        excerpts = assign_refs(found_excerpts)
         versions_text = []
         for version in full.versions:
             questions = full.version_questions(version["id"])
             body = "\n\n".join(render_question(row, number) for number, row in enumerate(questions, start=1))
             versions_text.append(framer.block("exam_version", f"Version {version['label']}", body))
-        return await self.ai.parse(
+        return await self.ai.parse_with_files(
             purpose="review_exam",
             instructions=reviewer_instructions(framer),
-            input="\n\n".join(
+            files=image_parts(images, slides),
+            text="\n\n".join(
                 part
                 for part in [
                     "APPROVED EXAM SPEC\n" + json.dumps(ctx.spec.model_dump(), indent=1),
                     "APPROVED BRIEF\n" + ctx.enhanced_prompt,
                     "THE EXAM TO REVIEW (with answer keys)\n" + "\n\n".join(versions_text),
+                    render_question_sources(cited, slides, framer),
                     render_excerpts(excerpts, framer, title="RELEVANT COURSE MATERIAL"),
                     (
                         "FOUND BY CHECKS IN CODE (reported to the professor already; don't report them again. For "

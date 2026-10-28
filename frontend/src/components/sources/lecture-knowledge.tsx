@@ -11,20 +11,33 @@ import { cn } from "@/lib/utils";
 
 const CHECK_MS = 4000;
 
-const formatTokens = (tokens: number) => (tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens));
-
 /**
- * A source's lecture knowledge: built once (when the file is read, or on request
- * with an estimate first) and reused by every assessment. The full profile stays
- * on the server; this shows its state and, on request, a concise overview.
+ * A source's lecture knowledge: built when the file is read (a PowerPoint file's pictures read
+ * first), brought up to date on its own when Sources opens, and reused by every assessment. The
+ * full profile stays on the server; this shows its progress and state and, on request, a concise
+ * overview. The professor never has to start anything: only Retry, after a failure.
+ *
+ * `preparing`: Sources is preparing it (a PowerPoint's pictures, then its knowledge); `checking`:
+ * Sources is still finding out which files need that, so no action is offered yet.
  */
-export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
+export function LectureKnowledgePanel({
+  source,
+  preparing = false,
+  checking = false,
+}: {
+  source: CourseSource;
+  preparing?: boolean;
+  checking?: boolean;
+}) {
   const [state, setState] = useState<KnowledgeState>(source.knowledge.state);
   const [topics, setTopics] = useState(source.knowledge.topics);
   const [details, setDetails] = useState<LectureKnowledge | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // Whether it's being prepared or its pictures read, as last checked (until then, what Sources said).
+  const [checkedWorking, setCheckedWorking] = useState<boolean | null>(null);
+  const working = checkedWorking ?? preparing;
   const previousStatus = useRef(source.status);
 
   const load = useCallback(async () => {
@@ -33,37 +46,36 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
     // A rebuild runs beside the working profile: show it, and keep checking until it's done.
     setState(knowledge.rebuild?.state === "building" ? "building" : knowledge.state);
     setTopics(knowledge.topics.length || null);
+    setCheckedWorking(!!knowledge.preparation || knowledge.pictures?.state === "reading");
     return knowledge;
   }, [source.id]);
 
-  // A file read during this visit builds its knowledge right after: show that.
+  // A file read during this visit has its knowledge built right after: show that.
   useEffect(() => {
     if (previousStatus.current !== "ready" && source.status === "ready") void load().catch(() => undefined);
     previousStatus.current = source.status;
   }, [source.status, load]);
 
-  // While it builds, check back now and then until it's done.
+  // While it's prepared, built or its pictures are read: check straight away, then now and then until it's done.
+  const polling = state === "building" || working;
   useEffect(() => {
-    if (state !== "building") return;
-    const timer = setInterval(() => void load().catch(() => undefined), CHECK_MS);
-    return () => clearInterval(timer);
-  }, [state, load]);
+    if (!polling) return;
+    const check = () => void load().catch(() => undefined);
+    const first = setTimeout(check, 0);
+    const timer = setInterval(check, CHECK_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [polling, load]);
 
+  /** Builds the lecture knowledge now: when it failed, or is somehow missing or out of date. */
   async function build() {
     setBusy(true);
     setProblem(null);
     try {
-      const { estimate, topics: existing } = details ?? (await load());
-      const confirmed = window.confirm(
-        `Analyse “${source.name}” in full to build its lecture knowledge?\n\n` +
-          `Estimated cost: ${estimate.modelCalls} AI calls, about ${formatTokens(estimate.inputTokens)} input and ` +
-          `${formatTokens(estimate.outputTokens)} output tokens. It's done once and reused by every assessment.` +
-          (existing.length > 0
-            ? "\n\nThe current lecture knowledge stays in use until the new one is ready, and is kept if this fails."
-            : ""),
-      );
-      if (!confirmed) return;
-      await apiRequest(`/api/documents/${source.id}/knowledge`, { method: "POST" });
+      // A long job: a fresh session keeps it signed in until it's done.
+      await apiRequest(`/api/documents/${source.id}/knowledge`, { method: "POST", freshSession: true });
       setState("building");
     } catch (cause) {
       setProblem(errorMessage(cause));
@@ -72,22 +84,13 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
     }
   }
 
-  /** The free first step of a refresh: re-read the file's text with page-level detail. */
-  async function reread() {
+  /** Reads the lecture's pictures again, after a reading failed (pictures already read are kept). */
+  async function readPictures() {
     setBusy(true);
     setProblem(null);
     try {
-      const { rereadEstimate } = details ?? (await load());
-      const confirmed = window.confirm(
-        `Re-read “${source.name}” to add page-level detail?\n\n` +
-          `No AI analysis is done: only the new text is indexed for search (one embedding request, about ` +
-          `${formatTokens(rereadEstimate?.embeddingTokens ?? 0)} tokens, well under one cent). The file, its ` +
-          "assessments and its current lecture knowledge stay as they are. Rebuilding the lecture knowledge is a " +
-          "separate step that asks first.",
-      );
-      if (!confirmed) return;
-      await apiRequest(`/api/documents/${source.id}/extraction`, { method: "POST" });
-      await load();
+      await apiRequest(`/api/documents/${source.id}/figures`, { method: "POST", freshSession: true });
+      setCheckedWorking(true);
     } catch (cause) {
       setProblem(errorMessage(cause));
     } finally {
@@ -103,38 +106,45 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
 
   if (source.status !== "ready") return null;
 
-  const action =
-    state === "none" ? "Build lecture knowledge" : state === "outdated" ? "Rebuild" : state === "failed" ? "Retry" : null;
-  const extraction = details?.extraction;
-  // Refresh, in two steps: a free re-read for page markers, then a paid rebuild that asks first.
-  const needsReread =
-    state !== "building" && !!extraction?.rereadable && (extraction.state === "legacy" || extraction.state === "interrupted");
-  const needsRebuild = state === "ready" && !!details?.legacy && extraction?.state === "current";
-  const rebuildFailed = state === "ready" && details?.rebuild?.state === "failed";
+  const readingPictures = details?.pictures?.state === "reading";
+  // Being prepared, but neither its pictures nor its knowledge are in progress right now (queued, say).
+  const waiting = working && !readingPictures && state !== "building";
+  const quiet = checking || working;
+  const action = quiet ? null : state === "none" ? "Build lecture knowledge" : state === "outdated" ? "Rebuild" : state === "failed" ? "Retry" : null;
+  const picturesError = quiet ? null : (details?.pictures?.error ?? null);
+  const rebuildFailed = state === "ready" && !quiet && details?.rebuild?.state === "failed";
   return (
     <div className="mt-1.5 flex flex-col gap-1.5 text-[11px]" data-knowledge-open={open && details ? "" : undefined}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className={cn("inline-flex items-center gap-1", state === "failed" ? "text-destructive" : "text-muted-foreground")}>
-          {state === "building" ? (
+        <span
+          className={cn(
+            "inline-flex items-center gap-1",
+            state === "failed" && !working ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {readingPictures || waiting || state === "building" ? (
             <LoaderCircle className="size-3 animate-spin" />
           ) : state === "failed" ? (
             <TriangleAlert className="size-3" />
           ) : (
             <BrainCircuit className="size-3" />
           )}
-          {state === "building" &&
+          {readingPictures && "Reading the pictures in this lecture…"}
+          {waiting && "Preparing for AI…"}
+          {!readingPictures &&
+            state === "building" &&
             (topics ? "Rebuilding lecture knowledge… (the current version stays in use)" : "Building lecture knowledge…")}
-          {state === "ready" && `Lecture knowledge · ${topics ?? 0} ${topics === 1 ? "topic" : "topics"}`}
-          {state === "none" && "No lecture knowledge yet"}
-          {state === "outdated" && "Lecture knowledge is out of date"}
-          {state === "failed" && (details?.error ?? "Building the lecture knowledge failed")}
+          {!working && state === "ready" && `Lecture knowledge · ${topics ?? 0} ${topics === 1 ? "topic" : "topics"}`}
+          {!working && state === "none" && "No lecture knowledge yet"}
+          {!working && state === "outdated" && "Lecture knowledge is out of date"}
+          {!working && state === "failed" && (details?.error ?? "Building the lecture knowledge failed")}
         </span>
         {action && (
           <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" disabled={busy} onClick={() => void build()}>
             {action}
           </Button>
         )}
-        {(state === "ready" || state === "outdated") && (
+        {!working && (state === "ready" || state === "outdated") && (
           <Button
             variant="link"
             size="sm"
@@ -147,41 +157,28 @@ export function LectureKnowledgePanel({ source }: { source: CourseSource }) {
           </Button>
         )}
       </div>
+      {picturesError && (
+        <p role="alert" className="flex flex-wrap items-center gap-x-2 text-destructive">
+          Reading the pictures failed: {picturesError}
+          <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" disabled={busy} onClick={() => void readPictures()}>
+            Try again
+          </Button>
+        </p>
+      )}
       {problem && (
         <p role="alert" className="text-destructive">
           {problem}
         </p>
       )}
-      {open && (needsReread || needsRebuild || rebuildFailed) && (
+      {open && rebuildFailed && (
         <div className="flex flex-col gap-1 rounded-lg border border-dashed p-2">
-          {rebuildFailed && (
-            <p className="text-destructive">
-              Rebuilding failed: {details?.rebuild?.error ?? "try again"} The previous lecture knowledge is still in use.
-            </p>
-          )}
-          {needsReread && (
-            <p className="text-muted-foreground">
-              {extraction?.state === "interrupted"
-                ? "Re-reading this file was interrupted. Re-read it to finish."
-                : "This file was read before page-level detail existed. Step 1 (free): re-read it."}
-            </p>
-          )}
-          {needsRebuild && !rebuildFailed && (
-            <p className="text-muted-foreground">
-              The text now has page-level detail. Step 2: rebuild the lecture knowledge to use it.
-            </p>
-          )}
+          <p className="text-destructive">
+            Rebuilding failed: {details?.rebuild?.error ?? "try again"} The previous lecture knowledge is still in use.
+          </p>
           <div className="flex flex-wrap gap-x-3">
-            {needsReread && (
-              <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" disabled={busy} onClick={() => void reread()}>
-                Re-read file
-              </Button>
-            )}
-            {(needsRebuild || rebuildFailed) && !needsReread && (
-              <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" disabled={busy} onClick={() => void build()}>
-                {rebuildFailed ? "Retry rebuild" : "Rebuild lecture knowledge"}
-              </Button>
-            )}
+            <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" disabled={busy} onClick={() => void build()}>
+              Retry rebuild
+            </Button>
           </div>
         </div>
       )}
@@ -195,11 +192,14 @@ function CoverageLine({ coverage, unit }: { coverage: NonNullable<LectureKnowled
   const pages = coverage.pages ?? {};
   const listed = (label: string, numbers: number[] | undefined) =>
     numbers && numbers.length > 0 ? ` · ${label} ${unit}s ${numbers.join(", ")}` : "";
+  // A lecture PDF's pictures aren't in its words, but the AI sees each slide itself as it writes from it.
+  const pictures = unit === "page" ? "pictures (seen as questions are written) on" : "figures not readable on";
   if (coverage.pageDetail && coverage.substantiveUnits != null) {
     return (
       <p className="text-muted-foreground">
         {coverage.substantiveUnits} of {coverage.totalUnits} {unit}s have substantive text
-        {listed("figures not readable on", pages.textWithFigures)}
+        {listed(pictures, pages.textWithFigures)}
+        {listed("pictures read on", coverage.unitsWithReadFigures)}
         {listed("mostly figures on", pages.figureDominated)}
         {listed("title or divider", pages.divider)}
         {listed("no text on", pages.empty)}
@@ -212,7 +212,7 @@ function CoverageLine({ coverage, unit }: { coverage: NonNullable<LectureKnowled
     <p className="text-muted-foreground">
       {coverage.analysedUnits} of {coverage.totalUnits} {unit}s have extracted text (page-level detail unavailable)
       {listed("no text on", coverage.unitsWithoutText)}
-      {listed("figures not readable on", coverage.unitsWithFigures)}
+      {listed(pictures, coverage.unitsWithFigures)}
       {coverage.truncated && " · end of file not read"}
     </p>
   );

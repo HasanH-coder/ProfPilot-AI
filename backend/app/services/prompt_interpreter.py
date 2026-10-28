@@ -14,7 +14,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from app.ai.openai_service import OpenAIService, Usage
+from app.ai.openai_service import OpenAIService, Usage, gather_limited
 from app.ai.prompts import DataFramer, interpreter_instructions
 from app.core.config import settings
 from app.core.errors import ConflictError
@@ -36,6 +36,8 @@ from app.services.document_ingestion import DocumentIngestionService
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
 from app.services.jobs import RunContext
 from app.services.lecture_knowledge import mapped_ids, render_inventory
+from app.services.slides import SlideIndex, ensure_page_words, render_all_slides
+from app.services.source_preparation import settled
 from app.services.style_analysis import StyleAnalysisService
 
 SPEC_ENVELOPE_VERSION = 1
@@ -90,7 +92,18 @@ class PromptInterpreterService:
         if run:
             await run.stage("reading_material")
         documents = await self.context.list_documents(assessment_id)
-        documents = await DocumentIngestionService(self.db, self.ai, self.usage).process_pending(documents)
+        ingestion = DocumentIngestionService(self.db, self.ai, self.usage)
+        documents = await ingestion.process_pending(documents)
+        # Lectures read by another job whose knowledge isn't built yet (or failed) get it now, so the plan
+        # sees every lecture's map; older lectures get their slides' words.
+        knowledge = await self.context.get_knowledge(documents)
+        unsettled = [
+            doc
+            for doc in documents
+            if doc.category == "course_material" and doc.processing_status == "ready" and not settled(doc, knowledge.get(doc.id))
+        ]
+        await gather_limited(settings.max_files_read_at_once, [ingestion.prepare(doc) for doc in unsettled])
+        await ensure_page_words(self.db, documents)
 
         if run:
             await run.stage("analyzing_previous_exams")
@@ -100,7 +113,9 @@ class PromptInterpreterService:
         if run:
             await run.stage("interpreting")
         framer = DataFramer()
-        excerpts, knowledge = await asyncio.gather(self._excerpts(record, documents), self.context.get_knowledge(documents))
+        excerpts, knowledge, pages = await asyncio.gather(
+            self._excerpts(record, documents), self.context.get_knowledge(documents), self.context.get_pages(documents)
+        )
         attachments = [doc for doc in documents if doc.category == "additional_attachment" and doc.processing_status == "ready"]
         sections = [
             render_settings(record),
@@ -108,6 +123,8 @@ class PromptInterpreterService:
             render_preferences(preferences),
             render_material_overview(documents, framer, mapped=mapped_ids(documents, knowledge)),
             render_inventory(documents, knowledge, framer),
+            # Every word of every slide: the authority on what each lecture contains (see slides.py).
+            render_all_slides(SlideIndex.build(documents, pages), framer),
             render_style_profile(style, framer),
             render_excerpts(excerpts, framer),
             (

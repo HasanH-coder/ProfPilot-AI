@@ -9,6 +9,7 @@ logged, or included in an error message.
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -112,8 +113,9 @@ class OpenAIService:
         max_output_tokens: int = 32_000,
         validate: Validator[T] | None = None,
         usage: Usage | None = None,
+        model: str | None = None,
     ) -> T:
-        """Asks the reasoning model for an answer that matches `schema` exactly.
+        """Asks the reasoning model (or `model`) for an answer that matches `schema` exactly.
 
         If the answer is cut off, malformed, or breaks a business rule checked by
         `validate`, the model gets one more try with the problems spelled out.
@@ -142,15 +144,18 @@ class OpenAIService:
                 ]
             started = time.monotonic()
             try:
-                response = await self.client.responses.parse(
-                    model=settings.reasoning_model,
-                    instructions=instructions,
-                    input=attempt_input,
-                    text_format=schema,
-                    text={"verbosity": verbosity},
-                    reasoning={"effort": effort},
-                    max_output_tokens=max_output_tokens,
-                    store=False,
+                response = await _patiently(
+                    purpose,
+                    lambda attempt_input=attempt_input, max_output_tokens=max_output_tokens: self.client.responses.parse(
+                        model=model or settings.reasoning_model,
+                        instructions=instructions,
+                        input=attempt_input,
+                        text_format=schema,
+                        text={"verbosity": verbosity},
+                        reasoning={"effort": effort},
+                        max_output_tokens=max_output_tokens,
+                        store=False,
+                    ),
                 )
             except pydantic.ValidationError:
                 # The reply was cut off or didn't match the schema.
@@ -220,17 +225,20 @@ class OpenAIService:
         for _round in range(max_rounds):
             started = time.monotonic()
             try:
-                response = await self.client.responses.create(
-                    model=settings.reasoning_model,
-                    instructions=instructions,
-                    input=items,
-                    tools=list(tools),
-                    tool_choice="auto",
-                    reasoning={"effort": effort},
-                    text={"verbosity": "low"},
-                    max_output_tokens=16_000,
-                    store=False,
-                    include=["reasoning.encrypted_content"],
+                response = await _patiently(
+                    purpose,
+                    lambda: self.client.responses.create(
+                        model=settings.reasoning_model,
+                        instructions=instructions,
+                        input=items,
+                        tools=list(tools),
+                        tool_choice="auto",
+                        reasoning={"effort": effort},
+                        text={"verbosity": "low"},
+                        max_output_tokens=16_000,
+                        store=False,
+                        include=["reasoning.encrypted_content"],
+                    ),
                 )
             except openai.OpenAIError as error:
                 raise _translate_error(error, purpose) from error
@@ -278,9 +286,11 @@ class OpenAIService:
         schema: type[T],
         effort: Effort = "low",
         max_output_tokens: int = 32_000,
+        validate: Validator[T] | None = None,
         usage: Usage | None = None,
+        model: str | None = None,
     ) -> T:
-        """Structured output from images or PDF pages (e.g. a scanned exam)."""
+        """Structured output from images or PDF pages (e.g. a scanned exam, a lecture's pages)."""
         content: list[dict[str, Any]] = [{"type": "input_text", "text": text}, *files]
         return await self.parse(
             purpose=purpose,
@@ -290,7 +300,9 @@ class OpenAIService:
             effort=effort,
             verbosity="medium",
             max_output_tokens=max_output_tokens,
+            validate=validate,
             usage=usage,
+            model=model,
         )
 
     # -- Embeddings ------------------------------------------------------------
@@ -300,10 +312,13 @@ class OpenAIService:
         vectors: list[list[float]] = []
         for batch in _batches(texts):
             try:
-                result = await self.client.embeddings.create(
-                    model=settings.embedding_model,
-                    input=batch,
-                    dimensions=settings.embedding_dimensions,
+                result = await _patiently(
+                    "embeddings",
+                    lambda batch=batch: self.client.embeddings.create(
+                        model=settings.embedding_model,
+                        input=batch,
+                        dimensions=settings.embedding_dimensions,
+                    ),
                 )
             except openai.OpenAIError as error:
                 raise _translate_error(error, "embeddings") from error
@@ -359,9 +374,75 @@ def _refusal_text(response: Any) -> str | None:
     return None
 
 
+# A busy AI service (a rate limit, an overload) is waited out this many times, with these pauses (or
+# as long as OpenAI says, up to _MAX_BUSY_PAUSE), before a request fails: a per-minute limit clears
+# within a minute, so a long job never fails for a burst of requests.
+_BUSY_PAUSES = (10.0, 20.0, 40.0, 60.0, 60.0)
+_MAX_BUSY_PAUSE = 90.0
+# "Request too large for gpt-… on tokens per min (TPM): Limit 30000, Requested 45678."
+_TOO_LARGE = re.compile(r"Limit (\d+), Requested (\d+)")
+
+R = TypeVar("R")
+
+
+async def _patiently(purpose: str, call: Callable[[], Awaitable[R]]) -> R:
+    """An OpenAI request that waits out a busy service a few times before failing."""
+    for attempt in range(len(_BUSY_PAUSES) + 1):
+        try:
+            return await call()
+        except openai.OpenAIError as error:
+            pause = _busy_pause(error, attempt)
+            if pause is None:
+                raise
+            logger.info("%s: the AI service is busy; trying again in %.0f s", purpose, pause)
+            await asyncio.sleep(pause)
+    raise AssertionError("unreachable")
+
+
+def _busy_pause(error: openai.OpenAIError, attempt: int) -> float | None:
+    """How long to wait before trying `error`'s request again, or None when waiting won't help."""
+    if attempt >= len(_BUSY_PAUSES):
+        return None
+    if isinstance(error, openai.RateLimitError):
+        if getattr(error, "code", None) == "insufficient_quota" or _too_large(error):
+            return None
+    elif not (isinstance(error, openai.APIStatusError) and error.status_code >= 500):
+        return None
+    headers = getattr(getattr(error, "response", None), "headers", None) or {}
+    try:
+        after = float(headers.get("retry-after-ms") or 0) / 1000 or float(headers.get("retry-after") or 0)
+    except ValueError:
+        after = 0.0
+    return min(after, _MAX_BUSY_PAUSE) if after > 0 else _BUSY_PAUSES[attempt]
+
+
+def _too_large(error: openai.OpenAIError) -> tuple[int, int] | None:
+    """A request bigger than the account's per-minute limit on its own (Limit, Requested): waiting won't help."""
+    match = _TOO_LARGE.search(str(getattr(error, "message", "") or ""))
+    if match and int(match.group(2)) > int(match.group(1)):
+        return int(match.group(1)), int(match.group(2))
+    return None
+
+
 def _translate_error(error: Exception, purpose: str) -> AppError:
     """OpenAI errors become safe messages. Details are logged without content."""
     if isinstance(error, openai.RateLimitError):
+        if getattr(error, "code", None) == "insufficient_quota":
+            # OpenAI reports an exhausted balance or budget as a rate limit; waiting won't help.
+            logger.error("%s: the OpenAI account is out of credit", purpose)
+            return AIServiceError(
+                "ProfPilot's OpenAI account has run out of credit (or reached its monthly limit). Add credit, then try again.",
+                code="ai_quota",
+            )
+        too_large = _too_large(error)
+        if too_large:
+            limit, requested = too_large
+            logger.error("%s: a request of %s tokens is over the account's per-minute limit of %s", purpose, requested, limit)
+            return AIServiceError(
+                "This request is bigger than ProfPilot's OpenAI account allows per minute (its usage tier's limit). "
+                "Raise the account's usage tier, or use fewer or shorter files.",
+                code="ai_request_too_large",
+            )
         logger.warning("%s: rate limited", purpose)
         return AIBusyError()
     if isinstance(error, openai.APITimeoutError):

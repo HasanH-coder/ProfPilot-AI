@@ -83,12 +83,12 @@ Browser ──(publishable key, session)─────────────�
 - pgvector in Supabase for searching course material
 - pytest and Ruff
 
-The models are configured in one place, `backend/app/core/config.py`: `gpt-6.1-sol` for reasoning, `gpt-realtime-2.1` for voice, and `text-embedding-3-small` for search. Each can be overridden with an environment variable. See [docs/assessment-agent.md](docs/assessment-agent.md#models).
+The models are configured in one place, `backend/app/core/config.py`: `gpt-6.1-sol` for reasoning (it also sees the slides as it writes questions), `gpt-realtime-2.1` for voice, and `text-embedding-3-small` for search. Each can be overridden with an environment variable. See [docs/assessment-agent.md](docs/assessment-agent.md#models).
 
 ## Setting up Supabase
 
 1. Create a project at [supabase.com](https://supabase.com).
-2. Apply the migrations in `supabase/migrations/`, in order. They create the tables, Row Level Security, the private `assessment-files` Storage bucket with its policies, and (in `20261005203838_assessment_ai_workflow.sql`) the `vector` extension and the AI workflow's tables. Either paste each migration file into the dashboard's **SQL Editor** and run it, or use the Supabase CLI: `npx supabase login`, `npx supabase init`, `npx supabase link --project-ref <your-project-ref>`, then `npx supabase db push`.
+2. Apply the migrations in `supabase/migrations/`, in order. They create the tables, Row Level Security, the private `assessment-files` Storage bucket with its policies, and (in `20261005203838_assessment_ai_workflow.sql`) the `vector` extension and the AI workflow's tables; `20261028120000_page_understanding.sql` keeps every slide's words for search and planning, and the backend needs it. Either paste each migration file into the dashboard's **SQL Editor** and run it, or use the Supabase CLI: `npx supabase login`, `npx supabase init`, `npx supabase link --project-ref <your-project-ref>`, then `npx supabase db push`.
 3. In **Authentication > URL Configuration**, set the Site URL to `http://localhost:3000` and add `http://localhost:3000/**` to the Redirect URLs.
 4. Optional but recommended: in the **Authentication** email templates, change the "Confirm signup" link to `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`. With this template, confirmation links work in any browser, not only the one used to sign up.
 5. Copy `frontend/.env.example` to `frontend/.env.local` and fill in the project URL and **publishable** key (dashboard: **Connect**, or **Settings > API Keys**), and `NEXT_PUBLIC_API_URL` (the backend's address, `http://localhost:8000` locally). Never put a secret key, the `service_role` key or the OpenAI key in the frontend.
@@ -178,6 +178,7 @@ Real `.env` files are ignored by git; never commit secrets or API keys.
 - The Assessment Agent ([details](docs/assessment-agent.md)):
   - FastAPI verifies each professor's Supabase access token and works as that professor, under Row Level Security;
   - uploaded files are read in the background (PDF, including scanned pages, PPTX, DOCX, TXT and images), summarized, and indexed with pgvector;
+  - a lecture PDF is used the way a chat assistant reads a PDF: every slide's words are kept page by page as it's read (no AI reading), the planner gets every word of every slide, and each question's writer and the reviewer see its slides themselves as images (diagrams, charts, tables and formulas included), so questions cite their slides; a PowerPoint lecture's pictures are read; course sources read before that are brought up to date automatically when Sources opens;
   - a style profile of the professor's previous exams;
   - **Set up with AI**: fill in the setup form by voice (OpenAI Realtime over WebRTC) or text;
   - **Exam Learning Focus**: the exam's marks across Bloom's six levels (Automatic, three presets, or a custom split), used by planning, writing and the quality check;

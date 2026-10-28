@@ -104,7 +104,7 @@ def test_revising_one_question_does_only_that(api, supabase, db_a, ai):
     assert [call["purpose"] for call in ai.calls] == ["revise_question"]
     assert ai.calls[0]["effort"] == "medium"
     assert not HEAVY & {call["purpose"] for call in ai.calls}
-    assert ai.embedding_calls == 1 and set(supabase.rpc_calls) == {"match_document_chunks"}
+    assert ai.embedding_calls == 1 and set(supabase.rpc_calls) == {"match_document_chunks", "search_document_pages"}
     after = api.get(f"/api/exams/{exam['id']}", headers=auth()).json()
     unchanged = {q["id"]: q["prompt"] for q in after["questions"] if q["id"] != target["id"]}
     assert unchanged == {q["id"]: q["prompt"] for q in exam["questions"] if q["id"] != target["id"]}
@@ -127,7 +127,7 @@ def test_generating_the_next_question_does_only_that(api, supabase, db_a, ai):
     )
     assert response.json()["ok"] is True
     assert [call["purpose"] for call in ai.calls] == ["generate_question"]
-    assert ai.embedding_calls == 1 and supabase.rpc_calls == ["match_document_chunks"]
+    assert ai.embedding_calls == 1 and sorted(supabase.rpc_calls) == ["match_document_chunks", "search_document_pages"]
 
 
 def test_the_chat_reports_a_tool_before_the_ai_returns(api, supabase, db_a, ai):

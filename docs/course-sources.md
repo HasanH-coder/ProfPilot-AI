@@ -25,6 +25,10 @@ The Course material card of the assessment form shows `CourseSourceSelector` und
 
 No file copy or new ingestion request is needed when a source is selected.
 
+## Ready for AI without anyone asking
+
+A lecture PDF has every slide's words kept page by page as it's read (from the file itself, with no AI; a scanned lecture's transcribed), and its slides are shown to the AI as images when an exam is written, the way a chat assistant reads a PDF (a PowerPoint file has its pictures read instead; see [the Assessment Agent](assessment-agent.md#reading-the-uploaded-files)). Its lecture knowledge is built as soon as it's uploaded. Sources read before that are brought up to date when Sources opens: the page calls `POST /api/sources/preparation` (with a fresh session), which prepares in the background, two at a time, every source that isn't up to date, and each lecture shows what's under way until it's done. Nothing needs the professor; only a failure shows **Retry** (or **Try again** for a PowerPoint's pictures). Prepared sources cost nothing to check.
+
 ## Recovery
 
 - Opening Sources resumes any source left `pending` or `processing`. The backend skips a source it is still reading, and reads one again whose reading was interrupted (for example by a restart). This assumes a single backend process, like the job runner.
@@ -33,3 +37,5 @@ No file copy or new ingestion request is needed when a source is selected.
 ## Database rollout
 
 Apply `20261016160000_course_sources.sql` after the existing migrations, then regenerate Supabase TypeScript types. The migration is versioned only; it is not applied automatically or to a live project by this branch.
+
+Keeping every slide's words needs `20261028120000_page_understanding.sql` (the `document_pages` table and `search_document_pages`), applied before the backend that uses it is started.

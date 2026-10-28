@@ -589,10 +589,11 @@ def _rubric_text(rubric: list[dict[str, Any]]) -> str:
 
 
 def source_labels(row: dict[str, Any]) -> list[str]:
-    """A question's sources for the answer key: the exact pages of the lecture topics it was planned
-    on, then the retrieved excerpts (whose labels span their chunk's pages) of any other file."""
+    """A question's sources for the answer key: the exact pages it was planned on (its slides, and its
+    lecture topics' pages), then the retrieved excerpts (whose labels span their chunk's pages) of any
+    other file."""
     refs = row.get("source_refs") or []
-    exact = [ref for ref in refs if ref.get("topic") and ref.get("label")]
+    exact = [ref for ref in refs if (ref.get("topic") or ref.get("page")) and ref.get("label")]
     covered = {ref.get("document_id") for ref in exact}
     others = [ref for ref in refs if not ref.get("topic") and ref.get("label") and ref.get("document_id") not in covered]
     return list(dict.fromkeys(ref["label"] for ref in [*exact, *others]))

@@ -11,6 +11,7 @@ import pydantic
 import pytest
 from pydantic import BaseModel
 
+from app.ai import openai_service
 from app.ai.openai_service import OpenAIService, Usage
 from app.core.errors import AIBusyError, AIServiceError, AITimeoutError
 
@@ -112,12 +113,14 @@ async def test_refusals_and_content_filters_become_clear_errors():
 
 
 @pytest.mark.anyio
-async def test_sdk_errors_are_translated_without_details():
+async def test_sdk_errors_are_translated_without_details(monkeypatch):
     request = httpx2.Request("POST", "https://api.openai.com/v1/responses")
     rate_limited = openai.RateLimitError(
         "secret detail", response=httpx2.Response(429, request=request), body={"message": "secret detail"}
     )
-    ai, _ = service(rate_limited)
+    # A busy service is waited out first (see test_openai_busy.py); here it stays busy after every pause.
+    monkeypatch.setattr(openai_service, "_BUSY_PAUSES", (0.0,) * len(openai_service._BUSY_PAUSES))
+    ai, _ = service(*[rate_limited] * (len(openai_service._BUSY_PAUSES) + 1))
     with pytest.raises(AIBusyError) as error:
         await ai.parse(purpose="t", instructions="i", input="x", schema=Answer)
     assert "secret" not in error.value.message

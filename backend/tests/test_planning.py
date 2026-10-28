@@ -16,7 +16,7 @@ from app.services.exam_generation import (
     suggest_next,
 )
 from tests.helpers import auth
-from tests.model import well_behaved_interpretation
+from tests.model import cite_pages, well_behaved_interpretation
 from tests.seed import seed_assessment, seed_document
 from tests.test_workflow import A_SETTINGS, generate, interpret_and_approve
 
@@ -130,9 +130,9 @@ def test_an_already_mixed_plan_is_left_as_planned():
 
 
 def use_plan(ai, plan: ExamPlan) -> None:
-    """The planner (and its one repair attempt) return this plan."""
-    ai.on("plan_exam", lambda _call: plan)
-    ai.on("replan_exam", lambda _call: plan)
+    """The planner (and its one repair attempt) return this plan, its questions citing the lectures' pages."""
+    ai.on("plan_exam", lambda call: cite_pages(plan, call["input"]))
+    ai.on("replan_exam", lambda call: cite_pages(plan, call["input"]))
 
 
 def seeded_context(supabase, db_a, ai, **settings):

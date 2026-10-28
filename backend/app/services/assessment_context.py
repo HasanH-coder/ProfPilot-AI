@@ -15,6 +15,9 @@ from app.domain.setup import AssessmentSetup
 from app.schemas.ai import StyleProfile
 from app.schemas.common import parse_id
 
+# The private Storage bucket that holds the professor's uploaded files.
+BUCKET = "assessment-files"
+
 ASSESSMENT_COLUMNS = (
     "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, "
     "subjective_percentage, number_of_versions, easy_percentage, medium_percentage, "
@@ -216,6 +219,25 @@ class AssessmentContextService:
         )
         return [CourseInfo(id=row["id"], code=row["code"], name=row.get("name")) for row in rows]
 
+    async def get_pages(self, documents: list[DocumentRecord]) -> dict[str, dict[int, dict[str, Any]]]:
+        """The slides of these course-material documents (see slides.py): each page's words and how
+        many pictures it shows, by document and page number (one query)."""
+        ids = [doc.id for doc in documents if doc.category == "course_material" and doc.processing_status == "ready"]
+        if not ids:
+            return {}
+        rows = await self.db.select(
+            "document_pages",
+            columns="document_id, page_number, text_layer, analysis",
+            filters=[("document_id", "in", ids), ("professor_id", "eq", self.db.professor_id)],
+        )
+        pages: dict[str, dict[int, dict[str, Any]]] = {}
+        for row in rows:
+            pages.setdefault(row["document_id"], {})[row["page_number"]] = {
+                "words": row.get("text_layer") or "",
+                "pictures": _picture_count(row.get("analysis")),
+            }
+        return pages
+
     async def get_knowledge(self, documents: list[DocumentRecord]) -> dict[str, dict[str, Any]]:
         """The lecture knowledge profiles of these course-material documents, by id (one query).
 
@@ -279,6 +301,15 @@ class AssessmentContextService:
             order=[("created_at", "asc")],
         )
         return [SourceInfo.from_row(row) for row in rows]
+
+
+def _picture_count(analysis: Any) -> int:
+    """How many pictures a kept page shows (counted when it was read; an earlier reader described each one)."""
+    if not isinstance(analysis, dict):
+        return 0
+    if isinstance(analysis.get("pictures"), int):
+        return analysis["pictures"]
+    return sum(1 for visual in analysis.get("visuals") or [] if isinstance(visual, dict) and visual.get("educational"))
 
 
 # =============================================================================

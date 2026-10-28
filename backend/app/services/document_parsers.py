@@ -1,12 +1,17 @@
 """Text extraction from uploaded files, keeping where each piece of text came from.
 
 Pure functions over bytes, so they are easy to test and can run in a worker
-thread. Images, and PDF pages without a text layer (scanned pages), are read by
-the AI model instead; see DocumentIngestionService.
+thread. Images, PDF pages without a text layer (scanned pages), and the pictures
+on pages and slides (diagrams, charts, code, tables) are read by the AI model
+instead; see DocumentIngestionService and figure_reading.py.
 """
 
+import hashlib
 import io
+import math
 import re
+from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 PDF = "application/pdf"
@@ -17,6 +22,25 @@ IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 # A PDF page with less text than this is treated as having no text layer.
 _MIN_PAGE_CHARACTERS = 25
+
+# A picture is worth reading when it may carry course content: it covers at least this share of
+# its page; or it's a strip (an equation, a line of code, a timeline) at least this long relative
+# to its height; or it's the main thing on a page with almost no text. Icons, emoji, bullets and
+# logos are smaller than that, and a picture on most pages is the slide template (a logo, a
+# background), never content.
+_PICTURE_MIN_AREA = 0.05
+_STRIP_RATIO = 3.0
+_STRIP_MIN_AREA = 0.01
+_SPARSE_PAGE_WORDS = 15
+_SPARSE_MIN_AREA = 0.015
+_TEMPLATE_MIN_PAGES = 3
+# Title and closing slides aren't worth reading, whatever pictures they have.
+_TITLE_WORDS = 30
+_CLOSING_WORDS = 12
+_CLOSING = re.compile(
+    r"(?i)\b(?:thank(?:s| you)|any questions|the end|end of (?:the )?(?:lecture|presentation|session|chapter))\b"
+    r"|\bquestions\s*\?|\bq\s*&\s*a\b"
+)
 
 
 class DocumentParseError(Exception):
@@ -37,11 +61,42 @@ class TextUnit:
 
 
 @dataclass
+class Picture:
+    """A picture drawn on a page or slide: which one it is, and how much of the page it covers."""
+
+    # The same picture on several pages has the same key (so a slide template is recognised).
+    key: object
+    # The share of the page or slide it covers (0–1), and its longer side over its shorter one.
+    area: float
+    ratio: float
+    # PowerPoint: the picture itself (content type, bytes), to show the AI. A PDF page is shown whole.
+    image: tuple[str, bytes] | None = None
+
+
+@dataclass
+class FigureSpot:
+    """A page or slide whose pictures may carry course content, for the AI to read (see figure_reading.py)."""
+
+    number: int
+    # "Page" or "Slide".
+    kind: str
+    # The page's own text (it may be too short to keep on its own, such as a title over a diagram).
+    text: str
+    # The pictures on it that may carry content.
+    pictures: list[Picture]
+
+
+@dataclass
 class ParsedDocument:
     units: list[TextUnit]
     page_count: int | None = None
     # PDF pages (1-based) that have no text layer and should be transcribed.
     pages_without_text: list[int] = field(default_factory=list)
+    # Pages or slides whose pictures may carry content, in order. Each has a "not in the
+    # extracted text" marker in its text until the pictures are read.
+    figures: list[FigureSpot] = field(default_factory=list)
+    # PDF: every page's own text layer, by page number, short or empty ones included.
+    page_texts: dict[int, str] = field(default_factory=dict)
 
     @property
     def character_count(self) -> int:
@@ -87,27 +142,117 @@ def parse_pdf(data: bytes) -> ParsedDocument:
 
     units: list[TextUnit] = []
     without_text: list[int] = []
-    # Images every page has (a slide template's logo or background) aren't figures.
-    images = [_pdf_image_count(page) for page in pages]
-    template = min(images, default=0)
+    figures: list[FigureSpot] = []
+    page_texts: dict[int, str] = {}
+    keys: dict[int, object] = {}
+    pictures = [_pdf_pictures(page, number, keys) for number, page in enumerate(pages, start=1)]
+    template = _template_keys(pictures)
+    seen: set[object] = set()
     for number, page in enumerate(pages, start=1):
         try:
             text = normalize_text(page.extract_text() or "")
         except Exception:  # a single unreadable page shouldn't sink the document
             text = ""
+        page_texts[number] = text
+        worth = _worth_reading(number, text, len(pages))
+        content = _content_pictures(pictures[number - 1], text, template, seen) if worth else []
+        if content:
+            figures.append(FigureSpot(number=number, kind="Page", text=text, pictures=content))
         if len(text) < _MIN_PAGE_CHARACTERS:
             without_text.append(number)
             continue
-        figures = images[number - 1] - template
-        if figures > 0:
-            # Embedded images aren't text: say so, so their content is never assumed to be covered.
-            text = f"{text}\n{figure_marker('page', number, figures)}"
+        if content:
+            # Pictures aren't text: say so, so their content is never assumed to be covered (until read).
+            text = f"{text}\n{figure_marker('page', number, len(content))}"
         units.append(TextUnit(text=text, page_start=number, page_end=number, kind="Page"))
-    return ParsedDocument(units=units, page_count=len(pages), pages_without_text=without_text)
+    return ParsedDocument(
+        units=units, page_count=len(pages), pages_without_text=without_text, figures=figures, page_texts=page_texts
+    )
+
+
+def _pdf_pictures(page, number: int, keys: dict[int, object]) -> list[Picture]:
+    """The pictures drawn on a PDF page, with the share of the page each covers (nothing is decoded).
+
+    Follows the page's drawing instructions, so a picture's size is the size it's drawn at
+    (inside reusable drawings too), not the size of its file. `keys` remembers each picture's
+    key across pages.
+    """
+    from pypdf.generic import ContentStream
+
+    box = page.mediabox
+    page_area = abs(float(box.width) * float(box.height)) or 1.0
+    found: list[Picture] = []
+
+    def add(key: object, ctm: tuple[float, ...]) -> None:
+        a, b, c, d = ctm[:4]
+        width, height = math.hypot(a, b), math.hypot(c, d)
+        ratio = max(width, height) / max(min(width, height), 1e-9)
+        found.append(Picture(key=key, area=min(1.0, abs(a * d - b * c) / page_area), ratio=ratio))
+
+    def walk(content, resources, ctm: tuple[float, ...], depth: int) -> None:
+        xobjects = _resolved(_resolved(resources).get("/XObject")) if resources is not None else None
+        saved: list[tuple[float, ...]] = []
+        for operands, operator in content.operations:
+            if operator == b"q":
+                saved.append(ctm)
+            elif operator == b"Q":
+                ctm = saved.pop() if saved else ctm
+            elif operator == b"cm" and len(operands) == 6:
+                ctm = _multiply(tuple(float(value) for value in operands), ctm)
+            elif operator == b"Do" and xobjects is not None:
+                xobject = _resolved(xobjects.get(operands[0]))
+                subtype = xobject.get("/Subtype") if xobject is not None else None
+                if subtype == "/Image":
+                    add(_image_key(xobject, keys), ctm)
+                elif subtype == "/Form" and depth < 4:
+                    matrix = tuple(float(value) for value in _resolved(xobject.get("/Matrix", [1, 0, 0, 1, 0, 0])))
+                    inner = ContentStream(xobject, page.pdf)
+                    walk(inner, xobject.get("/Resources", resources), _multiply(matrix, ctm), depth + 1)
+            elif operator == b"INLINE IMAGE":
+                data = operands.get("data", b"") if isinstance(operands, dict) else b""
+                add(("inline", hashlib.blake2b(data, digest_size=16).hexdigest()), ctm)
+
+    try:
+        content = page.get_contents()
+        if content is not None:
+            walk(content, page.get("/Resources"), (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0)
+    except Exception:
+        # Drawing instructions that can't be followed: count the page's images, each as possible content.
+        return [Picture(key=("unsized", number, index), area=1.0, ratio=1.0) for index in range(_pdf_image_count(page))]
+    return found
+
+
+def _image_key(xobject, keys: dict[int, object]) -> object:
+    """The same picture's key wherever it's drawn: by its stored bytes, so a template logo copied
+    onto every page is recognised too (hashed once per picture, never decoded)."""
+    if id(xobject) not in keys:
+        try:
+            keys[id(xobject)] = ("image", hashlib.blake2b(xobject._data, digest_size=16).hexdigest())
+        except Exception:
+            keys[id(xobject)] = ("image", id(xobject))
+    return keys[id(xobject)]
+
+
+def _multiply(m: tuple[float, ...], n: tuple[float, ...]) -> tuple[float, ...]:
+    """Two PDF transformation matrices [a b c d e f] combined (m applied first, then n)."""
+    a1, b1, c1, d1, e1, f1 = m
+    a2, b2, c2, d2, e2, f2 = n
+    return (
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    )
+
+
+def _resolved(value):
+    return value.get_object() if hasattr(value, "get_object") else value
 
 
 def _pdf_image_count(page) -> int:
-    """Images drawn on a PDF page (from its resources; nothing is decoded)."""
+    """Images in a PDF page's resources (nothing is decoded)."""
     try:
         resources = page.get("/Resources")
         xobjects = resources.get_object().get("/XObject") if resources else None
@@ -116,6 +261,58 @@ def _pdf_image_count(page) -> int:
         return sum(1 for item in xobjects.get_object().values() if item.get_object().get("/Subtype") == "/Image")
     except Exception:
         return 0
+
+
+def _template_keys(pages: list[list[Picture]]) -> set[object]:
+    """Pictures on at least half the pages (and at least three): a slide template's logo or background."""
+    counts = Counter(key for pictures in pages for key in {picture.key for picture in pictures})
+    needed = max(_TEMPLATE_MIN_PAGES, math.ceil(len(pages) / 2))
+    return {key for key, count in counts.items() if count >= needed}
+
+
+def _content_pictures(pictures: list[Picture], text: str, template: set[object], seen: set[object]) -> list[Picture]:
+    """The pictures on a page that may carry content: not the slide template, not an icon or logo.
+
+    A picture shown again on later pages (a slide built up step by step) is read once, where it
+    first appears: `seen` collects the pictures already chosen.
+    """
+    sparse = len(text.split()) <= _SPARSE_PAGE_WORDS
+    content = [
+        picture
+        for picture in pictures
+        if picture.key not in template
+        and picture.key not in seen
+        and (
+            picture.area >= _PICTURE_MIN_AREA
+            or (picture.ratio >= _STRIP_RATIO and picture.area >= _STRIP_MIN_AREA)
+            or (sparse and picture.area >= _SPARSE_MIN_AREA)
+        )
+    ]
+    seen.update(picture.key for picture in content)
+    return content
+
+
+def _worth_reading(number: int, text: str, total: int) -> bool:
+    """Whether a page's pictures are worth reading: not on the title slide or a closing one ("Thank you", "Questions?")."""
+    words = len(text.split())
+    if number == 1 and total > 3 and words <= _TITLE_WORDS:
+        return False
+    return not (words <= _CLOSING_WORDS and _CLOSING.search(text))
+
+
+def pdf_subset(data: bytes, pages: list[int]) -> bytes:
+    """A PDF of just these pages (1-based), in this order, to show the AI."""
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(io.BytesIO(data))
+    if reader.is_encrypted:
+        reader.decrypt("")
+    writer = PdfWriter()
+    for number in pages:
+        writer.add_page(reader.pages[number - 1])
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 def parse_pptx(data: bytes) -> ParsedDocument:
@@ -127,7 +324,12 @@ def parse_pptx(data: bytes) -> ParsedDocument:
         raise DocumentParseError("This PowerPoint file couldn't be opened. It may be damaged.") from error
 
     units: list[TextUnit] = []
+    figures: list[FigureSpot] = []
     slides = list(presentation.slides)
+    slide_area = float(presentation.slide_width or 0) * float(presentation.slide_height or 0) or 1.0
+    pictures = [list(_pptx_pictures(slide.shapes, slide_area)) for slide in slides]
+    template = _template_keys(pictures)
+    seen: set[object] = set()
     for number, slide in enumerate(slides, start=1):
         parts: list[str] = []
         title = ""
@@ -140,6 +342,9 @@ def parse_pptx(data: bytes) -> ParsedDocument:
             parts.append(title)
         for shape in slide.shapes:
             parts.extend(_shape_texts(shape, skip_text=title))
+        charts = [_chart_text(chart, number) for chart in _charts(slide.shapes)]
+        parts.extend(chart for chart in charts if chart)
+        visible = normalize_text("\n".join(parts))
         try:
             if slide.has_notes_slide:
                 notes = normalize_text(slide.notes_slide.notes_text_frame.text)
@@ -147,17 +352,29 @@ def parse_pptx(data: bytes) -> ParsedDocument:
                     parts.append(f"Speaker notes: {notes}")
         except Exception:
             pass
-        visuals = sum(_visual_count(shape) for shape in slide.shapes)
-        if visuals and any(parts):
-            # Pictures and charts aren't text: say so, so their content is never assumed to be covered.
-            parts.append(figure_marker("slide", number, visuals))
+        worth = _worth_reading(number, visible, len(slides))
+        content = _content_pictures(pictures[number - 1], visible, template, seen) if worth else []
+        if content:
+            figures.append(FigureSpot(number=number, kind="Slide", text=normalize_text("\n".join(parts)), pictures=content))
+        # Pictures (and charts whose data couldn't be read) aren't text: say so, so their content is
+        # never assumed to be covered (until the pictures are read).
+        unread = len(content) + charts.count("")
+        if unread and any(parts):
+            parts.append(figure_marker("slide", number, unread))
         text = normalize_text("\n".join(part for part in parts if part))
         if text:
             units.append(TextUnit(text=text, page_start=number, page_end=number, kind="Slide"))
-    return ParsedDocument(units=units, page_count=len(slides))
+    return ParsedDocument(units=units, page_count=len(slides), figures=figures)
 
 
 FIGURE_MARKER = re.compile(r"\[Figure on (?:slide|page) (\d+):")
+# The whole line of a "not in the extracted text" marker, and the number of pictures it counts.
+UNREAD_FIGURE_LINE = re.compile(r"^\[Figure on (?:slide|page) \d+: (\d+) picture\(s\) or chart\(s\)[^\]\n]*\]$", re.M)
+# A picture ProfPilot has read (see figure_reading.py): this header, what the picture shows, then
+# FIGURE_END. A page whose pictures are only decoration has the header alone, of kind DECORATIVE.
+READ_FIGURE = re.compile(r"^\[Figure on (page|slide) (\d+), read by ProfPilot: ([^\]\n]+)\]$", re.M)
+FIGURE_END = "[End of figure]"
+DECORATIVE = "decorative only"
 # Unicode "mathematical alphanumeric" letters (𝒇, 𝒘, 𝟏…): what PDF text layers yield for typeset
 # maths, often with garbled signs around them. Where they appear, extracted formulas are unreliable.
 EXTRACTION_GLYPHS = re.compile("[\U0001d400-\U0001d7ff]")
@@ -169,14 +386,58 @@ def figure_marker(unit: str, number: int, count: int) -> str:
     return f"[Figure on {unit} {number}: {count} picture(s) or chart(s) whose content is not in the extracted text]"
 
 
-def _visual_count(shape) -> int:
-    """Pictures and charts on a slide (inside groups too)."""
+def _pptx_pictures(shapes, slide_area: float) -> Iterator[Picture]:
+    """The pictures on a slide (inside groups too), with the share of the slide each covers."""
+    for shape in shapes:
+        try:
+            if shape.shape_type == 6 and hasattr(shape, "shapes"):  # a group of shapes
+                yield from _pptx_pictures(shape.shapes, slide_area)
+                continue
+            image = getattr(shape, "image", None)  # a picture, or a placeholder holding one
+            if image is None:
+                continue
+            width, height = float(shape.width or 0), float(shape.height or 0)
+            yield Picture(
+                key=image.sha1,
+                area=min(1.0, width * height / slide_area),
+                ratio=max(width, height) / max(min(width, height), 1.0),
+                image=(image.content_type, image.blob),
+            )
+        except Exception:  # a linked (not embedded) picture, or a shape python-pptx can't describe
+            continue
+
+
+def _charts(shapes) -> Iterator:
+    for shape in shapes:
+        try:
+            if shape.shape_type == 6 and hasattr(shape, "shapes"):  # a group of shapes
+                yield from _charts(shape.shapes)
+            elif getattr(shape, "has_chart", False) and shape.has_chart:
+                yield shape.chart
+        except Exception:
+            continue
+
+
+_CHART_CATEGORIES = 60
+_CHART_SERIES = 12
+
+
+def _chart_text(chart, number: int) -> str:
+    """A PowerPoint chart's own data as text (kind, title, categories, each series' values), or ""."""
     try:
-        if shape.shape_type == 6 and hasattr(shape, "shapes"):  # a group of shapes
-            return sum(_visual_count(child) for child in shape.shapes)
-        return int(shape.shape_type == 13 or bool(getattr(shape, "has_chart", False)))  # 13: a picture
+        kind = (getattr(chart.chart_type, "name", None) or "chart").replace("_", " ").lower()
+        title = chart.chart_title.text_frame.text.strip() if chart.has_title and chart.chart_title.has_text_frame else ""
+        lines = [f"[Chart on slide {number} (data from the file): {kind}{f': {title}' if title else ''}]"]
+        for plot in chart.plots:
+            categories = [str(category) for category in list(plot.categories)[:_CHART_CATEGORIES]]
+            if categories:
+                lines.append("Categories: " + " | ".join(categories))
+            for series in list(plot.series)[:_CHART_SERIES]:
+                values = ["" if value is None else f"{value:g}" for value in list(series.values)[:_CHART_CATEGORIES]]
+                lines.append(f"{series.name or 'Series'}: " + " | ".join(values))
+        return "\n".join(lines) if len(lines) > 1 else ""
     except Exception:
-        return 0
+        return ""
 
 
 def _shape_texts(shape, *, skip_text: str = "") -> list[str]:

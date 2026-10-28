@@ -301,6 +301,8 @@ export type LectureKnowledge = {
     unitsWithoutText: number[];
     /** Slides whose pictures or charts aren't in the text (their text was analysed). */
     unitsWithFigures: number[];
+    /** Slides whose pictures ProfPilot read when the profile was built (what they show is in the text). */
+    unitsWithReadFigures?: number[];
     truncated: boolean;
   } | null;
   warnings: string[];
@@ -315,6 +317,20 @@ export type LectureKnowledge = {
   extraction?: { state: "legacy" | "current" | "interrupted" | "not_applicable" | "processing"; rereadable: boolean };
   /** A re-read makes no AI analysis call: only its new text is embedded for search. */
   rereadEstimate?: { embeddingTokens: number };
+  /** The pictures on its pages or slides (diagrams, charts, tables, code): which ProfPilot has read. */
+  pictures?: {
+    state: "reading" | "idle";
+    /** A PowerPoint lecture that has been read, so its pictures can be (a PDF's slides are seen as the exam is written). */
+    readable: boolean;
+    unread: number[];
+    read: number[];
+    /** Some were read after the lecture knowledge was built: a rebuild includes them. */
+    afterBuild: boolean;
+    /** Why the last reading failed, if it did. */
+    error: string | null;
+  };
+  /** Being brought up to date by the Sources page: waiting its turn, or under way. */
+  preparation?: "queued" | "running" | null;
 };
 
 export type RealtimeSecret ={ clientSecret: string; expiresAt: number; model: string };
