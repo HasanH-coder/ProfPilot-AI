@@ -24,6 +24,8 @@ type StatusReply = { status: SourceStatus; error: string | null; pageCount: numb
 export function CourseSourcesLibrary({ initialCourses, professorId }: { initialCourses: CourseWithSources[]; professorId: string }) {
   const [courses, setCourses] = useState(initialCourses);
   const [activity, setActivity] = useState<Record<string, string>>({});
+  // The sources being brought up to date for AI work (null while Sources is still asking).
+  const [preparing, setPreparing] = useState<Set<string> | null>(null);
 
   function updateSource(courseId: string, source: CourseSource) {
     setCourses((current) =>
@@ -90,7 +92,8 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
   async function startProcessing(courseId: string, source: CourseSource) {
     setActivity((current) => ({ ...current, [courseId]: `Reading ${source.name}…` }));
     try {
-      await apiRequest(`/api/documents/${source.id}/processing`, { method: "POST" });
+      // Reading (a scanned lecture's transcription, a PowerPoint's pictures) can take minutes: a fresh session keeps it signed in.
+      await apiRequest(`/api/documents/${source.id}/processing`, { method: "POST", freshSession: true });
       void pollSource(courseId, source);
     } catch (error) {
       // The file itself is saved; only reading it couldn't start (e.g. the AI service is down).
@@ -102,7 +105,8 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
   }
 
   async function pollSource(courseId: string, source: CourseSource) {
-    for (let attempt = 0; attempt < 80; attempt += 1) {
+    // Every 1.5 seconds, for up to 10 minutes (a scanned lecture takes a while to transcribe).
+    for (let attempt = 0; attempt < 400; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       try {
         const status = await apiRequest<StatusReply>(`/api/documents/${source.id}/status`);
@@ -127,6 +131,20 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, for the sources the page opened with
+  }, []);
+
+  // Bring older sources up to date for AI work, with no one asking: a lecture PDF's slides' words kept
+  // (a PowerPoint's pictures read), then their lecture knowledge built. Sources already prepared cost
+  // nothing to check.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const reply = await apiRequest<{ preparing: string[] }>("/api/sources/preparation", { method: "POST", freshSession: true });
+        setPreparing(new Set(reply?.preparing ?? []));
+      } catch {
+        setPreparing(new Set()); // the files still work; they're prepared on the next visit
+      }
+    })();
   }, []);
 
   async function openSource(source: CourseSource) {
@@ -192,7 +210,13 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
                       </Button>
                       {/* Its own full-width line, under the file name (aligned with it from small screens up). */}
                       <div className="min-w-0 basis-full sm:pl-12">
-                        <LectureKnowledgePanel source={source} />
+                        <LectureKnowledgePanel
+                          // Starts afresh when Sources starts preparing it, so it checks back until that's done.
+                          key={preparing?.has(source.id) ? `${source.id}:preparing` : source.id}
+                          source={source}
+                          preparing={preparing?.has(source.id) ?? false}
+                          checking={preparing === null}
+                        />
                       </div>
                     </li>
                   ))}

@@ -95,7 +95,9 @@ def test_generation_repairs_unknown_ids_and_keeps_the_exact_pages_of_the_planned
     assert "cites S99 in source_excerpt_ids" in " ".join(call["problems"][0]) and call["problems"][1] == []
     # Every question carries its planned topic's exact pages, whatever its excerpts were.
     topic = re.search(r"\[L1\.t1\] [^(]+\(([^)]+)\)", ai.calls_for("plan_exam")[0]["input"]).group(1)
-    assert all(question["sources"][0] == f"Lecture 1.pdf, {topic}" for question in exam["questions"])
+    assert all(f"Lecture 1.pdf, {topic}" in question["sources"] for question in exam["questions"])
+    # …and its planned slide, first.
+    assert all(re.fullmatch(r"Lecture 1\.pdf, Page \d+", question["sources"][0]) for question in exam["questions"])
 
 
 def test_a_revision_keeps_the_exact_pages_and_may_not_cite_unknown_excerpts(api, supabase, db_a, ai):

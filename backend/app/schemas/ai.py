@@ -329,8 +329,12 @@ class PlannedQuestion(BaseModel):
     # inventory. (The default keeps plans saved before this field existed valid.)
     knowledge_refs: list[str] = Field(default_factory=list)
     # What exactly students do, on which case ("compute the loss of a confident wrong prediction"),
-    # so no two questions share one. (The default keeps plans saved before this field existed valid.)
-    assessment_target: str = ""
+    # so no two questions share one. (The default keeps plans saved before this field existed valid;
+    # a default_factory, because a plain default would be sent in the schema, which strict mode rejects.)
+    assessment_target: str = Field(default_factory=str)
+    # The pages it draws on, from the SLIDE INVENTORY (e.g. "F1:p8"), so every question can be traced to
+    # its slides. (A default_factory keeps earlier plans valid without a schema default; see above.)
+    source_pages: list[str] = Field(default_factory=list)
 
 
 class ExamPlan(BaseModel):

@@ -8,6 +8,8 @@ openai==3.24.0
 pyjwt[crypto]==2.15.1
 # Reading uploaded files.
 pypdf==6.19.0
+# Rendering PDF pages as images, for the vision model to read every page.
+pypdfium2==5.14.0
 python-pptx==1.0.2
 python-docx==1.2.0
 # Exam PDFs (and images inside them).

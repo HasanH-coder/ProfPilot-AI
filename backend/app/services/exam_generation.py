@@ -3,9 +3,11 @@
 The full pipeline is controlled, not one giant prompt:
 
 1. plan every question (type, difficulty, points, topic, time) against the spec;
-2. check the plan in code (splits by marks, time, structure) and repair it once;
+2. check the plan in code (splits by marks, time, structure, the slides each
+   question cites) and repair it once;
 3. write the questions with complete answer keys, in parallel batches, each
-   batch with the course-material excerpts relevant to its own topics;
+   batch shown its questions' slides (as images, with their words) and the
+   course-material excerpts relevant to its own topics;
 4. create the other versions as equivalent variants;
 5. run the independent quality review (exam_review.py);
 6. mark the exam ready.
@@ -79,6 +81,18 @@ from app.services.lecture_knowledge import (
     unverified_formula_problems,
 )
 from app.services.prompt_interpreter import PromptInterpreterService
+from app.services.slides import (
+    WRITER_IMAGES,
+    SlideIndex,
+    ensure_page_words,
+    first_line,
+    has_slides,
+    image_parts,
+    render_all_slides,
+    render_slides,
+    slide_images,
+    slide_problems,
+)
 
 logger = logging.getLogger("profpilot.generation")
 
@@ -98,6 +112,16 @@ class GenerationContext:
     preferences: PreferenceProfile
     # Lecture knowledge profiles of the course material, by document id (see lecture_knowledge.py).
     knowledge: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Every slide of the lecture PDFs: its words and how many pictures it shows, by document and page
+    # (see slides.py).
+    pages: dict[str, dict[int, dict[str, Any]]] = field(default_factory=dict)
+    # The lecture PDFs downloaded for showing their slides, once per job (see slides.slide_images).
+    files: dict[str, "asyncio.Future[bytes]"] = field(default_factory=dict)
+
+    @property
+    def slides(self) -> SlideIndex:
+        """Every slide, under the ids the planner cites ('F1:p8')."""
+        return SlideIndex.build(self.documents, self.pages)
 
     @property
     def knowledge_refs(self) -> set[str]:
@@ -164,6 +188,7 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
         if not record.exam_spec:
             raise ConflictError("Improve with AI and approve the plan first.", code="spec_missing")
         spec = ExamSpec.model_validate(record.exam_spec["spec"])
+    knowledge, pages = await asyncio.gather(context.get_knowledge(documents), context.get_pages(documents))
     return GenerationContext(
         record=record,
         spec=spec,
@@ -171,7 +196,8 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
         documents=documents,
         style=style[0] if style else None,
         preferences=preferences,
-        knowledge=await context.get_knowledge(documents),
+        knowledge=knowledge,
+        pages=pages,
     )
 
 
@@ -369,9 +395,14 @@ def interleave_plan(plan: ExamPlan, document_names: list[str]) -> ExamPlan:
 
 
 def plan_problems(
-    plan: ExamPlan, spec: ExamSpec, figure_ids: set[str], knowledge_refs: set[str] | None = None
+    plan: ExamPlan,
+    spec: ExamSpec,
+    figure_ids: set[str],
+    knowledge_refs: set[str] | None = None,
+    slides: SlideIndex | None = None,
 ) -> tuple[list[str], list[str]]:
-    """(structural problems, softer target misses) for a plan. `knowledge_refs`: the topic ids it may cite."""
+    """(structural problems, softer target misses) for a plan. `knowledge_refs`: the topic ids it may
+    cite; `slides`: the analysed pages each question must cite (every question traced to its pages)."""
     hard: list[str] = []
     soft: list[str] = []
     questions = plan.questions
@@ -401,6 +432,11 @@ def plan_problems(
                 f"Question {q.number} cites {', '.join(unknown)}, which aren't topic ids from the LECTURE KNOWLEDGE "
                 "inventory; use ids exactly as listed (or none if there is no inventory)."
             )
+
+    if slides:
+        pages_hard, pages_soft = slide_problems(questions, slides)
+        hard += pages_hard
+        soft += pages_soft
 
     summary = distribution.summarize(questions)
     for warning in distribution.compare(summary, spec, tolerance=_PLAN_TOLERANCE):
@@ -438,22 +474,31 @@ class ExamPlanningService:
     async def plan(self, ctx: GenerationContext) -> ExamPlan:
         framer = DataFramer()
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
-        course_ids = [doc.id for doc in ctx.documents if doc.category == "course_material" and doc.processing_status == "ready"]
+        slides = ctx.slides
+        # Lectures whose every slide is listed below need no sample of their wording.
+        course_ids = [
+            doc.id
+            for doc in ctx.documents
+            if doc.category == "course_material" and doc.processing_status == "ready" and doc.id not in ctx.pages
+        ]
         mapped = mapped_ids(ctx.documents, ctx.knowledge)
         # Lectures in the LECTURE KNOWLEDGE map need only a taste of their wording here: the map gives
         # their full coverage, and each question's writer retrieves its own excerpts.
         per_document = 1 if course_ids and set(course_ids) <= mapped else 3
         spread = assign_refs(
             await retrieval.spread(course_ids, document_names=ctx.document_names, per_document=per_document, max_chars=18_000)
+            if course_ids
+            else []
         )
         sections = [
             *ctx.common_sections(framer),
             render_material_overview(ctx.documents, framer, mapped=mapped_ids(ctx.documents, ctx.knowledge)),
             render_inventory(ctx.documents, ctx.knowledge, framer),
-            render_excerpts(spread, framer, title="SAMPLE OF THE COURSE MATERIAL"),
+            render_all_slides(slides, framer),
+            render_excerpts(spread, framer, title="SAMPLE OF THE COURSE MATERIAL") if spread else "",
             "Plan the exam now.",
         ]
-        base_input = "\n\n".join(sections)
+        base_input = "\n\n".join(part for part in sections if part)
         figure_ids = ctx.figure_ids
         known = ctx.knowledge_refs
 
@@ -464,10 +509,10 @@ class ExamPlanningService:
             schema=ExamPlan,
             effort="high",
             max_output_tokens=24_000,
-            validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known)[0],
+            validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
             usage=self.usage,
         )
-        _, soft = plan_problems(plan, ctx.spec, figure_ids, known)
+        _, soft = plan_problems(plan, ctx.spec, figure_ids, known, slides)
         if soft:
             # One focused repair for targets the plan misses.
             try:
@@ -491,10 +536,10 @@ class ExamPlanningService:
                     schema=ExamPlan,
                     effort="high",
                     max_output_tokens=24_000,
-                    validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known)[0],
+                    validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
                     usage=self.usage,
                 )
-                remaining = plan_problems(repaired, ctx.spec, figure_ids, known)[1]
+                remaining = plan_problems(repaired, ctx.spec, figure_ids, known, slides)[1]
                 if len(remaining) <= len(soft):
                     plan, soft = repaired, remaining
             except AppError:
@@ -586,6 +631,10 @@ class ExamGenerationService:
 
     async def _run_full(self, assessment_id: str, exam_id: str, run: RunContext) -> None:
         ctx = await load_generation_context(self.db, assessment_id)
+        # Lectures read before their slides' words were kept get them now (from their PDFs, no AI).
+        if any(doc.id not in ctx.pages for doc in ctx.documents if has_slides(doc) and doc.processing_status == "ready"):
+            await ensure_page_words(self.db, ctx.documents)
+            ctx.pages = await AssessmentContextService(self.db).get_pages(ctx.documents)
         full = await self.store.load(exam_id)
 
         await run.stage("planning")
@@ -603,6 +652,7 @@ class ExamGenerationService:
         full = await self.store.load(exam_id)
 
         await run.stage("generating_questions")
+        slides = ctx.slides
         primary = full.primary_version
         existing = {q["position"] for q in full.version_questions(primary["id"])}
         missing = [q for q in plan.questions if q.number not in existing]
@@ -624,7 +674,8 @@ class ExamGenerationService:
                             content,
                             excerpt_refs=refs,
                             allowed_figures=ctx.figure_ids,
-                            topic_refs=topic_sources(slot.knowledge_refs, ctx.documents, ctx.knowledge),
+                            topic_refs=slides.sources(slot.source_pages)
+                            + topic_sources(slot.knowledge_refs, ctx.documents, ctx.knowledge),
                         ),
                         "position": slot.number,
                         "section_id": section["id"],
@@ -659,21 +710,29 @@ class ExamGenerationService:
         framer = DataFramer()
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
         refs = [ref for slot in batch for ref in slot.knowledge_refs]
+        pages = [ref for slot in batch for ref in slot.source_pages]
         topics = topic_index(lecture_refs(ctx.documents, ctx.knowledge))
+        slides = ctx.slides
+        titles = {ref: first_line(slides.words(doc.id, page)) for ref, (doc, page) in slides.refs.items()}
         queries = [
             f"{slot.topic}. {slot.learning_objective}. {slot.source_hint or ''} "
             + " ".join(topics[ref][1]["name"] for ref in slot.knowledge_refs if ref in topics)
+            + " ".join(titles.get(ref, "") for ref in slot.source_pages)
             for slot in batch
         ]
-        excerpts = assign_refs(
-            await retrieval.search(
+        # The questions' slides, as the writer will see them, and related material, at the same time.
+        found, images = await asyncio.gather(
+            retrieval.search(
                 ctx.record.id, queries, document_names=ctx.document_names, per_query=5, max_excerpts=10, max_chars=18_000
-            )
+            ),
+            slide_images(self.db, slides, pages, limit=WRITER_IMAGES, files=ctx.files),
         )
+        excerpts = assign_refs(found)
         plan_lines = [
             f"{q.number}. [{plan.sections[q.section_index].title if q.section_index < len(plan.sections) else ''}] "
             f"{q.type}, {q.difficulty}, {q.points:g} pts, ~{q.estimated_minutes:g} min — {q.topic}: {q.learning_objective}"
             f" (Bloom's level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'}"
+            + (f"; pages: {', '.join(q.source_pages)}" if q.source_pages else "")
             + (f"; lecture knowledge: {', '.join(q.knowledge_refs)}" if q.knowledge_refs else "")
             + (f"; target: {q.assessment_target}" if q.assessment_target else "")
             + ")"
@@ -686,6 +745,7 @@ class ExamGenerationService:
             "FULL EXAM PLAN (for context)\n" + "\n".join(plan_lines),
             "QUESTIONS ALREADY WRITTEN (don't repeat them)\n"
             + ("\n".join(f"- {text[:240]}" for text in others[-40:]) if others else "(none yet)"),
+            render_slides(pages, slides, framer),
             render_excerpts(excerpts, framer),
             render_topics(refs, ctx.documents, ctx.knowledge, framer),
             (
@@ -696,10 +756,11 @@ class ExamGenerationService:
             ),
             "WRITE THESE QUESTIONS NOW (exactly as planned)\n" + "\n".join(targets),
         ]
-        batch_result = await self.ai.parse(
+        batch_result = await self.ai.parse_with_files(
             purpose="generate_questions",
             instructions=generator_instructions(framer),
-            input="\n\n".join(part for part in sections if part),
+            text="\n\n".join(part for part in sections if part),
+            files=image_parts(images, slides),
             schema=QuestionBatch,
             effort=batch_effort(batch),
             max_output_tokens=48_000,

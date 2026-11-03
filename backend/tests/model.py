@@ -45,6 +45,7 @@ from app.schemas.ai import (
     VariantBatch,
     VersionVariant,
 )
+from app.services.figure_reading import PagePictures, PictureContent, PictureReading
 from tests.fakes import FakeAI
 
 STEMS = [
@@ -147,6 +148,25 @@ def _spec_from(text: str) -> dict[str, Any]:
     return json.loads(match.group(1)) if match else {}
 
 
+def slide_ids(text: str) -> list[str]:
+    """The slide ids of ALL SLIDES in a planner's input ("F1:p2"…), in order."""
+    if "ALL SLIDES (" not in text:
+        return []
+    return re.findall(r"^(F\d+:p\d+)(?: \[[^\]\n]*\])?: ", text.split("ALL SLIDES (", 1)[1], re.M)
+
+
+def cite_pages(plan: ExamPlan, text: str) -> ExamPlan:
+    """The plan with each question that cites no slide citing one of ALL SLIDES (spread over them)."""
+    pages = slide_ids(text)
+    if not pages:
+        return plan
+    questions = [
+        q if q.source_pages else q.model_copy(update={"source_pages": [pages[index * len(pages) // len(plan.questions)]]})
+        for index, q in enumerate(plan.questions)
+    ]
+    return plan.model_copy(update={"questions": questions})
+
+
 def well_behaved_plan(call: dict[str, Any]) -> ExamPlan:
     """Ten 10-point questions that hit the spec's splits exactly (for splits in tens)."""
     spec = _spec_from(call["input"])
@@ -164,6 +184,7 @@ def well_behaved_plan(call: dict[str, Any]) -> ExamPlan:
     cognitive = [level for level in COGNITIVE_LEVELS for _ in range(bloom.get(f"{level}_percent", 0) // 10)]
     if len(cognitive) != 10:
         cognitive = ["apply"] * 10
+    pages = slide_ids(call["input"])
     questions = []
     for number in range(1, 11):
         is_mcq = number <= mcq_count
@@ -180,6 +201,7 @@ def well_behaved_plan(call: dict[str, Any]) -> ExamPlan:
                 source_hint="Lecture 1",
                 estimated_minutes=minutes,
                 figure_document_id=None,
+                source_pages=[pages[(number - 1) * len(pages) // 10]] if pages else [],
             )
         )
     sections = [
@@ -424,6 +446,20 @@ def style_handler(_call: dict[str, Any]) -> StyleProfile:
     )
 
 
+def figures_handler(call: dict[str, Any]) -> PictureReading:
+    """Reads one diagram on each page or slide it's shown (their numbers are in the request)."""
+    numbers = re.search(r"These are (?:page|slide)s? ([\d, ]+) of", call["input"]).group(1).split(", ")
+    return PictureReading(
+        pages=[
+            PagePictures(
+                page_number=position,
+                pictures=[PictureContent(kind="diagram", informative=True, content=f"Diagram {number}: Created → Running")],
+            )
+            for position, number in enumerate(numbers, start=1)
+        ]
+    )
+
+
 def install_well_behaved(ai: FakeAI) -> FakeAI:
     ai.on("interpret_assessment", well_behaved_interpretation)
     ai.on("plan_exam", well_behaved_plan)
@@ -438,6 +474,7 @@ def install_well_behaved(ai: FakeAI) -> FakeAI:
     ai.on("analyze_lecture_segment", segment_handler)
     ai.on("synthesize_lecture", synthesis_handler)
     ai.on("analyze_previous_exams", style_handler)
+    ai.on("read_figures", figures_handler)
     return ai
 
 

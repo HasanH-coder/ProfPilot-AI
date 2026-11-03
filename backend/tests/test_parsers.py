@@ -61,11 +61,17 @@ def test_pptx_pictures_are_flagged_so_their_content_is_never_assumed_covered():
     slide = presentation.slides.add_slide(presentation.slide_layouts[5])
     slide.shapes.title.text = "Decision boundary of a linear classifier"
     image.seek(0)
-    slide.shapes.add_picture(image, Inches(1), Inches(2))
+    slide.shapes.add_picture(image, Inches(1), Inches(2), width=Inches(5))  # a figure
+    image.seek(0)
+    slide.shapes.add_picture(image, Inches(8), Inches(0.2), width=Inches(0.3))  # an icon: not content
     buffer = io.BytesIO()
     presentation.save(buffer)
-    text = parse_document(buffer.getvalue(), PPTX).units[0].text
+    parsed = parse_document(buffer.getvalue(), PPTX)
+    text = parsed.units[0].text
     assert "Decision boundary" in text and "[Figure on slide 1: 1 picture(s) or chart(s)" in text
+    [spot] = parsed.figures
+    assert spot.number == 1 and spot.kind == "Slide" and len(spot.pictures) == 1
+    assert spot.pictures[0].image and spot.pictures[0].image[0] == "image/png"
 
 
 def test_chunks_never_span_a_page_without_text():

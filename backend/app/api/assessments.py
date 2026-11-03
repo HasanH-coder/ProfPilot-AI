@@ -5,13 +5,17 @@ own database connection, so Row Level Security applies on top of the checks
 here. Long work starts a background job and returns it immediately (202).
 """
 
+import asyncio
+import contextlib
+import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 
 from app.ai.openai_service import OpenAIService, Usage
 from app.api.deps import get_ai, get_db
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import AppError, ConflictError, NotFoundError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.schemas.api import (
@@ -28,22 +32,49 @@ from app.schemas.api import (
     StartedRunOut,
 )
 from app.schemas.common import parse_id
-from app.services.assessment_context import AssessmentContextService
+from app.services.assessment_context import DOCUMENT_COLUMNS, AssessmentContextService, DocumentRecord
 from app.services.document_ingestion import DocumentIngestionService
 from app.services.document_parsers import PDF, PPTX
 from app.services.exam_generation import ExamGenerationService
 from app.services.exam_store import ExamStore, serialize_exam
 from app.services.jobs import RUN_COLUMNS, RunContext, is_stale, job_runner, public_run
-from app.services.lecture_knowledge import LectureKnowledgeService, extracting, is_building, is_extracting
+from app.services.lecture_knowledge import (
+    LectureKnowledgeService,
+    extracting,
+    extraction_state,
+    finish_extracting,
+    is_building,
+    is_extracting,
+    picture_overview,
+    start_extracting,
+)
 from app.services.lecture_knowledge import overview as lecture_overview
 from app.services.prompt_interpreter import PromptInterpreterService, stale_reasons
+from app.services.slides import reading_problems
+from app.services.source_preparation import settled
 from app.services.style_analysis import StyleAnalysisService
+
+logger = logging.getLogger("profpilot.api")
 
 router = APIRouter(prefix="/api", tags=["assessments"])
 
 # Sources this server is reading right now. One that says "processing" but isn't
 # here was interrupted (for example by a restart) and may be started again.
 _reading: set[str] = set()
+# Lectures whose pictures this server is reading right now, and why the last attempt
+# failed (if it did), for the Sources page.
+_reading_pictures: set[str] = set()
+_picture_errors: dict[str, str] = {}
+# Course sources this server is preparing ("queued" or "running"), and those it has prepared
+# since it started: one whose preparation failed isn't tried again on its own until a restart
+# (Retry does it sooner), so a file that always fails never keeps spending model calls.
+_preparing: dict[str, str] = {}
+_prepared: set[str] = set()
+# Two files at a time: their knowledge is built with several model calls each already.
+_PREPARE_AT_ONCE = 2
+# A preparation run starts no new file after this long, so it never outlives the session it
+# runs with; the rest wait for the next visit to Sources.
+_PREPARE_SECONDS = 40 * 60
 
 
 @router.get("/assessments/{assessment_id}/ai-status")
@@ -140,14 +171,16 @@ async def process_documents(
 async def document_status(document_id: str, db: Database = Depends(get_db)) -> DocumentStatusOut:
     """Returns processing state for one owned document, including a reusable course source."""
     document = await AssessmentContextService(db).get_document(document_id)
-    return DocumentStatusOut(
-        id=document.id,
-        name=document.original_name,
-        category=document.category,
-        status=document.processing_status,
-        error=document.processing_error,
-        page_count=document.page_count,
-        title=(document.summary or {}).get("title"),
+    return DocumentStatusOut.model_validate(
+        {
+            "id": document.id,
+            "name": document.original_name,
+            "category": document.category,
+            "status": document.processing_status,
+            "error": document.processing_error,
+            "pageCount": document.page_count,
+            "title": (document.summary or {}).get("title"),
+        }
     )
 
 
@@ -210,16 +243,144 @@ async def document_knowledge(
         result["error"] = interrupted
     if result["rebuild"] and result["rebuild"]["state"] == "building" and not is_building(document.id):
         result["rebuild"] = {"state": "failed", "error": interrupted}
+    # The stored text, unless it's being replaced right now.
+    chunks = [] if is_extracting(document.id) else await service.chunks(document.id)
     # Whether the stored text has page markers (a free re-read adds them; see refresh_extraction).
     result["extraction"] = {
-        "state": "processing" if is_extracting(document.id) else await service.extraction(document.id),
+        "state": "processing" if is_extracting(document.id) else extraction_state(chunks),
         "rereadable": document.processing_status == "ready" and (document.mime_type or "").lower() in _REREADABLE,
     }
+    # Which pages' pictures (diagrams, charts, tables, code) ProfPilot has read, and which not yet.
+    preparing = _preparing.get(document.id) == "running" or document.id in _reading
+    reading = document.id in _reading_pictures or (preparing and is_extracting(document.id))
+    result["pictures"] = {
+        **picture_overview(chunks, knowledge),
+        "state": "reading" if reading else "idle",
+        "readable": _pictures_readable(document),
+        "error": _picture_errors.get(document.id),
+    }
+    # Being brought up to date by the Sources page (see prepare_sources).
+    result["preparation"] = _preparing.get(document.id)
+    if result["state"] in ("none", "outdated") and document.id in _reading:
+        result["state"] = "building"  # read just now: its knowledge is built right after
     return result
 
 
 # Files whose text a re-read can improve (page and slide markers); never images (AI-read).
 _REREADABLE = {PDF, PPTX}
+
+
+def _pictures_readable(document: DocumentRecord) -> bool:
+    """A PowerPoint lecture, once read: its pictures are read into its text (a PDF's slides are shown as
+    images when the exam is written instead; see slides.py)."""
+    return (
+        document.category == "course_material"
+        and document.processing_status == "ready"
+        and (document.mime_type or "").lower() == PPTX
+    )
+
+
+@router.post("/documents/{document_id}/figures", status_code=status.HTTP_202_ACCEPTED)
+async def read_document_pictures(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    db: Database = Depends(get_db),
+    ai: OpenAIService = Depends(get_ai),
+) -> dict[str, Any]:
+    """Reads a PowerPoint lecture's pictures again (diagrams, charts, tables, code) when the professor
+    retries a reading that failed. Pictures already read are kept, never paid for twice. The lecture
+    knowledge is rebuilt from them by the next preparation (see prepare_sources); the profile stays in
+    use meanwhile."""
+    document = await AssessmentContextService(db).get_document(document_id)
+    if not _pictures_readable(document):
+        raise ConflictError("Pictures are read in PowerPoint course material, once it's read.", code="not_readable")
+    if document.id in _reading or is_building(document.id) or is_extracting(document.id):
+        raise ConflictError("This file is busy (being read or analysed). Try again when it's done.", code="busy")
+    # Reserved before the first await, so a second request can't start it too.
+    start_extracting(document.id)
+    _reading_pictures.add(document.id)
+    _picture_errors.pop(document.id, None)
+
+    async def read() -> None:
+        usage = Usage()
+        try:
+            async with timed("source_pictures", usage):
+                await DocumentIngestionService(db, ai, usage).refresh_extraction(document, read_pictures=True)
+        except AppError as error:
+            _picture_errors[document.id] = error.message
+        except Exception as error:
+            logger.warning("Reading the pictures of %s failed: %s", document.id, type(error).__name__)
+            _picture_errors[document.id] = "The pictures couldn't be read. Try again."
+        finally:
+            finish_extracting(document.id)
+            _reading_pictures.discard(document.id)
+
+    background_tasks.add_task(read)
+    return {"state": "reading"}
+
+
+@router.post("/sources/preparation", status_code=status.HTTP_202_ACCEPTED)
+async def prepare_sources(
+    background_tasks: BackgroundTasks, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> dict[str, Any]:
+    """Brings the professor's course sources up to date for AI work, without them asking.
+
+    Started by the Sources page whenever it opens. Each file whose text predates the current
+    reading (page markers; a PowerPoint file's pictures) or whose lecture knowledge is missing,
+    outdated or older than its pictures is prepared in the background: a lecture PDF's slides' words
+    are kept (a PowerPoint file's pictures read), then its knowledge is built. A prepared file needs
+    no closer look, so this costs nothing once all are done. Returns the files being prepared, for
+    their progress to be shown.
+    """
+    rows = await db.select(
+        "documents",
+        columns=f"{DOCUMENT_COLUMNS}, knowledge",
+        filters=[
+            ("professor_id", "eq", db.professor_id),
+            ("exam_project_id", "is", None),
+            ("category", "eq", "course_material"),
+            ("processing_status", "eq", "ready"),
+            ("deletion_pending", "eq", False),
+        ],
+        order=[("created_at", "asc")],
+    )
+    queue: list[DocumentRecord] = []
+    for row in rows:
+        document = DocumentRecord.from_row(row)
+        busy = document.id in _reading or is_building(document.id) or is_extracting(document.id)
+        if not document.course_id or document.id in _preparing or document.id in _prepared or busy:
+            continue
+        if not settled(document, row.get("knowledge")):
+            _preparing[document.id] = "queued"
+            queue.append(document)
+    if queue:
+        background_tasks.add_task(_prepare_all, db, ai, queue)
+    return {"preparing": [row["id"] for row in rows if row["id"] in _preparing]}
+
+
+async def _prepare_all(db: Database, ai: OpenAIService, queue: list[DocumentRecord]) -> None:
+    """Prepares the queued sources, one at a time."""
+    deadline = time.monotonic() + _PREPARE_SECONDS
+
+    async def worker() -> None:
+        while queue:
+            document = queue.pop(0)
+            busy = document.id in _reading or is_building(document.id) or is_extracting(document.id)
+            if busy or time.monotonic() > deadline:
+                _preparing.pop(document.id, None)  # left for the next visit
+                continue
+            _preparing[document.id] = "running"
+            usage = Usage()
+            try:
+                async with timed("source_preparation", usage):
+                    await DocumentIngestionService(db, ai, usage).prepare(document)
+            except Exception as error:  # one file's problem never stops the others
+                logger.warning("Preparing source %s failed: %s", document.id, type(error).__name__)
+            finally:
+                _prepared.add(document.id)
+                _preparing.pop(document.id, None)
+
+    await asyncio.gather(*(worker() for _ in range(_PREPARE_AT_ONCE)))
 
 
 @router.post("/documents/{document_id}/extraction")
@@ -331,14 +492,41 @@ async def approve_interpretation(
     return await _interpretation(db, assessment_id)
 
 
+async def _require_read_material(db: Database, ai: OpenAIService, assessment_id: str) -> None:
+    """Refuses (409) while a lecture PDF isn't read yet, and starts reading it (a few seconds a file)."""
+    documents = await AssessmentContextService(db).list_documents(assessment_id)
+    problems = reading_problems(documents)
+    if not problems:
+        return
+
+    async def work(run: RunContext) -> None:
+        await run.stage("reading_files")
+        await DocumentIngestionService(db, ai, run.usage).process_pending(documents)
+
+    with contextlib.suppress(ConflictError):  # already reading this assessment's files
+        await job_runner.start(db, assessment_id=assessment_id, kind="document_processing", work=work)
+    raise ConflictError(
+        "The course material isn't read yet: "
+        + " ".join(problems)
+        + " ProfPilot is reading it now; start the exam again in a moment.",
+        code="material_not_ready",
+    )
+
+
 @router.post("/assessments/{assessment_id}/exam", status_code=status.HTTP_202_ACCEPTED)
 async def create_exam(
     assessment_id: str, body: CreateExamIn, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
 ) -> CreateExamOut:
-    """Generates the full exam (a job), or starts Build with AI (an empty exam)."""
+    """Generates the full exam (a job), or starts Build with AI (an empty exam).
+
+    Only once every lecture PDF is read: the planner is given every word of every slide, so an exam
+    never starts from a lecture still being read. One that isn't read yet is read in the background,
+    and the reply says so.
+    """
     store = ExamStore(db)
     interpreter = PromptInterpreterService(db, ai)
     record, spec = await interpreter.require_approved(assessment_id)
+    await _require_read_material(db, ai, record.id)
     existing = await store.exam_for_assessment(record.id)
 
     if body.resume:

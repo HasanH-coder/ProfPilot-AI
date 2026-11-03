@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     # --- Limits -------------------------------------------------------------
     max_extracted_characters: int = 2_000_000
     max_ocr_pages: int = 30
+    # Pages or slides whose pictures (diagrams, charts, tables, code) are read per file, per go.
+    max_figure_pages: int = 60
+
+    # Files one reading job reads at the same time.
+    max_files_read_at_once: int = 2
+
+    # --- Slides (see app/services/slides.py) ----------------------------------
+    # A lecture's slides are shown to the AI as images as it writes the exam: rendered at
+    # 144 dpi (2×), at most this many pixels a side.
+    page_render_scale: float = 2.0
+    page_image_side: int = 2048
+
     max_concurrent_generation_calls: int = 3
 
     @property

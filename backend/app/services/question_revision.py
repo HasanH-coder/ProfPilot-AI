@@ -240,7 +240,8 @@ class QuestionRevisionService:
                     excerpt_refs=excerpt_ref_map(excerpts),
                     allowed_figures=ctx.figure_ids,
                     # The planned topics' exact pages stay with the question through its revisions.
-                    topic_refs=[ref for ref in question.get("source_refs") or [] if ref.get("topic")],
+                    # Its planned pages and topics stay; only the excerpts it cites are new.
+                    topic_refs=[ref for ref in question.get("source_refs") or [] if ref.get("topic") or ref.get("page")],
                 ),
                 "status": "draft",
             },

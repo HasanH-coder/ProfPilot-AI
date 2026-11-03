@@ -1,8 +1,9 @@
-"""Refreshing a lecture read before page markers existed: a free re-read, then a separate, confirmed rebuild.
+"""Refreshing a lecture read before page markers existed: a free re-read, then a rebuild.
 
 The document, its file, course and assessment links are kept; the working profile stays in use
 until its replacement is saved and survives any failure; interruptions, retries, concurrent
-requests and identical copies are handled; nothing paid ever starts on its own.
+requests and identical copies are handled. (Sources runs both steps on its own: see
+test_source_preparation.py.)
 """
 
 import asyncio
@@ -258,12 +259,14 @@ def test_nothing_is_reread_or_rebuilt_on_its_own(api, supabase, db_a, ai):
 
 @pytest.mark.parametrize("twin_has_page_detail", [True, False])
 def test_a_rebuild_copies_a_better_twin_profile_but_never_swaps_one_legacy_profile_for_another(
-    api, supabase, db_a, ai, twin_has_page_detail
+    api, supabase, db_a, ai, monkeypatch, twin_has_page_detail
 ):
     data = pdf_bytes(PAGES)  # the same bytes (each pdf_bytes call differs)
     source, _ = legacy_lecture(supabase, db_a, ai, data=data)
     calls = len(ai.calls)
-    twin, _ = legacy_lecture(supabase, db_a, ai, data=data, course=run(seed_course(db_a, code="CMPS 298")))
+    with monkeypatch.context() as patch:  # a copy made before files were prepared on reading
+        patch.setattr(DocumentIngestionService, "prepare", _not_prepared)
+        twin, _ = legacy_lecture(supabase, db_a, ai, data=data, course=run(seed_course(db_a, code="CMPS 298")))
     assert len(ai.calls) == calls  # the copy was read for free, with the source's profile
     if twin_has_page_detail:
         api.post(f"/api/documents/{twin['id']}/extraction", headers=auth())
@@ -278,3 +281,7 @@ def test_a_rebuild_copies_a_better_twin_profile_but_never_swaps_one_legacy_profi
         assert len(ai.calls) == calls and rebuilt == knowledge_of(db_a, twin["id"])  # copied, nothing paid
     else:
         assert len(ai.calls) > calls  # analysed: the twin's legacy profile is no improvement
+
+
+async def _not_prepared(self, document, **_) -> None:
+    return None
