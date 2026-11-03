@@ -27,7 +27,9 @@ from app.schemas.api import (
     ExamOut,
     InterpretationEditIn,
     InterpretationOut,
+    PlannedQuestionEditIn,
     ProcessDocumentsIn,
+    QuestionPlanOut,
     RunOut,
     StartedRunOut,
 )
@@ -49,7 +51,8 @@ from app.services.lecture_knowledge import (
     start_extracting,
 )
 from app.services.lecture_knowledge import overview as lecture_overview
-from app.services.prompt_interpreter import PromptInterpreterService, stale_reasons
+from app.services.prompt_interpreter import QUESTION_PLAN_KEY, PromptInterpreterService, stale_reasons
+from app.services.question_plan import QuestionPlanService
 from app.services.slides import reading_problems
 from app.services.source_preparation import settled
 from app.services.style_analysis import StyleAnalysisService
@@ -513,6 +516,49 @@ async def _require_read_material(db: Database, ai: OpenAIService, assessment_id:
     )
 
 
+@router.post("/assessments/{assessment_id}/question-plan", status_code=status.HTTP_202_ACCEPTED)
+async def start_question_plan(
+    assessment_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> StartedRunOut:
+    """Plans every question from the approved brief, for the professor to review before the exam is written."""
+    record, _ = await PromptInterpreterService(db, ai).require_approved(assessment_id)
+    await _require_read_material(db, ai, record.id)
+
+    async def work(run: RunContext) -> None:
+        await QuestionPlanService(db, ai, run.usage).create(record.id, run)
+
+    # Runs as an interpretation job: it continues the same review, and must not overlap a new interpretation.
+    run = await job_runner.start(db, assessment_id=record.id, kind="interpretation", work=work, stage="planning")
+    return StartedRunOut(run=RunOut.model_validate(public_run(run)))
+
+
+@router.get("/assessments/{assessment_id}/question-plan")
+async def get_question_plan(
+    assessment_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> QuestionPlanOut:
+    return QuestionPlanOut.model_validate(await QuestionPlanService(db, ai).get(assessment_id))
+
+
+@router.patch("/assessments/{assessment_id}/question-plan/{number}")
+async def edit_planned_question(
+    assessment_id: str,
+    number: int,
+    body: PlannedQuestionEditIn,
+    db: Database = Depends(get_db),
+    ai: OpenAIService = Depends(get_ai),
+) -> QuestionPlanOut:
+    """The professor changes a planned question, or gives their own."""
+    return QuestionPlanOut.model_validate(
+        await QuestionPlanService(db, ai).edit(
+            assessment_id,
+            number,
+            topic=body.topic,
+            assessment_target=body.assessment_target,
+            professor_question=body.professor_question,
+        )
+    )
+
+
 @router.post("/assessments/{assessment_id}/exam", status_code=status.HTTP_202_ACCEPTED)
 async def create_exam(
     assessment_id: str, body: CreateExamIn, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
@@ -547,13 +593,17 @@ async def create_exam(
                 if any(not is_stale(run) for run in running):
                     raise ConflictError("This exam is still being generated.", code="job_running")
             await store.delete_exam(existing["id"])
+        envelope = record.exam_spec or {}
         exam = await store.create_exam(
             record.id,
             mode=body.mode,
-            spec_envelope=record.exam_spec or {},
+            spec_envelope={key: value for key, value in envelope.items() if key != QUESTION_PLAN_KEY},
             enhanced_prompt=record.enhanced_prompt,
             status="generating" if body.mode == "full" else "building",
         )
+        # The plan the professor reviewed is the one written; generation plans only when there is none.
+        if body.mode == "full" and envelope.get(QUESTION_PLAN_KEY):
+            await store.update_exam(exam["id"], {"plan": envelope[QUESTION_PLAN_KEY]})
         await db.update(
             "exam_projects",
             {"generation_mode": body.mode},

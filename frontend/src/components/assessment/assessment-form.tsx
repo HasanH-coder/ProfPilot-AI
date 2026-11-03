@@ -36,6 +36,7 @@ import {
   durationInMinutes,
   durationValue,
   ExamDuration,
+  MINI_QUIZ_DURATION,
   type DurationValue,
 } from "@/components/assessment/exam-duration";
 import { FormSection, type SectionState } from "@/components/assessment/form-section";
@@ -80,6 +81,7 @@ import {
   type BloomDistribution,
 } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
+import { DEMO_MODE, MINI_QUIZ_MINUTES } from "@/lib/demo";
 import type { DocumentCategory, DocumentFile } from "@/lib/documents/files";
 import { setAssessmentSourceDocuments } from "@/lib/sources/actions";
 import type { CourseSource } from "@/lib/sources/types";
@@ -103,8 +105,9 @@ type FormValues = {
 const EMPTY_FORM: FormValues = {
   sourceIds: [],
   courseId: null,
-  examName: "",
-  duration: { choice: "none", customMinutes: "" },
+  // The demo hides the name, so its assessments are told apart by when they were made.
+  examName: DEMO_MODE ? `${MINI_QUIZ_MINUTES}-minute mini quiz` : "",
+  duration: DEMO_MODE ? MINI_QUIZ_DURATION : { choice: "none", customMinutes: "" },
   distribution: { enabled: false, mcqPercentage: 50 },
   versions: { choice: "1", customCount: "" },
   difficulty: DIFFICULTY_NOT_SPECIFIED,
@@ -138,7 +141,7 @@ function toFormValues(draft: AssessmentDraft, sourceIds: string[] = []): FormVal
     sourceIds,
     courseId: draft.courseId,
     examName: draft.examName,
-    duration: durationValue(draft.durationMinutes),
+    duration: DEMO_MODE ? MINI_QUIZ_DURATION : durationValue(draft.durationMinutes),
     // Without a saved split, the slider starts at 50/50 when it's switched on.
     distribution:
       draft.mcqPercentage === null
@@ -180,7 +183,9 @@ type SectionId =
   | "prompt";
 
 /** Open at first: what most assessments need. The optional extras start closed. */
-const INITIALLY_OPEN: readonly SectionId[] = ["basics", "courseMaterial", "examDesign", "prompt"];
+const INITIALLY_OPEN: readonly SectionId[] = DEMO_MODE
+  ? ["courseMaterial", "previousExams", "examDesign", "prompt"]
+  : ["basics", "courseMaterial", "examDesign", "prompt"];
 
 /** The card each field error is shown in, so a closed card can be opened to reveal it. */
 const ERROR_SECTIONS: Record<keyof AssessmentDraftErrors, SectionId> = {
@@ -314,7 +319,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
   const saveInProgress = useRef(false);
   // The sidebar's AI Assistant link opens Set up with AI (?assistant=setup),
   // including when this page is already open.
-  const assistantRequested = useSearchParams().get("assistant") === "setup";
+  const assistantRequested = useSearchParams().get("assistant") === "setup" && !DEMO_MODE;
   const [assistantOpen, setAssistantOpen] = useState(assistantRequested);
   const [assistantRequestSeen, setAssistantRequestSeen] = useState(assistantRequested);
   if (assistantRequested !== assistantRequestSeen) {
@@ -644,45 +649,48 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
       className="assessment-form"
     >
       <div className="assessment-fields">
-        {assistantOpen ? (
-          <SetupAssistant
-            getSetup={() => toDraft(latestValues.current)}
-            getSourceIds={() => latestValues.current.sourceIds}
-            onApply={applyAssistantChanges}
-            ensureDraft={async () =>
-              (await getDraft()).draft?.examProjectId ?? null
-            }
-            onCallActiveChange={(active) => {
-              callActive.current = active;
-            }}
-            onClose={closeAssistant}
-          />
-        ) : (
-          <SetupAssistantPrompt
-            onOpen={openAssistant}
-            buttonRef={openAssistantRef}
-          />
-        )}
-
-        <div className={changedBy("basics")}>
-          <FormSection
-            title="Course & Assessment Details"
-            {...section(
-              "basics",
-              [course?.code, values.examName.trim()].filter(Boolean).join(" · ") || "No course or name yet",
-            )}
-          >
-            <AssessmentBasics
-              courses={courses}
-              courseId={values.courseId}
-              // Sources belong to one course, so another course starts with none.
-              onCourseChange={(courseId) => update({ courseId, sourceIds: [] })}
-              examName={values.examName}
-              onExamNameChange={(examName) => update({ examName })}
-              errors={errors}
+        {!DEMO_MODE &&
+          (assistantOpen ? (
+            <SetupAssistant
+              getSetup={() => toDraft(latestValues.current)}
+              getSourceIds={() => latestValues.current.sourceIds}
+              onApply={applyAssistantChanges}
+              ensureDraft={async () =>
+                (await getDraft()).draft?.examProjectId ?? null
+              }
+              onCallActiveChange={(active) => {
+                callActive.current = active;
+              }}
+              onClose={closeAssistant}
             />
-          </FormSection>
-        </div>
+          ) : (
+            <SetupAssistantPrompt
+              onOpen={openAssistant}
+              buttonRef={openAssistantRef}
+            />
+          ))}
+
+        {!DEMO_MODE && (
+          <div className={changedBy("basics")}>
+            <FormSection
+              title="Course & Assessment Details"
+              {...section(
+                "basics",
+                [course?.code, values.examName.trim()].filter(Boolean).join(" · ") || "No course or name yet",
+              )}
+            >
+              <AssessmentBasics
+                courses={courses}
+                courseId={values.courseId}
+                // Sources belong to one course, so another course starts with none.
+                onCourseChange={(courseId) => update({ courseId, sourceIds: [] })}
+                examName={values.examName}
+                onExamNameChange={(examName) => update({ examName })}
+                errors={errors}
+              />
+            </FormSection>
+          </div>
+        )}
 
         <DocumentUploadSection
           title="Course material"
@@ -734,7 +742,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
             "examDesign",
             [
               settings.duration,
-              settings.versions && `${settings.versions} ${settings.versions === "1" ? "version" : "versions"}`,
+              !DEMO_MODE && settings.versions && `${settings.versions} ${settings.versions === "1" ? "version" : "versions"}`,
               `${settings.learningFocus} learning focus`,
             ]
               .filter(Boolean)
@@ -755,20 +763,25 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
               error={errors.distribution}
             />
           </div>
-          <div className={changedBy("versions")}>
-            <VersionSelector
-              value={values.versions}
-              onChange={(versions) => update({ versions })}
-              error={errors.numberOfVersions}
-            />
-          </div>
-          <div className={changedBy("difficulty")}>
-            <DifficultyDistribution
-              value={values.difficulty}
-              onChange={(difficulty) => update({ difficulty })}
-              error={errors.difficultyDistribution}
-            />
-          </div>
+          {!DEMO_MODE && (
+            <>
+              <div className={changedBy("versions")}>
+                <VersionSelector
+                  value={values.versions}
+                  onChange={(versions) => update({ versions })}
+                  error={errors.numberOfVersions}
+                />
+              </div>
+              <div className={changedBy("difficulty")}>
+                <DifficultyDistribution
+                  value={values.difficulty}
+                  onChange={(difficulty) => update({ difficulty })}
+                  error={errors.difficultyDistribution}
+                />
+              </div>
+            </>
+          )}
+
           <div id="learning-focus" className={changedBy("learningFocus")}>
             <LearningFocus
               value={values.learningFocus}
@@ -779,28 +792,32 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
           </div>
         </FormSection>
 
-        <div className={changedBy("notes")}>
-          <AdditionalNotes
-            value={values.additionalNotes}
-            onChange={(additionalNotes) => update({ additionalNotes })}
-            error={errors.additionalNotes}
-            // Only that notes exist: their text can be long or private.
-            section={section("notes", values.additionalNotes.trim() ? "Notes added" : "No additional notes")}
-          />
-        </div>
+        {!DEMO_MODE && (
+          <>
+            <div className={changedBy("notes")}>
+              <AdditionalNotes
+                value={values.additionalNotes}
+                onChange={(additionalNotes) => update({ additionalNotes })}
+                error={errors.additionalNotes}
+                // Only that notes exist: their text can be long or private.
+                section={section("notes", values.additionalNotes.trim() ? "Notes added" : "No additional notes")}
+              />
+            </div>
 
-        <DocumentUploadSection
-          title="Additional images or attachments"
-          description="Optional. Add screenshots, diagrams, graphs, tables, or other images you may want the assessment to reference."
-          category="additional_attachment"
-          uploads={uploads}
-          analysis={analysis.documents}
-          onRetryAnalysis={analysis.retry}
-          section={section(
-            "attachments",
-            attachments === 0 ? "No attachments" : `${attachments} ${attachments === 1 ? "attachment" : "attachments"}`,
-          )}
-        />
+            <DocumentUploadSection
+              title="Additional images or attachments"
+              description="Optional. Add screenshots, diagrams, graphs, tables, or other images you may want the assessment to reference."
+              category="additional_attachment"
+              uploads={uploads}
+              analysis={analysis.documents}
+              onRetryAnalysis={analysis.retry}
+              section={section(
+                "attachments",
+                attachments === 0 ? "No attachments" : `${attachments} ${attachments === 1 ? "attachment" : "attachments"}`,
+              )}
+            />
+          </>
+        )}
 
         <div
           id="assessment-instructions"
@@ -882,24 +899,27 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
             {isSaving && savingFor === "stay" ? <Spinner /> : <Save />}
             {isSaving && savingFor === "stay" ? "Saving…" : "Save draft"}
           </Button>
-          <Button
-            type="button"
-            size="lg"
-            disabled={isSaving || uploads.isBusy}
-            title={
-              uploads.isBusy
-                ? "Wait for files to finish uploading"
-                : "Prepare your exam plan and choose how to generate it"
-            }
-            onClick={continueToPlan}
-          >
-            Continue
-            {isSaving && savingFor === "continue" ? (
-              <Spinner data-icon="inline-end" />
-            ) : (
-              <ArrowRight data-icon="inline-end" />
-            )}
-          </Button>
+          {/* The demo has one way forward: Improve with AI. */}
+          {!DEMO_MODE && (
+            <Button
+              type="button"
+              size="lg"
+              disabled={isSaving || uploads.isBusy}
+              title={
+                uploads.isBusy
+                  ? "Wait for files to finish uploading"
+                  : "Prepare your exam plan and choose how to generate it"
+              }
+              onClick={continueToPlan}
+            >
+              Continue
+              {isSaving && savingFor === "continue" ? (
+                <Spinner data-icon="inline-end" />
+              ) : (
+                <ArrowRight data-icon="inline-end" />
+              )}
+            </Button>
+          )}
         </div>
       </div>
     </form>

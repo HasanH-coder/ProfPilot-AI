@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { DEMO_MODE, demoRedirect, WORKSPACE_HOME } from "@/lib/demo";
 import { getSupabaseConfig, isSupabaseConfigured } from "@/lib/supabase/config";
 import type { Database } from "@/lib/supabase/database.types";
 
@@ -52,8 +53,11 @@ export async function updateSession(request: NextRequest) {
     return redirectTo("/login", request, response);
   }
   if (isSignedIn && AUTH_PAGES.includes(pathname)) {
-    return redirectTo("/workspace", request, response);
+    return redirectTo(WORKSPACE_HOME, request, response);
   }
+
+  const demoTarget = DEMO_MODE ? demoRedirect(pathname, isSignedIn) : null;
+  if (demoTarget) return redirectTo(demoTarget, request, response);
 
   return response;
 }

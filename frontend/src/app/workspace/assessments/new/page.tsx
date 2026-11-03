@@ -4,6 +4,7 @@ import { AssessmentForm } from "@/components/assessment/assessment-form";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import { getCourses } from "@/lib/courses/queries";
+import { DEMO_MODE } from "@/lib/demo";
 import { getSources } from "@/lib/sources/queries";
 
 export const metadata: Metadata = { title: "Create assessment" };
@@ -19,7 +20,11 @@ export default async function NewAssessmentPage() {
         back={{ href: "/workspace/assessments", label: "Back to Assessments" }}
         title="Create Assessment"
         highlight="Assessment"
-        description="Provide the details and materials for your assessment. Every field is optional. Save your draft and continue later."
+        description={
+          DEMO_MODE
+            ? "Upload your lecture, choose what you want, and let ProfPilot improve your prompt."
+            : "Provide the details and materials for your assessment. Every field is optional. Save your draft and continue later."
+        }
       />
       <AssessmentForm courses={courses} sources={sources} />
     </div>

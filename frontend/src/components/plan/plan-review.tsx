@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, CircleCheck, FileText, Pencil, RefreshCw, Sparkles, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, CircleCheck, FileText, Pencil, RefreshCw, Sparkles, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
@@ -27,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiRequest, errorMessage } from "@/lib/api/client";
 import { useRun } from "@/lib/api/runs";
 import type { AiStatus, Exam, Interpretation, StartedRun } from "@/lib/api/types";
+import { DEMO_MODE } from "@/lib/demo";
 import { timeAgo } from "@/lib/time";
 
 type PlanReviewProps = { assessmentId: string };
@@ -117,6 +118,22 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
     }
   }
 
+  /** The demo's way forward: confirms the prompt, then shows ProfPilot's question plan. */
+  async function confirmPrompt() {
+    setActionError(null);
+    setApproving(true);
+    try {
+      if (interpretation?.status !== "approved") {
+        await apiRequest<Interpretation>(`/api/assessments/${assessmentId}/interpretation/approval`, { method: "POST" });
+      }
+      router.push(`${base}/question-plan`);
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+      if (cause instanceof ApiError && cause.code === "spec_stale") load();
+      setApproving(false);
+    }
+  }
+
   async function createExam(mode: "full" | "interactive", replace: boolean) {
     setActionError(null);
     try {
@@ -188,7 +205,7 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
             {interpretation.staleReasons.join(" ")} Regenerate it so it matches your current setup.
           </AlertDescription>
         </Alert>
-      ) : approved ? (
+      ) : approved && !DEMO_MODE ? (
         <Alert>
           <CircleCheck />
           <AlertTitle>Plan approved</AlertTitle>
@@ -248,9 +265,11 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
         onSaved={(next) => setInterpretation(next)}
       />
 
-      <ReviewSection title="Assessment plan" description="What ProfPilot will follow. Each value shows whether it came from you or from the AI.">
-        <SpecView spec={spec} editHref={`${base}/edit`} />
-      </ReviewSection>
+      {!DEMO_MODE && (
+        <ReviewSection title="Assessment plan" description="What ProfPilot will follow. Each value shows whether it came from you or from the AI.">
+          <SpecView spec={spec} editHref={`${base}/edit`} />
+        </ReviewSection>
+      )}
 
       {(spec.assumptions.length > 0 || spec.warnings.length > 0) && (
         <ReviewSection title="Assumptions and warnings">
@@ -278,12 +297,19 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
 
       {actionError && <ErrorAlert message={actionError} />}
 
-      {!approved && (
+      {(DEMO_MODE || !approved) && (
         <div className="flex flex-wrap gap-2 border-t pt-6">
-          <Button onClick={approve} disabled={stale || approving}>
-            {approving ? <Spinner /> : <Check />}
-            Approve &amp; continue
-          </Button>
+          {DEMO_MODE ? (
+            <Button onClick={confirmPrompt} disabled={stale || approving}>
+              Next
+              {approving ? <Spinner data-icon="inline-end" /> : <ArrowRight data-icon="inline-end" />}
+            </Button>
+          ) : (
+            <Button onClick={approve} disabled={stale || approving}>
+              {approving ? <Spinner /> : <Check />}
+              Approve &amp; continue
+            </Button>
+          )}
           <Button variant="outline" onClick={regenerate}>
             <RefreshCw />
             Regenerate
@@ -295,13 +321,15 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
         </div>
       )}
 
-      <ModeChoice
-        approved={approved}
-        hasExam={Boolean(exam)}
-        examPath={exam ? `${base}/${exam.mode === "interactive" && exam.status === "building" ? "builder" : "exam"}` : null}
-        onChoose={createExam}
-        onRegenerate={regenerate}
-      />
+      {!DEMO_MODE && (
+        <ModeChoice
+          approved={approved}
+          hasExam={Boolean(exam)}
+          examPath={exam ? `${base}/${exam.mode === "interactive" && exam.status === "building" ? "builder" : "exam"}` : null}
+          onChoose={createExam}
+          onRegenerate={regenerate}
+        />
+      )}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   type AssessmentDraft,
 } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
+import { DEMO_MODE } from "@/lib/demo";
 import type { DocumentCategory } from "@/lib/documents/files";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,8 @@ type AssessmentSummaryProps = {
   /** Actions shown under the summary, such as the Save button. */
   children?: ReactNode;
 };
+
+const NOT_IN_DEMO = new Set(["Course", "Assessment", "Versions", "Difficulty", "Attachments"]);
 
 /** A live overview of the assessment settings. Anything left unspecified says so. */
 export function AssessmentSummary({
@@ -74,6 +77,8 @@ export function AssessmentSummary({
     },
   ];
 
+  const shown = DEMO_MODE ? items.filter(({ term }) => !NOT_IN_DEMO.has(term)) : items;
+
   return (
     <aside
       aria-labelledby={titleId}
@@ -84,7 +89,7 @@ export function AssessmentSummary({
         Assessment summary
       </h2>
       <dl className="mt-3 divide-y text-xs">
-        {items.map(({ term, value, detail, empty = "Not specified" }) => (
+        {shown.map(({ term, value, detail, empty = "Not specified" }) => (
           <div
             key={term}
             className="flex items-baseline justify-between gap-3 py-2.5"

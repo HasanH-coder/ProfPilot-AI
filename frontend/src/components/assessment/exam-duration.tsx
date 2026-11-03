@@ -7,8 +7,9 @@ import { FieldError, FieldLegend, FieldSet } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DURATION_PRESETS, LIMITS } from "@/lib/assessments/draft";
+import { DEMO_MODE, MINI_QUIZ_MINUTES } from "@/lib/demo";
 
-type DurationChoice = "none" | `${(typeof DURATION_PRESETS)[number]}` | "custom";
+type DurationChoice = "none" | `${(typeof DURATION_PRESETS)[number]}` | `${typeof MINI_QUIZ_MINUTES}` | "custom";
 
 export type DurationValue = {
   choice: DurationChoice;
@@ -16,14 +17,19 @@ export type DurationValue = {
   customMinutes: string;
 };
 
-const OPTIONS: Option<DurationChoice>[] = [
-  { value: "none", label: "Not specified" },
-  ...DURATION_PRESETS.map((minutes) => ({
-    value: `${minutes}` as DurationChoice,
-    label: `${minutes} min`,
-  })),
-  { value: "custom", label: "Custom" },
-];
+/** The demo's only duration. */
+export const MINI_QUIZ_DURATION: DurationValue = { choice: `${MINI_QUIZ_MINUTES}`, customMinutes: "" };
+
+const OPTIONS: Option<DurationChoice>[] = DEMO_MODE
+  ? [{ value: MINI_QUIZ_DURATION.choice, label: `${MINI_QUIZ_MINUTES} min mini quiz` }]
+  : [
+      { value: "none", label: "Not specified" },
+      ...DURATION_PRESETS.map((minutes) => ({
+        value: `${minutes}` as DurationChoice,
+        label: `${minutes} min`,
+      })),
+      { value: "custom", label: "Custom" },
+    ];
 
 /** The duration in minutes, null when not specified (NaN when the custom value isn't a number). */
 export function durationInMinutes({ choice, customMinutes }: DurationValue): number | null {

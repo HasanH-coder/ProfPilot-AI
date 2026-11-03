@@ -6,6 +6,7 @@ import { PlanReview } from "@/components/plan/plan-review";
 import { assessmentTitle } from "@/lib/assessments/draft";
 import { getAssessment } from "@/lib/assessments/queries";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
+import { DEMO_MODE } from "@/lib/demo";
 
 export async function generateMetadata({ params }: PageProps<"/workspace/assessments/[id]/plan">): Promise<Metadata> {
   const { id } = await params;
@@ -22,9 +23,17 @@ export default async function PlanPage({ params }: PageProps<"/workspace/assessm
   return (
     <div className="flex flex-col gap-10">
       <PageHeader
-        back={{ href: `/workspace/assessments/${id}`, label: assessmentTitle(assessment.draft.examName) }}
-        title="Review the plan"
-        description="ProfPilot interpreted everything you provided. Check it, edit it if needed, and approve it before the exam is generated."
+        back={
+          DEMO_MODE
+            ? { href: `/workspace/assessments/${id}/edit`, label: "Back to your assessment" }
+            : { href: `/workspace/assessments/${id}`, label: assessmentTitle(assessment.draft.examName) }
+        }
+        title={DEMO_MODE ? "Confirm your prompt" : "Review the plan"}
+        description={
+          DEMO_MODE
+            ? "ProfPilot improved your prompt using everything you provided. Check it, edit it if needed, then press Next."
+            : "ProfPilot interpreted everything you provided. Check it, edit it if needed, and approve it before the exam is generated."
+        }
       />
       <PlanReview assessmentId={id} />
     </div>

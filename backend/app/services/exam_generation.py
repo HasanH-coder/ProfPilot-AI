@@ -201,6 +201,16 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
     )
 
 
+async def load_planning_context(db: Database, assessment_id: str) -> GenerationContext:
+    """The context, with every lecture's slide words, which the planner is given."""
+    ctx = await load_generation_context(db, assessment_id)
+    # Lectures read before their slides' words were kept get them now (from their PDFs, no AI).
+    if any(doc.id not in ctx.pages for doc in ctx.documents if has_slides(doc) and doc.processing_status == "ready"):
+        await ensure_page_words(db, ctx.documents)
+        ctx.pages = await AssessmentContextService(db).get_pages(ctx.documents)
+    return ctx
+
+
 def excerpt_ref_map(excerpts: list[Excerpt]) -> dict[str, dict[str, Any]]:
     return {e.ref: {"chunk_id": e.chunk_id, "document_id": e.document_id, "label": e.label} for e in excerpts}
 
@@ -630,11 +640,7 @@ class ExamGenerationService:
             raise
 
     async def _run_full(self, assessment_id: str, exam_id: str, run: RunContext) -> None:
-        ctx = await load_generation_context(self.db, assessment_id)
-        # Lectures read before their slides' words were kept get them now (from their PDFs, no AI).
-        if any(doc.id not in ctx.pages for doc in ctx.documents if has_slides(doc) and doc.processing_status == "ready"):
-            await ensure_page_words(self.db, ctx.documents)
-            ctx.pages = await AssessmentContextService(self.db).get_pages(ctx.documents)
+        ctx = await load_planning_context(self.db, assessment_id)
         full = await self.store.load(exam_id)
 
         await run.stage("planning")
@@ -715,7 +721,7 @@ class ExamGenerationService:
         slides = ctx.slides
         titles = {ref: first_line(slides.words(doc.id, page)) for ref, (doc, page) in slides.refs.items()}
         queries = [
-            f"{slot.topic}. {slot.learning_objective}. {slot.source_hint or ''} "
+            f"{slot.topic}. {slot.learning_objective}. {slot.professor_question} {slot.source_hint or ''} "
             + " ".join(topics[ref][1]["name"] for ref in slot.knowledge_refs if ref in topics)
             + " ".join(titles.get(ref, "") for ref in slot.source_pages)
             for slot in batch
@@ -735,6 +741,7 @@ class ExamGenerationService:
             + (f"; pages: {', '.join(q.source_pages)}" if q.source_pages else "")
             + (f"; lecture knowledge: {', '.join(q.knowledge_refs)}" if q.knowledge_refs else "")
             + (f"; target: {q.assessment_target}" if q.assessment_target else "")
+            + (f"; the professor's own question: {' '.join(q.professor_question.split())}" if q.professor_question else "")
             + ")"
             for q in plan.questions
         ]

@@ -4,6 +4,7 @@ import type { AuthError } from "@supabase/supabase-js";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
+import { WORKSPACE_HOME } from "@/lib/demo";
 import { createClient } from "@/lib/supabase/server";
 
 export type AuthFormState = {
@@ -37,7 +38,7 @@ export async function login(
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) return { error: getAuthErrorMessage(error) };
 
-  redirect("/workspace");
+  redirect(WORKSPACE_HOME);
 }
 
 export async function signup(
@@ -70,7 +71,7 @@ export async function signup(
   if (error) return { error: getAuthErrorMessage(error) };
 
   // Email confirmation is turned off in Supabase, so the professor is already signed in.
-  if (data.session) redirect("/workspace");
+  if (data.session) redirect(WORKSPACE_HOME);
 
   return {
     message: `We sent a confirmation link to ${email}. Open it to activate your account.`,

@@ -23,6 +23,8 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import type { Professor } from "@/lib/auth/current-professor";
+import { DEMO_MODE } from "@/lib/demo";
+import { cn } from "@/lib/utils";
 
 export function WorkspaceTopbar({ professor }: { professor: Professor }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -61,65 +63,71 @@ export function WorkspaceTopbar({ professor }: { professor: Professor }) {
           />
         </SheetContent>
       </Sheet>
-      <div
-        className="workspace-search"
-        onBlur={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget))
-            setSearchOpen(false);
-        }}
-      >
-        <form action="/workspace/assessments" role="search">
-          <Search className="size-4" aria-hidden="true" />
-          <input
-            name="search"
-            type="search"
-            aria-label="Search courses and assessments"
-            placeholder="Search your courses or assessments…"
-            value={query}
-            onFocus={() => setSearchOpen(true)}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setSearchOpen(true);
-            }}
-          />
-        </form>
-        {searchOpen && query.trim() && (
-          <div className="workspace-search-results">
-            <p>Search your workspace</p>
-            <Link
-              href={`/workspace/assessments?search=${encodeURIComponent(query)}`}
-              onClick={() => setSearchOpen(false)}
-            >
-              Assessments matching “{query}”
-            </Link>
-            <Link
-              href={`/workspace/courses?search=${encodeURIComponent(query)}`}
-              onClick={() => setSearchOpen(false)}
-            >
-              Courses matching “{query}”
-            </Link>
-          </div>
+      {!DEMO_MODE && (
+        <div
+          className="workspace-search"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget))
+              setSearchOpen(false);
+          }}
+        >
+          <form action="/workspace/assessments" role="search">
+            <Search className="size-4" aria-hidden="true" />
+            <input
+              name="search"
+              type="search"
+              aria-label="Search courses and assessments"
+              placeholder="Search your courses or assessments…"
+              value={query}
+              onFocus={() => setSearchOpen(true)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setSearchOpen(true);
+              }}
+            />
+          </form>
+          {searchOpen && query.trim() && (
+            <div className="workspace-search-results">
+              <p>Search your workspace</p>
+              <Link
+                href={`/workspace/assessments?search=${encodeURIComponent(query)}`}
+                onClick={() => setSearchOpen(false)}
+              >
+                Assessments matching “{query}”
+              </Link>
+              <Link
+                href={`/workspace/courses?search=${encodeURIComponent(query)}`}
+                onClick={() => setSearchOpen(false)}
+              >
+                Courses matching “{query}”
+              </Link>
+            </div>
+          )}
+        </div>
+      )}
+      <div className={cn("workspace-topbar-actions", DEMO_MODE && "ml-auto")}>
+        {!DEMO_MODE && (
+          <>
+            <Dialog>
+              <DialogTrigger
+                render={
+                  <Button variant="ghost" size="icon" aria-label="Notifications" />
+                }
+              >
+                <Bell className="size-4.5" />
+              </DialogTrigger>
+              <DialogContent className="workspace-theme">
+                <DialogHeader>
+                  <DialogTitle>Notifications</DialogTitle>
+                  <DialogDescription>
+                    You&apos;re all caught up. There are no notifications to show.
+                  </DialogDescription>
+                </DialogHeader>
+              </DialogContent>
+            </Dialog>
+            <span className="workspace-topbar-divider" aria-hidden="true" />
+          </>
         )}
-      </div>
-      <div className="workspace-topbar-actions">
-        <Dialog>
-          <DialogTrigger
-            render={
-              <Button variant="ghost" size="icon" aria-label="Notifications" />
-            }
-          >
-            <Bell className="size-4.5" />
-          </DialogTrigger>
-          <DialogContent className="workspace-theme">
-            <DialogHeader>
-              <DialogTitle>Notifications</DialogTitle>
-              <DialogDescription>
-                You&apos;re all caught up. There are no notifications to show.
-              </DialogDescription>
-            </DialogHeader>
-          </DialogContent>
-        </Dialog>
-        <span className="workspace-topbar-divider" aria-hidden="true" />
         <Dialog>
           <DialogTrigger
             render={

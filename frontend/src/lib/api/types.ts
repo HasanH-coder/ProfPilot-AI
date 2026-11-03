@@ -45,6 +45,26 @@ export type AiStatus = {
   runs: Run[];
 };
 
+/** What ProfPilot plans to ask, for the professor to review before anything is written. */
+export type PlannedQuestion = {
+  number: number;
+  type: QuestionType;
+  difficulty: QuestionDifficulty;
+  cognitiveLevel: BloomLevel;
+  points: number;
+  estimatedMinutes: number;
+  topic: string;
+  assessmentTarget: string;
+  sourceHint: string | null;
+  professorQuestion: string;
+};
+
+export type QuestionPlan = {
+  status: "none" | "ready";
+  questions: PlannedQuestion[];
+  rationale: string | null;
+};
+
 // -- ExamSpec (snake_case: it is the model's structured output, stored as is) --
 
 export type Provenance = "professor" | "ai_inferred" | "ai_assumption";

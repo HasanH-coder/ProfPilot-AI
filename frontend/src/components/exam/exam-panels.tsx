@@ -37,6 +37,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { apiDownload, apiRequest, errorMessage } from "@/lib/api/client";
 import type { Exam, ExamVersion, Readiness, ReadinessCheck } from "@/lib/api/types";
 import { BLOOM_LABELS, BLOOM_LEVELS } from "@/lib/assessments/draft";
+import { DEMO_MODE } from "@/lib/demo";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -382,9 +383,11 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
         {exam.finalizedAt
           ? `Marked final ${timeAgo(exam.finalizedAt)}. `
           : "Marking an exam final lets ProfPilot learn your typical choices. "}
-        <Link href="/workspace/preferences" className="underline underline-offset-4">
-          Manage preferences
-        </Link>
+        {!DEMO_MODE && (
+          <Link href="/workspace/preferences" className="underline underline-offset-4">
+            Manage preferences
+          </Link>
+        )}
       </p>
       {error && (
         <p role="alert" className="text-sm text-destructive">

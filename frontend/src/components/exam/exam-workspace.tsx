@@ -18,6 +18,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError, apiRequest, errorMessage } from "@/lib/api/client";
 import { useRun } from "@/lib/api/runs";
 import type { AiStatus, Exam, Question, StartedRun } from "@/lib/api/types";
+import { DEMO_MODE } from "@/lib/demo";
 
 /** The exam editor: every question, the quality check, final review and export. */
 export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
@@ -126,7 +127,11 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
       <Empty className="border border-dashed py-14">
         <EmptyHeader>
           <EmptyTitle>No exam yet</EmptyTitle>
-          <EmptyDescription>Review and approve the assessment plan, then generate the exam or build it with AI.</EmptyDescription>
+          <EmptyDescription>
+            {DEMO_MODE
+              ? "Confirm your prompt, then generate the exam from ProfPilot's plan."
+              : "Review and approve the assessment plan, then generate the exam or build it with AI."}
+          </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
           <Link href={`${base}/plan`} className={buttonVariants()}>

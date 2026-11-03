@@ -6,10 +6,12 @@ import { FormSection, type SectionState } from "@/components/assessment/form-sec
 import { Field, FieldError } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { LIMITS } from "@/lib/assessments/draft";
+import { DEMO_MODE } from "@/lib/demo";
 
 // Example text only; the field always starts empty.
-const PLACEHOLDER =
-  "e.g. Create a challenging midterm mainly based on Lectures 3–5. I want more application questions than memorization, with two scenario-based subjective questions. Keep it around one hour and make two equivalent versions.";
+const PLACEHOLDER = DEMO_MODE
+  ? "e.g. Create a short quiz on this lecture. I want more application questions than memorization."
+  : "e.g. Create a challenging midterm mainly based on Lectures 3–5. I want more application questions than memorization, with two scenario-based subjective questions. Keep it around one hour and make two equivalent versions.";
 
 type AssessmentPromptProps = {
   value: string;

@@ -106,6 +106,36 @@ class InterpretationEditIn(ApiModel):
 
 
 # -----------------------------------------------------------------------------
+# The question plan
+# -----------------------------------------------------------------------------
+
+
+class PlannedQuestionOut(ApiModel):
+    number: int
+    type: str
+    difficulty: str
+    cognitive_level: str
+    points: float
+    estimated_minutes: float
+    topic: str
+    assessment_target: str
+    source_hint: str | None
+    professor_question: str
+
+
+class QuestionPlanOut(ApiModel):
+    status: Literal["none", "ready"]
+    questions: list[PlannedQuestionOut]
+    rationale: str | None
+
+
+class PlannedQuestionEditIn(ApiModel):
+    topic: str = Field(min_length=1, max_length=300)
+    assessment_target: str = Field(max_length=1000)
+    professor_question: str = Field(max_length=4000)
+
+
+# -----------------------------------------------------------------------------
 # Exams and questions
 # -----------------------------------------------------------------------------
 

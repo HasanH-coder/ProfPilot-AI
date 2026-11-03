@@ -21,6 +21,7 @@ from app.core.errors import ConflictError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain.distribution import bloom_conflicts
+from app.domain.setup import MINI_QUIZ_MINUTES, MINI_QUIZ_QUESTIONS
 from app.schemas.ai import BloomSpec, DifficultySpec, ExamSpec, FormatSpec, InterpretationOutput
 from app.services.assessment_context import (
     AssessmentContextService,
@@ -40,6 +41,8 @@ from app.services.slides import SlideIndex, ensure_page_words, render_all_slides
 from app.services.source_preparation import settled
 from app.services.style_analysis import StyleAnalysisService
 
+# Where the assessment's envelope keeps the question plan the professor reviews (see question_plan.py).
+QUESTION_PLAN_KEY = "question_plan"
 SPEC_ENVELOPE_VERSION = 1
 
 
@@ -230,6 +233,8 @@ class PromptInterpreterService:
             "exam_projects",
             {
                 "enhanced_prompt": enhanced_prompt.strip(),
+                # A question plan made from the old prompt no longer applies (see question_plan.py).
+                "exam_spec": {key: value for key, value in record.exam_spec.items() if key != QUESTION_PLAN_KEY},
                 # An edited prompt needs approving again (a stale one stays stale).
                 "spec_status": "stale" if record.spec_status == "stale" else "draft",
                 "spec_approved_at": None,
@@ -348,6 +353,12 @@ def apply_professor_settings(spec: ExamSpec, record: AssessmentRecord) -> ExamSp
         # Automatic: ProfPilot's recommendation, keeping the model's provenance
         # (a split the professor wrote in their instructions stays theirs).
         spec.bloom = spec.bloom.model_copy(update={"focus": "automatic"})
+    if setup.duration_minutes == MINI_QUIZ_MINUTES:
+        spec.assessment_type = "Mini quiz"
+        # A number the professor asked for in their instructions stays theirs.
+        if spec.question_count_source != "professor":
+            spec.question_count_min = spec.question_count_max = MINI_QUIZ_QUESTIONS
+            spec.question_count_source = "ai_assumption"
     for conflict in bloom_conflicts(spec):
         if conflict not in spec.warnings:
             spec.warnings.append(conflict)

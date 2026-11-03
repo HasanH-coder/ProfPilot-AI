@@ -219,6 +219,14 @@ The plan page (`[id]/plan`) shows the spec with provenance badges, the assumptio
 
 A plan becomes **out of date** when the setup changes, a file is added or removed, or a file that failed to read is now ready. The page then explains what changed and asks for a new plan; an out-of-date plan can't be approved. The staleness check runs both in the database (triggers) and in the API (`stale_reasons`).
 
+### The demo build and its question plan
+
+`NEXT_PUBLIC_DEMO_MODE=true` (`npm run dev:demo` locally) builds a simpler ProfPilot for presentations, from `frontend/src/lib/demo.ts`: sign in, then upload a lecture and a previous exam, choose the 10-minute mini quiz, the question distribution and the learning focus, write a prompt, and Improve with AI. Set up with AI, Build with AI, courses, sources, settings, notes, attachments, versions and difficulty are hidden, and `lib/supabase/proxy.ts` redirects their pages. Without the setting, this is the full app.
+
+After the prompt is confirmed, the page at `/workspace/assessments/[id]/question-plan` shows the planner's output question by question. The professor can change a question's topic and task, or give their own question, and then generates the exam. The plan is kept next to the approved spec in `exam_projects.exam_spec` (`services/question_plan.py`), so an edited brief or a new interpretation drops it. Exam creation copies it to `exams.plan`, where generation uses it instead of planning again. Planning runs as an `interpretation` job, so it can't overlap a new interpretation.
+
+A 10-minute assessment is a mini quiz of 5 questions, in the full app too, unless the professor asks for another number (`apply_professor_settings`).
+
 ## Bloom's taxonomy (Exam Learning Focus)
 
 The professor chooses how the exam's **marks** are spread across Bloom's six levels: remember, understand, apply, analyze, evaluate, create. It is independent of difficulty, and both are respected (an analyze question can be medium; an apply question can be hard).
@@ -394,6 +402,9 @@ All routes except `GET /` and `GET /health` require `Authorization: Bearer <Supa
 | `GET /api/assessments/{id}/interpretation` | The plan, with staleness reasons |
 | `PATCH /api/assessments/{id}/interpretation` | Edit the enhanced prompt |
 | `POST /api/assessments/{id}/interpretation/approval` | Approve the plan |
+| `POST /api/assessments/{id}/question-plan` | Plan every question from the approved brief (a job), for review before writing |
+| `GET /api/assessments/{id}/question-plan` | The question plan, if there is one |
+| `PATCH /api/assessments/{id}/question-plan/{number}` | Change a planned question, or give the professor's own |
 | `POST /api/assessments/{id}/exam` | Create the exam (`mode`, `replace`, `resume`) |
 | `GET /api/assessments/{id}/exam` | The assessment's exam, if any |
 | `GET /api/runs/{id}` | A background job's status |

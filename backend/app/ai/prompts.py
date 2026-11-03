@@ -14,6 +14,8 @@ own block and pose as instructions.
 
 import secrets
 
+from app.domain.setup import MINI_QUIZ_MINUTES, MINI_QUIZ_QUESTIONS
+
 # -----------------------------------------------------------------------------
 # Untrusted data
 # -----------------------------------------------------------------------------
@@ -346,6 +348,9 @@ def interpreter_instructions(framer: DataFramer) -> str:
         "MCQ/subjective split and the easy/medium/hard split, each with source 'professor'. "
         "If the written instructions contradict a setting, keep the setting and add a warning "
         "describing the conflict. Splits must add up to 100.",
+        f"MINI QUIZ. A duration of {MINI_QUIZ_MINUTES} minutes means a mini quiz: assessment_type 'Mini quiz' with "
+        f"exactly {MINI_QUIZ_QUESTIONS} questions (say so in the enhanced prompt), unless the professor's "
+        "instructions ask for another number (then mark question_count_source 'professor').",
         "LEARNING FOCUS. Always fill bloom, the split of marks across the six Bloom's levels. If the "
         "settings give a split (a preset or the professor's own), copy it exactly. If the focus is "
         "automatic, recommend a split that suits the course material, its learning objectives, the "
@@ -381,7 +386,8 @@ def planner_instructions(framer: DataFramer) -> str:
         "enhanced prompt exactly. Choose sections, then list every question with its number "
         "(1, 2, 3… in exam order), section_index (0-based into your sections), type, difficulty, "
         "points, topic, learning objective, Bloom's level (cognitive_level), the source material it "
-        "should draw on, and a realistic estimate of the minutes a prepared student needs.",
+        "should draw on, and a realistic estimate of the minutes a prepared student needs. Leave "
+        "professor_question empty: it is for the professor, who reviews this plan.",
         "The plan must satisfy the spec: format, difficulty and Bloom's splits by points (within a "
         "few percentage points), the total time within the duration (leave about 10% for reading and "
         "checking), coverage proportional to emphasis, and the question count range if given. "
@@ -455,6 +461,9 @@ def generator_instructions(framer: DataFramer) -> str:
         "TASK. Write the planned questions, each with a complete, correct answer key. Follow "
         "the plan exactly for each question's number, type, difficulty, Bloom's level "
         "(cognitive_level) and points, and follow the ExamSpec and enhanced prompt.",
+        "THE PROFESSOR'S OWN QUESTION. When a planned question gives the professor's own question, that is the "
+        "question to write: keep its wording and meaning (fix only obvious typos) in place of the planned topic and "
+        "target, and complete what its type needs (choices, answer key, explanation).",
         "THE SLIDES. The slides each question is planned on (its source_pages) are attached as images, each "
         "after a line naming it, and every word on them is in THE SLIDES OF THESE QUESTIONS. Read each slide as "
         "a student sees it: the image is the authority on diagrams, charts, tables, code and formulas, the "

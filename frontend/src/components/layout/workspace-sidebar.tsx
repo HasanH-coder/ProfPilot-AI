@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, ClipboardCheck, FolderOpen, House, Settings, Sparkles } from "lucide-react";
+import { BookOpen, ClipboardCheck, FolderOpen, House, Plus, Settings, Sparkles } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -9,18 +9,23 @@ import { LogoutButton } from "@/components/auth/logout-button";
 import { LinkPendingIcon } from "@/components/link-pending-icon";
 import { ThemeToggle } from "@/components/theme-toggle";
 import type { Professor } from "@/lib/auth/current-professor";
+import { DEMO_MODE, NEW_ASSESSMENT_PATH } from "@/lib/demo";
 import { cn } from "@/lib/utils";
 
-const NAV_ITEMS = [
-  { href: "/workspace", label: "Home", icon: House },
-  { href: "/workspace/courses", label: "Courses", icon: BookOpen },
-  { href: "/workspace/sources", label: "Sources", icon: FolderOpen },
-  {
-    href: "/workspace/assessments",
-    label: "Assessments",
-    icon: ClipboardCheck,
-  },
-];
+const ASSESSMENTS_ITEM = {
+  href: "/workspace/assessments",
+  label: "Assessments",
+  icon: ClipboardCheck,
+};
+
+const NAV_ITEMS = DEMO_MODE
+  ? [{ href: NEW_ASSESSMENT_PATH, label: "New assessment", icon: Plus }, ASSESSMENTS_ITEM]
+  : [
+      { href: "/workspace", label: "Home", icon: House },
+      { href: "/workspace/courses", label: "Courses", icon: BookOpen },
+      { href: "/workspace/sources", label: "Sources", icon: FolderOpen },
+      ASSESSMENTS_ITEM,
+    ];
 
 type WorkspaceSidebarProps = {
   professor: Professor;
@@ -50,9 +55,9 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
       <nav aria-label="Workspace" className="workspace-nav">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const active =
-            href === "/workspace"
+            href === "/workspace" || href === NEW_ASSESSMENT_PATH
               ? pathname === href
-              : pathname.startsWith(href);
+              : pathname.startsWith(href) && !(DEMO_MODE && pathname === NEW_ASSESSMENT_PATH);
           return (
             <Link
               key={href}
@@ -68,34 +73,38 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
             </Link>
           );
         })}
-        {/* Opens Assessment Setup with Set up with AI already open. A normal
-            client navigation: the page shows at once (its loading state
-            first), and nothing is created until the professor saves, uploads
-            or starts a call. */}
-        <Link
-          href="/workspace/assessments/new?assistant=setup"
-          onClick={onNavigate}
-          className="workspace-nav-item"
-        >
-          <LinkPendingIcon>
-            <Sparkles className="size-5" />
-          </LinkPendingIcon>
-          AI Assistant
-        </Link>
-        <Link
-          href="/workspace/preferences"
-          onClick={onNavigate}
-          aria-current={
-            pathname === "/workspace/preferences" ? "page" : undefined
-          }
-          className={cn(
-            "workspace-nav-item",
-            pathname === "/workspace/preferences" && "is-active",
-          )}
-        >
-          <Settings className="size-5" />
-          Settings
-        </Link>
+        {!DEMO_MODE && (
+          <>
+            {/* Opens Assessment Setup with Set up with AI already open. A normal
+                client navigation: the page shows at once (its loading state
+                first), and nothing is created until the professor saves, uploads
+                or starts a call. */}
+            <Link
+              href="/workspace/assessments/new?assistant=setup"
+              onClick={onNavigate}
+              className="workspace-nav-item"
+            >
+              <LinkPendingIcon>
+                <Sparkles className="size-5" />
+              </LinkPendingIcon>
+              AI Assistant
+            </Link>
+            <Link
+              href="/workspace/preferences"
+              onClick={onNavigate}
+              aria-current={
+                pathname === "/workspace/preferences" ? "page" : undefined
+              }
+              className={cn(
+                "workspace-nav-item",
+                pathname === "/workspace/preferences" && "is-active",
+              )}
+            >
+              <Settings className="size-5" />
+              Settings
+            </Link>
+          </>
+        )}
       </nav>
       <div aria-hidden="true" className="workspace-sidebar-art" />
       <div className="workspace-sidebar-footer">

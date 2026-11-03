@@ -20,6 +20,10 @@ LIMITS = {
     "professor_prompt": 5000,
 }
 
+# A 10-minute assessment is a mini quiz, with this many questions unless the professor asks otherwise.
+MINI_QUIZ_MINUTES = 10
+MINI_QUIZ_QUESTIONS = 5
+
 SETUP_COLUMNS = (
     "course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, "
     "number_of_versions, easy_percentage, medium_percentage, hard_percentage, "

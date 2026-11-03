@@ -11,13 +11,16 @@ import {
   type Difficulty,
 } from "@/lib/assessments/draft";
 import type { Assessment } from "@/lib/assessments/queries";
+import { DEMO_MODE } from "@/lib/demo";
 import type { DocumentCategory } from "@/lib/documents/files";
 
 const FILE_SECTIONS: { category: DocumentCategory; title: string }[] = [
   { category: "course_material", title: "Course material" },
   { category: "previous_exam", title: "Previous assessments" },
-  { category: "additional_attachment", title: "Additional attachments" },
+  ...(DEMO_MODE ? [] : [{ category: "additional_attachment" as const, title: "Additional attachments" }]),
 ];
+
+const NOT_IN_DEMO = new Set(["Course", "Assessment name", "Versions", "Difficulty distribution"]);
 
 /** A read-only overview of everything saved for an assessment. */
 export function AssessmentOverview({ assessment }: { assessment: Assessment }) {
@@ -39,7 +42,7 @@ export function AssessmentOverview({ assessment }: { assessment: Assessment }) {
     <div className="flex flex-col gap-10">
       <OverviewSection title="Settings">
         <dl className="divide-y rounded-xl border text-sm">
-          {details.map(({ term, value }) => (
+          {details.filter(({ term }) => !(DEMO_MODE && NOT_IN_DEMO.has(term))).map(({ term, value }) => (
             <div key={term} className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4">
               <dt className="text-muted-foreground">{term}</dt>
               <dd className={value ? "font-medium break-words" : "text-muted-foreground"}>
@@ -50,9 +53,11 @@ export function AssessmentOverview({ assessment }: { assessment: Assessment }) {
         </dl>
       </OverviewSection>
 
-      <OverviewSection title="Additional notes">
-        <SavedText text={draft.additionalNotes} empty="No notes." />
-      </OverviewSection>
+      {!DEMO_MODE && (
+        <OverviewSection title="Additional notes">
+          <SavedText text={draft.additionalNotes} empty="No notes." />
+        </OverviewSection>
+      )}
 
       <OverviewSection title="Professor instructions">
         <SavedText text={draft.professorPrompt} empty="No instructions." />
