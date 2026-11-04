@@ -44,6 +44,7 @@ from app.services.style_analysis import StyleAnalysisService
 
 # Where the assessment's envelope keeps the question plan the professor reviews (see question_plan.py).
 QUESTION_PLAN_KEY = "question_plan"
+_MINI_QUIZ_FILE_CHARS = 60_000
 SPEC_ENVELOPE_VERSION = 1
 
 
@@ -121,6 +122,15 @@ class PromptInterpreterService:
             self._excerpts(record, documents), self.context.get_knowledge(documents), self.context.get_pages(documents)
         )
         attachments = [doc for doc in documents if doc.category == "additional_attachment" and doc.processing_status == "ready"]
+        # A mini quiz stays close to these files, so its prompt is written from them too.
+        previous_exams, lecture_text = "", ""
+        if record.setup.duration_minutes == MINI_QUIZ_MINUTES:
+            previous_exams = await self.context.full_text(
+                [doc for doc in documents if doc.category == "previous_exam"], _MINI_QUIZ_FILE_CHARS
+            )
+            lecture_text = await self.context.full_text(
+                [doc for doc in documents if doc.category == "course_material" and doc.id not in pages], _MINI_QUIZ_FILE_CHARS
+            )
         sections = [
             render_settings(record),
             render_professor_instructions(record),
@@ -130,6 +140,16 @@ class PromptInterpreterService:
             # Every word of every slide: the authority on what each lecture contains (see slides.py).
             render_all_slides(SlideIndex.build(documents, pages), framer),
             render_style_profile(style, framer),
+            (
+                "THE PROFESSOR'S PREVIOUS EXAMS\n" + framer.block("previous_exam", "previous exams", previous_exams)
+                if previous_exams
+                else ""
+            ),
+            (
+                "THE FULL TEXT OF THE COURSE MATERIAL\n" + framer.block("course_material", "course material", lecture_text)
+                if lecture_text
+                else ""
+            ),
             render_excerpts(excerpts, framer),
             (
                 "IMAGE ATTACHMENTS available for questions: "

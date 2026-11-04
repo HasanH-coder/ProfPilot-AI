@@ -213,6 +213,7 @@ class SupabaseDatabase:
         except httpx2.TimeoutException as error:
             raise DatabaseError("The database took too long to respond. Please try again.") from error
         except httpx2.HTTPError as error:
+            logger.warning("Couldn't reach the database: %s", type(error).__name__)
             raise DatabaseError() from error
         if response.status_code >= 400:
             raise _translate_error(response, storage=storage)

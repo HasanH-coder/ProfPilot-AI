@@ -42,7 +42,14 @@ from app.services.exam_store import (
     similar,
 )
 from app.services.lecture_knowledge import professor_formula_text, traced_to_professor, unverified_refs
-from app.services.slides import REVIEW_IMAGES, image_parts, question_slides, render_question_sources, slide_images
+from app.services.slides import (
+    REVIEW_IMAGES,
+    image_parts,
+    question_slides,
+    render_all_slides,
+    render_question_sources,
+    slide_images,
+)
 
 logger = logging.getLogger("profpilot.review")
 
@@ -50,6 +57,8 @@ logger = logging.getLogger("profpilot.review")
 _MATHS = re.compile(r"\\\(|\\\[|\\frac|\\sum|[A-Za-z0-9)]\s*=\s*[-A-Za-z0-9(\\]")
 
 # The review category of each distribution warning (see distribution.compare).
+# A mini quiz's questions may use any slide, so its reviewer has their words too.
+_REVIEW_SLIDE_CHARS = 120_000
 _DIMENSION_CATEGORIES = {"format": "format", "difficulty": "difficulty", "bloom": "cognitive_level", "duration": "duration"}
 
 
@@ -270,6 +279,13 @@ class ExamReviewService:
                     "APPROVED BRIEF\n" + ctx.enhanced_prompt,
                     "THE EXAM TO REVIEW (with answer keys)\n" + "\n\n".join(versions_text),
                     render_question_sources(cited, slides, framer),
+                    render_all_slides(slides, framer, max_chars=_REVIEW_SLIDE_CHARS) if ctx.mini_quiz else "",
+                    (
+                        "THE FULL TEXT OF THE COURSE MATERIAL\n"
+                        + framer.block("course_material", "course material", ctx.lecture_text)
+                        if ctx.lecture_text
+                        else ""
+                    ),
                     render_excerpts(excerpts, framer, title="RELEVANT COURSE MATERIAL"),
                     (
                         "FOUND BY CHECKS IN CODE (reported to the professor already; don't report them again. For "

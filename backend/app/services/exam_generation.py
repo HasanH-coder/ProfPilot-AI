@@ -98,7 +98,10 @@ logger = logging.getLogger("profpilot.generation")
 
 _BATCH_SIZE = 4
 _PLAN_TOLERANCE = 6.0  # percentage points
-_STYLE_EXAMPLE_CHARS = 20_000
+# How much of the files a mini quiz's requests carry in full. Far more than a normal lecture or exam.
+_PREVIOUS_EXAM_CHARS = 60_000
+_LECTURE_TEXT_CHARS = 60_000
+_WRITER_SLIDE_CHARS = 120_000
 
 
 @dataclass
@@ -118,8 +121,10 @@ class GenerationContext:
     pages: dict[str, dict[int, dict[str, Any]]] = field(default_factory=dict)
     # The lecture PDFs downloaded for showing their slides, once per job (see slides.slide_images).
     files: dict[str, "asyncio.Future[bytes]"] = field(default_factory=dict)
-    # A mini quiz's writers see real questions from the previous exams, not only a description of them.
+    # A mini quiz's requests carry the previous exams themselves, not only a description of them,
+    # and the text of any course material without slides (Word, plain text), not only excerpts of it.
     style_examples: str = ""
+    lecture_text: str = ""
 
     @property
     def slides(self) -> SlideIndex:
@@ -177,6 +182,11 @@ class GenerationContext:
                 else ""
             ),
             (
+                "THE FULL TEXT OF THE COURSE MATERIAL\n" + framer.block("course_material", "course material", self.lecture_text)
+                if self.lecture_text
+                else ""
+            ),
+            (
                 "IMAGE ATTACHMENTS (a question may show one by setting figure_document_id)\n"
                 + framer.block("attachments", "image attachments", "\n".join(attachments))
                 if attachments
@@ -203,7 +213,14 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
             raise ConflictError("Improve with AI and approve the plan first.", code="spec_missing")
         spec = ExamSpec.model_validate(record.exam_spec["spec"])
     knowledge, pages = await asyncio.gather(context.get_knowledge(documents), context.get_pages(documents))
-    style_examples = await _style_examples(db, documents) if spec.duration_minutes == MINI_QUIZ_MINUTES else ""
+    style_examples, lecture_text = "", ""
+    if spec.duration_minutes == MINI_QUIZ_MINUTES:
+        style_examples = await context.full_text(
+            [doc for doc in documents if doc.category == "previous_exam"], _PREVIOUS_EXAM_CHARS
+        )
+        lecture_text = await context.full_text(
+            [doc for doc in documents if doc.category == "course_material" and doc.id not in pages], _LECTURE_TEXT_CHARS
+        )
     return GenerationContext(
         record=record,
         spec=spec,
@@ -214,21 +231,8 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
         knowledge=knowledge,
         pages=pages,
         style_examples=style_examples,
+        lecture_text=lecture_text,
     )
-
-
-async def _style_examples(db: Database, documents: list[DocumentRecord]) -> str:
-    """The opening of the professor's previous exams, as they wrote them."""
-    exams = [doc.id for doc in documents if doc.category == "previous_exam" and doc.processing_status == "ready"]
-    if not exams:
-        return ""
-    rows = await db.select(
-        "document_chunks",
-        columns="content",
-        filters=[("document_id", "in", exams), ("professor_id", "eq", db.professor_id)],
-        order=[("chunk_index", "asc")],
-    )
-    return "\n\n".join(row["content"] for row in rows)[:_STYLE_EXAMPLE_CHARS]
 
 
 async def load_planning_context(db: Database, assessment_id: str, *, require_approved: bool = True) -> GenerationContext:
@@ -796,6 +800,7 @@ class ExamGenerationService:
             "QUESTIONS ALREADY WRITTEN (don't repeat them)\n"
             + ("\n".join(f"- {text[:240]}" for text in others[-40:]) if others else "(none yet)"),
             render_slides(pages, slides, framer),
+            render_all_slides(slides, framer, max_chars=_WRITER_SLIDE_CHARS) if ctx.mini_quiz else "",
             render_excerpts(excerpts, framer),
             render_topics(refs, ctx.documents, ctx.knowledge, framer),
             (

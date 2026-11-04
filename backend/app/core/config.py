@@ -3,7 +3,7 @@
 from functools import cached_property
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The backend/ folder (this file is backend/app/core/config.py).
@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     page_image_side: int = 2048
 
     max_concurrent_generation_calls: int = 3
+
+    @field_validator("cors_origins", "supabase_url", "supabase_publishable_key", "openai_api_key", mode="before")
+    @classmethod
+    def _without_stray_spaces(cls, value: object) -> object:
+        """A space or line break pasted into a hosting dashboard would break every request made with the value."""
+        return value.strip() if isinstance(value, str) else value
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -316,8 +316,13 @@ _MINI_QUIZ_QUESTIONS = (
     "means direct recall. Medium means one small step of understanding or one short calculation from given values. "
     "No long cases, named people or trick choices; a one-sentence setting is fine. "
     "The professor's previous exams, when given, are the model: match their question format, length, wording, tone "
-    "and kinds of question (short settings, given tables or values to work from, if they use them), without copying "
-    "their questions. Only the professor's own request for something harder overrules this."
+    "and kinds of question (short settings, given tables or values to work from, if they use them). "
+    "STAY CLOSE TO THE FILES. You are given every word of the lecture and of the previous exams, and any part of them "
+    "may be used, not only the slides a question was first planned on. Every question comes from the lecture and "
+    "should look like it belongs in the previous exams: build it the way one of their questions is built, with the "
+    "same kind of stem and choices, and where they cover the same idea, ask about it in a similar way. This overrules "
+    "the rule against paraphrasing previous exams, but don't repeat a question word for word unless the professor asks. "
+    "Only the professor's own request for something harder overrules this."
 )
 _MINI_QUIZ_WORDING = (
     "WORDING. Write as a professor writes an exam: complete, natural sentences with their articles and verbs, never "

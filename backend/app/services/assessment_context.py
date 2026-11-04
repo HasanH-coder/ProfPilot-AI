@@ -117,9 +117,37 @@ class PreferenceProfile:
     learning_enabled: bool = True
 
 
+def spread_text(text: str, limit: int) -> str:
+    """All of `text`, or when it's too long, evenly spaced parts of it from its start to its end."""
+    if len(text) <= limit:
+        return text
+    parts = 8
+    size = limit // parts
+    step = (len(text) - size) / (parts - 1)
+    return "\n[…]\n".join(text[int(index * step) : int(index * step) + size] for index in range(parts))
+
+
 class AssessmentContextService:
     def __init__(self, db: Database) -> None:
         self.db = db
+
+    async def full_text(self, documents: list[DocumentRecord], limit: int) -> str:
+        """These files' stored text in reading order, one file after another, within `limit` characters."""
+        ids = [doc.id for doc in documents if doc.processing_status == "ready"]
+        if not ids:
+            return ""
+        rows = await self.db.select(
+            "document_chunks",
+            columns="document_id, content",
+            filters=[("document_id", "in", ids), ("professor_id", "eq", self.db.professor_id)],
+            order=[("chunk_index", "asc")],
+        )
+        files = []
+        for doc in documents:
+            text = "\n\n".join(row["content"] for row in rows if row["document_id"] == doc.id)
+            if text:
+                files.append(f'From "{doc.original_name}":\n{text}')
+        return spread_text("\n\n".join(files), limit)
 
     async def get_assessment(self, assessment_id: str) -> AssessmentRecord:
         assessment_id = parse_id(assessment_id, what="assessment")

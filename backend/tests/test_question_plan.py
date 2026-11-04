@@ -1,11 +1,13 @@
 """The question plan: the professor reviews and changes it before the exam is written."""
 
 import asyncio
+import re
 
 from app.ai.prompts import DataFramer, generator_instructions, planner_instructions, reviser_instructions
 from app.core.errors import AIServiceError
 from app.domain import distribution
 from app.schemas.ai import BloomSpec, ExamSpec, FormatSpec
+from app.services.assessment_context import spread_text
 from app.services.jobs import job_runner
 from app.services.question_plan import stop_planning
 from tests.helpers import auth, wait_for_run
@@ -435,3 +437,76 @@ def test_a_split_a_mini_quiz_can_only_roughly_meet_is_not_reported(api, supabase
     spec.question_format = FormatSpec(mcq_percent=100, subjective_percent=0, source="professor")
     missed = distribution.compare({**summary, "mcqPercent": 80}, spec)
     assert [item["dimension"] for item in missed] == ["format"]
+
+
+def _marked_pages(prefix: str, pages: int, words: int = 25) -> bytes:
+    filler = " ".join(f"Question about records number {index}." for index in range(words))
+    return pdf_bytes([f"{prefix}{page:03d} {filler}" for page in range(1, pages + 1)])
+
+
+def _pages_seen(prefix: str, calls: list[dict]) -> set[str]:
+    return {found for call in calls for found in re.findall(prefix + r"\d{3}", call["input"])}
+
+
+def test_a_mini_quiz_can_use_every_word_of_the_lecture_and_previous_exam(api, supabase, db_a, ai):
+    assessment = run(seed_assessment(db_a, duration_minutes=10))
+    run(seed_document(supabase, db_a, assessment["id"], data=_marked_pages("LECTURE", 60)))
+    run(
+        seed_document(
+            supabase, db_a, assessment["id"], name="Old exam.pdf", category="previous_exam", data=_marked_pages("OLDEXAM", 40)
+        )
+    )
+    interpret_and_approve(api, assessment["id"])
+    make_plan(api, assessment["id"])
+    started = api.post(f"/api/assessments/{assessment['id']}/exam", json={"mode": "full"}, headers=auth("token-a"))
+    assert wait_for_run(api, started.json()["run"]["id"], "token-a")["status"] == "succeeded"
+    finish_quality_check(api, supabase)
+
+    for purpose in ("interpret_assessment", "plan_exam", "generate_questions"):
+        calls = ai.calls_for(purpose)
+        # Every single writing request has all of it, whichever slides it was planned on.
+        for call in calls:
+            assert len(_pages_seen("LECTURE", [call])) == 60, purpose
+            assert len(_pages_seen("OLDEXAM", [call])) == 40, purpose
+    assert len(_pages_seen("LECTURE", ai.calls_for("review_exam"))) == 60
+    assert "STAY CLOSE TO THE FILES" in ai.calls_for("generate_questions")[0]["instructions"]
+
+
+def test_a_mini_quiz_gets_the_whole_text_of_a_word_lecture(api, supabase, db_a, ai):
+    from app.services.document_parsers import TXT
+
+    assessment = run(seed_assessment(db_a, duration_minutes=10))
+    text = "\n\n".join(f"NOTESPART{part:03d} The notes explain records and values in detail." * 20 for part in range(1, 41))
+    run(seed_document(supabase, db_a, assessment["id"], name="Notes.txt", mime=TXT, data=text.encode()))
+    interpret_and_approve(api, assessment["id"])
+    make_plan(api, assessment["id"])
+    assert len(_pages_seen("NOTESPART", ai.calls_for("interpret_assessment"))) == 40
+    assert len(_pages_seen("NOTESPART", ai.calls_for("plan_exam"))) == 40
+
+
+def test_a_very_long_file_is_sampled_from_start_to_end():
+    text = "".join(f"{index:06d}" for index in range(100_000))
+    kept = spread_text(text, 6_000)
+    assert len(kept) < 6_200
+    assert kept.startswith("000000") and kept.rstrip().endswith("099999")
+    assert spread_text("short", 6_000) == "short"
+
+
+def test_a_full_exam_still_gets_only_what_it_did(api, supabase, db_a, ai):
+    assessment = run(seed_assessment(db_a, duration_minutes=90))
+    run(seed_document(supabase, db_a, assessment["id"], data=_marked_pages("LECTURE", 30)))
+    old_exam = _marked_pages("OLDEXAM", 6)
+    run(seed_document(supabase, db_a, assessment["id"], name="Old.pdf", category="previous_exam", data=old_exam))
+    interpret_and_approve(api, assessment["id"])
+    make_plan(api, assessment["id"])
+    assert not _pages_seen("OLDEXAM", ai.calls_for("interpret_assessment") + ai.calls_for("plan_exam"))
+    assert "STAY CLOSE TO THE FILES" not in ai.calls_for("plan_exam")[0]["instructions"]
+
+
+def test_stray_spaces_in_settings_are_ignored():
+    from app.core.config import Settings
+
+    pasted = Settings(supabase_publishable_key=" key-value \n", supabase_url="https://x.supabase.co\n", openai_api_key="sk-x\n")
+    assert pasted.supabase_publishable_key == "key-value"
+    assert pasted.supabase_url == "https://x.supabase.co"
+    assert pasted.openai_api_key.get_secret_value() == "sk-x"

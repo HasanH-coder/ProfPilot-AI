@@ -198,13 +198,13 @@ def _flat(words: str) -> str:
     return " / ".join(line.strip() for line in words.splitlines() if line.strip())
 
 
-def render_all_slides(index: SlideIndex, framer: DataFramer) -> str:
+def render_all_slides(index: SlideIndex, framer: DataFramer, *, max_chars: int = _ALL_WORDS_CHARS) -> str:
     """Every word of every slide of every lecture, each slide under its id, for planning."""
     if not index:
         return ""
     slides = sum(len(pages) for pages in index.pages.values())
     total = sum(len(slide["words"]) for pages in index.pages.values() for slide in pages.values())
-    limit = None if total <= _ALL_WORDS_CHARS else max(200, _ALL_WORDS_CHARS // max(1, slides))
+    limit = None if total <= max_chars else max(200, max_chars // max(1, slides))
     blocks = []
     for ref, doc in index.files.items():
         lines = []
