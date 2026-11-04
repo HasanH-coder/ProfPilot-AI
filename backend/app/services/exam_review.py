@@ -261,7 +261,7 @@ class ExamReviewService:
             versions_text.append(framer.block("exam_version", f"Version {version['label']}", body))
         return await self.ai.parse_with_files(
             purpose="review_exam",
-            instructions=reviewer_instructions(framer),
+            instructions=reviewer_instructions(framer, mini_quiz=ctx.mini_quiz),
             files=image_parts(images, slides),
             text="\n\n".join(
                 part
@@ -283,8 +283,8 @@ class ExamReviewService:
                 if part
             ),
             schema=ReviewOutput,
-            effort="high",
-            max_output_tokens=40_000,
+            effort="medium" if ctx.mini_quiz else "high",
+            max_output_tokens=20_000 if ctx.mini_quiz else 40_000,
             usage=self.usage,
         )
 

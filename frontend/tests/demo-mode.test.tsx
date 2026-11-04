@@ -108,6 +108,7 @@ test("the prompt confirmation page confirms and moves to the AI plan, with no ca
     const url = String(path);
     if (options?.method) sent.push(url);
     if (url.endsWith("/ai-status")) return { spec: { status: "draft" }, runs: [], exam: null };
+    if (url.endsWith("/question-plan")) return { status: "ready", questions: [], rationale: null };
     return {
       status: "draft",
       staleReasons: [],
@@ -118,7 +119,7 @@ test("the prompt confirmation page confirms and moves to the AI plan, with no ca
   });
   const screen = await render(<PlanReview assessmentId="a1" />);
 
-  await expect.element(screen.getByRole("heading", { name: "AI-enhanced instructions" })).toBeVisible();
+  await expect.element(screen.getByRole("heading", { name: "Your improved prompt" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Build with AI" }).query()).toBeNull();
   expect(screen.getByRole("heading", { name: "Assessment plan" }).query()).toBeNull();
 
@@ -202,4 +203,57 @@ test("a plan needs a confirmed prompt first", async () => {
 
   await expect.element(screen.getByRole("link", { name: "Confirm your prompt" })).toHaveAttribute("href", "/workspace/assessments/a1/plan");
   expect(sent).toEqual([]);
+});
+
+/** The prompt page's requests, with the plan either waiting to be made or already being made. */
+function servePrompt(runs: object[], plan: QuestionPlan = { status: "none", questions: [], rationale: null }) {
+  const sent: string[] = [];
+  vi.mocked(apiRequest).mockImplementation(async (path, options) => {
+    const url = String(path);
+    if (options?.method) sent.push(`${options.method} ${url}`);
+    if (url.endsWith("/ai-status")) return { spec: { status: "draft" }, runs, exam: null };
+    if (url.endsWith("/question-plan")) return options?.method ? { run: { id: "run-9" } } : plan;
+    return {
+      status: "draft",
+      staleReasons: [],
+      enhancedPrompt: "A short prompt, in one paragraph.",
+      spec: { assumptions: ["A total of 10 marks."], warnings: [], coverage: [], sections: [] },
+      inputs: {},
+    };
+  });
+  return sent;
+}
+
+test("the plan starts being made as soon as the prompt is on screen", async () => {
+  const sent = servePrompt([]);
+  const screen = await render(<PlanReview assessmentId="a1" />);
+
+  await expect.element(screen.getByRole("button", { name: "Next" })).toBeVisible();
+  await vi.waitFor(() => expect(sent).toEqual(["POST /api/assessments/a1/question-plan"]));
+});
+
+test("a plan that already exists isn't made again", async () => {
+  const sent = servePrompt([], planned);
+  const screen = await render(<PlanReview assessmentId="a1" />);
+
+  await expect.element(screen.getByRole("button", { name: "Next" })).toBeVisible();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(sent).toEqual([]);
+});
+
+test("the prompt stays readable while the plan is being made", async () => {
+  const sent = servePrompt([{ id: "run-9", kind: "interpretation", status: "running", stage: "planning" }]);
+  const screen = await render(<PlanReview assessmentId="a1" />);
+
+  await expect.element(screen.getByText("A short prompt, in one paragraph.")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+  expect(sent).toEqual([]);
+});
+
+test("the prompt page is simple: no assumptions list", async () => {
+  servePrompt([], planned);
+  const screen = await render(<PlanReview assessmentId="a1" />);
+
+  await expect.element(screen.getByRole("button", { name: "Edit prompt" })).toBeVisible();
+  expect(screen.getByText("A total of 10 marks.").query()).toBeNull();
 });

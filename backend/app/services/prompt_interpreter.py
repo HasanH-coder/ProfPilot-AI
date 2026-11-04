@@ -141,14 +141,15 @@ class PromptInterpreterService:
         ]
         course_docs = [doc for doc in documents if doc.category == "course_material" and doc.processing_status == "ready"]
         complex_request = len(course_docs) > 3 or len(record.setup.professor_prompt) > 800 or style is not None
+        mini_quiz = record.setup.duration_minutes == MINI_QUIZ_MINUTES
         output = await self.ai.parse(
             purpose="interpret_assessment",
-            instructions=interpreter_instructions(framer),
+            instructions=interpreter_instructions(framer, mini_quiz=mini_quiz),
             input="\n\n".join(sections),
             schema=InterpretationOutput,
-            effort="high" if complex_request else "medium",
-            verbosity="medium",
-            max_output_tokens=24_000,
+            effort="low" if mini_quiz else "high" if complex_request else "medium",
+            verbosity="low" if mini_quiz else "medium",
+            max_output_tokens=12_000 if mini_quiz else 24_000,
             validate=lambda result: _interpretation_problems(result, record),
             usage=self.usage,
         )
@@ -262,6 +263,16 @@ class PromptInterpreterService:
             columns="id",
         )
 
+    async def require_current(self, assessment_id: str) -> AssessmentRecord:
+        """The assessment, while its interpretation matches its setup, approved or not."""
+        record = await self.context.get_assessment(assessment_id)
+        if record.spec_status == "none" or not record.exam_spec:
+            raise ConflictError("Improve with AI first.", code="spec_missing")
+        if stale_reasons(record, await self.context.list_documents(record.id)):
+            await self._mark_stale(record.id)
+            raise ConflictError("Your setup changed since this was written. Regenerate it first.", code="spec_stale")
+        return record
+
     async def require_approved(self, assessment_id: str) -> tuple[AssessmentRecord, ExamSpec]:
         """The approved, up-to-date spec, or a clear error. Generation always calls this."""
         record = await self.context.get_assessment(assessment_id)
@@ -359,6 +370,20 @@ def apply_professor_settings(spec: ExamSpec, record: AssessmentRecord) -> ExamSp
         if spec.question_count_source != "professor":
             spec.question_count_min = spec.question_count_max = MINI_QUIZ_QUESTIONS
             spec.question_count_source = "ai_assumption"
+        # Simple by default; a difficulty or learning focus the professor set or asked for stays theirs.
+        if setup.easy_percentage is None and (spec.difficulty is None or spec.difficulty.source != "professor"):
+            spec.difficulty = DifficultySpec(easy_percent=60, medium_percent=40, hard_percent=0, source="ai_assumption")
+        if chosen is None and (spec.bloom is None or spec.bloom.source != "professor"):
+            spec.bloom = BloomSpec(
+                focus="automatic",
+                remember_percent=40,
+                understand_percent=40,
+                apply_percent=20,
+                analyze_percent=0,
+                evaluate_percent=0,
+                create_percent=0,
+                source="ai_assumption",
+            )
     for conflict in bloom_conflicts(spec):
         if conflict not in spec.warnings:
             spec.warnings.append(conflict)

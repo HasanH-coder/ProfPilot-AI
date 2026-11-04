@@ -52,7 +52,7 @@ from app.services.lecture_knowledge import (
 )
 from app.services.lecture_knowledge import overview as lecture_overview
 from app.services.prompt_interpreter import QUESTION_PLAN_KEY, PromptInterpreterService, stale_reasons
-from app.services.question_plan import QuestionPlanService
+from app.services.question_plan import PLANNING_STAGE, QuestionPlanService, stop_planning
 from app.services.slides import reading_problems
 from app.services.source_preparation import settled
 from app.services.style_analysis import StyleAnalysisService
@@ -444,6 +444,7 @@ async def start_interpretation(
 ) -> StartedRunOut:
     """'Improve with AI': analyses everything provided and drafts the ExamSpec."""
     record = await AssessmentContextService(db).get_assessment(assessment_id)
+    await stop_planning(db, record.id)
 
     async def work(run: RunContext) -> None:
         await PromptInterpreterService(db, ai, run.usage).interpret(record.id, run)
@@ -483,6 +484,7 @@ async def edit_interpretation(
     assessment_id: str, body: InterpretationEditIn, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
 ) -> InterpretationOut:
     """The professor edits the enhanced prompt; it then needs approving again."""
+    await stop_planning(db, parse_id(assessment_id, what="assessment"))
     await PromptInterpreterService(db, ai).update_enhanced_prompt(assessment_id, body.enhanced_prompt)
     return await _interpretation(db, assessment_id)
 
@@ -520,15 +522,15 @@ async def _require_read_material(db: Database, ai: OpenAIService, assessment_id:
 async def start_question_plan(
     assessment_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
 ) -> StartedRunOut:
-    """Plans every question from the approved brief, for the professor to review before the exam is written."""
-    record, _ = await PromptInterpreterService(db, ai).require_approved(assessment_id)
+    """Plans every question from the improved prompt, for the professor to review before the exam is written."""
+    record = await PromptInterpreterService(db, ai).require_current(assessment_id)
     await _require_read_material(db, ai, record.id)
 
     async def work(run: RunContext) -> None:
         await QuestionPlanService(db, ai, run.usage).create(record.id, run)
 
     # Runs as an interpretation job: it continues the same review, and must not overlap a new interpretation.
-    run = await job_runner.start(db, assessment_id=record.id, kind="interpretation", work=work, stage="planning")
+    run = await job_runner.start(db, assessment_id=record.id, kind="interpretation", work=work, stage=PLANNING_STAGE)
     return StartedRunOut(run=RunOut.model_validate(public_run(run)))
 
 

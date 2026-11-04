@@ -295,7 +295,41 @@ def style_instructions(framer: DataFramer) -> str:
 # -----------------------------------------------------------------------------
 
 
-def interpreter_instructions(framer: DataFramer) -> str:
+# Overrides the brief's headings and length for a mini quiz, which needs far less.
+_MINI_QUIZ_BRIEF = (
+    "MINI QUIZ BRIEF. This overrides the headings and length given above: write enhanced_prompt as one short plain "
+    "paragraph of 60 to 120 words that a busy professor reads at a glance, saying what the quiz covers, how long it "
+    "is, the kind of questions, and what it focuses on; when previous exams are given, say the quiz follows their "
+    "style, and fill previous_exam_style_guidance. No headings or lists. Keep exam_spec brief too: at most 3 items "
+    "in each list."
+)
+
+# Last in the instructions, because they overrule the longer guidance written for full exams.
+_MINI_QUIZ_QUESTIONS = (
+    "Every question tests one idea from the lecture, and a student who attended answers it in under a minute. Easy "
+    "means direct recall. Medium means one small step of understanding, never a calculation of several steps. No "
+    "invented scenarios, named people or long cases, and no trick or near-identical choices. "
+    "The professor's previous exams, when given, are the model: match their question format, length, wording and "
+    "tone, without copying their questions. Only the professor's own request for something harder overrules this."
+)
+_MINI_QUIZ_PLAN = (
+    "MINI QUIZ. This overrules the guidance above wherever they differ. " + _MINI_QUIZ_QUESTIONS + " "
+    "Use mcq, and short_answer for any written marks; never long_answer or problem. Each assessment_target is one "
+    "plain, simple task. Write the rationale as one or two plain sentences for the professor."
+)
+_MINI_QUIZ_WRITING = (
+    "MINI QUIZ. This overrules the guidance above wherever they differ, including what it says about scenarios, "
+    "steps and distractors. Readability comes first. " + _MINI_QUIZ_QUESTIONS + " "
+    "Write each stem as one or two short sentences, at most 25 words where the content allows, in plain everyday "
+    "wording. Keep each choice to a few words, and make wrong choices clearly wrong to a student who knows the idea."
+)
+_MINI_QUIZ_REVIEW = (
+    "MINI QUIZ. Simple, direct questions are what the professor wants here, so never report one for being too easy "
+    "or too short, and never make a question longer or harder when you fix it."
+)
+
+
+def interpreter_instructions(framer: DataFramer, *, mini_quiz: bool = False) -> str:
     return preamble(
         framer,
         "TASK. You are the Prompt Interpreter. Read EVERYTHING provided: the professor's "
@@ -350,7 +384,9 @@ def interpreter_instructions(framer: DataFramer) -> str:
         "describing the conflict. Splits must add up to 100.",
         f"MINI QUIZ. A duration of {MINI_QUIZ_MINUTES} minutes means a mini quiz: assessment_type 'Mini quiz' with "
         f"exactly {MINI_QUIZ_QUESTIONS} questions (say so in the enhanced prompt), unless the professor's "
-        "instructions ask for another number (then mark question_count_source 'professor').",
+        "instructions ask for another number (then mark question_count_source 'professor'). It checks the main ideas "
+        "simply: easy and medium questions, and when the learning focus is automatic, mostly remember, understand "
+        "and apply, with no create, unless the professor asks for something harder.",
         "LEARNING FOCUS. Always fill bloom, the split of marks across the six Bloom's levels. If the "
         "settings give a split (a preset or the professor's own), copy it exactly. If the focus is "
         "automatic, recommend a split that suits the course material, its learning objectives, the "
@@ -371,6 +407,7 @@ def interpreter_instructions(framer: DataFramer) -> str:
         BLOOM_GUIDE,
         GROUNDING,
         PREVIOUS_EXAMS,
+        *([_MINI_QUIZ_BRIEF] if mini_quiz else []),
     )
 
 
@@ -379,7 +416,7 @@ def interpreter_instructions(framer: DataFramer) -> str:
 # -----------------------------------------------------------------------------
 
 
-def planner_instructions(framer: DataFramer) -> str:
+def planner_instructions(framer: DataFramer, *, mini_quiz: bool = False) -> str:
     return preamble(
         framer,
         "TASK. Plan the exam before any question is written. Follow the approved ExamSpec and "
@@ -452,10 +489,11 @@ def planner_instructions(framer: DataFramer) -> str:
         DIFFICULTY_GUIDE,
         BLOOM_GUIDE,
         GROUNDING,
+        *([_MINI_QUIZ_PLAN] if mini_quiz else []),
     )
 
 
-def generator_instructions(framer: DataFramer) -> str:
+def generator_instructions(framer: DataFramer, *, mini_quiz: bool = False) -> str:
     return preamble(
         framer,
         "TASK. Write the planned questions, each with a complete, correct answer key. Follow "
@@ -540,6 +578,7 @@ def generator_instructions(framer: DataFramer) -> str:
         GROUNDING,
         PREVIOUS_EXAMS,
         FORMATTING,
+        *([_MINI_QUIZ_WRITING] if mini_quiz else []),
     )
 
 
@@ -563,7 +602,7 @@ def variant_instructions(framer: DataFramer) -> str:
     )
 
 
-def reviewer_instructions(framer: DataFramer) -> str:
+def reviewer_instructions(framer: DataFramer, *, mini_quiz: bool = False) -> str:
     return preamble(
         framer,
         "TASK. You are an independent exam reviewer. Check the exam against the ExamSpec and "
@@ -617,6 +656,7 @@ def reviewer_instructions(framer: DataFramer) -> str:
         DIFFICULTY_GUIDE,
         BLOOM_GUIDE,
         GROUNDING,
+        *([_MINI_QUIZ_REVIEW] if mini_quiz else []),
     )
 
 

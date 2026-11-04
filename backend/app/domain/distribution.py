@@ -7,6 +7,7 @@ questions: a 10-point hard problem weighs more than a 2-point easy MCQ.
 from collections.abc import Iterable
 from typing import Any
 
+from app.domain.setup import MINI_QUIZ_MINUTES
 from app.schemas.ai import COGNITIVE_LEVELS, ExamSpec
 
 
@@ -49,8 +50,11 @@ def compare(summary: dict[str, Any], spec: ExamSpec | None, *, tolerance: float 
         return []
     warnings: list[dict[str, Any]] = []
 
-    def check(dimension: str, label: str, actual: float, target: float) -> None:
-        if abs(actual - target) > tolerance:
+    # In a mini quiz one question is a big share of the marks, so these splits can only be met roughly.
+    rough = max(tolerance, 100 / summary["questionCount"]) if spec.duration_minutes == MINI_QUIZ_MINUTES else tolerance
+
+    def check(dimension: str, label: str, actual: float, target: float, allowed: float = tolerance) -> None:
+        if abs(actual - target) > allowed:
             warnings.append(
                 {
                     "dimension": dimension,
@@ -64,12 +68,12 @@ def compare(summary: dict[str, Any], spec: ExamSpec | None, *, tolerance: float 
     if spec.question_format:
         check("format", "Multiple-choice", summary["mcqPercent"], spec.question_format.mcq_percent)
     if spec.difficulty:
-        check("difficulty", "Easy", summary["easyPercent"], spec.difficulty.easy_percent)
-        check("difficulty", "Medium", summary["mediumPercent"], spec.difficulty.medium_percent)
-        check("difficulty", "Hard", summary["hardPercent"], spec.difficulty.hard_percent)
+        check("difficulty", "Easy", summary["easyPercent"], spec.difficulty.easy_percent, rough)
+        check("difficulty", "Medium", summary["mediumPercent"], spec.difficulty.medium_percent, rough)
+        check("difficulty", "Hard", summary["hardPercent"], spec.difficulty.hard_percent, rough)
     if spec.bloom and summary.get("bloom"):
         for level, target in spec.bloom.shares().items():
-            check("bloom", f"{level.capitalize()}-level", summary["bloom"][level], target)
+            check("bloom", f"{level.capitalize()}-level", summary["bloom"][level], target, rough)
     if spec.duration_minutes and summary["estimatedMinutes"] > spec.duration_minutes * 1.1:
         warnings.append(
             {

@@ -33,7 +33,7 @@ from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
-from app.domain.setup import BLOOM_PRESETS
+from app.domain.setup import BLOOM_PRESETS, MINI_QUIZ_MINUTES
 from app.schemas.ai import (
     COGNITIVE_LEVELS,
     QUESTION_TYPES,
@@ -68,7 +68,7 @@ from app.services.exam_store import (
     row_to_content,
     similar,
 )
-from app.services.jobs import RunContext
+from app.services.jobs import RunContext, job_runner
 from app.services.lecture_knowledge import (
     lecture_refs,
     mapped_ids,
@@ -98,6 +98,7 @@ logger = logging.getLogger("profpilot.generation")
 
 _BATCH_SIZE = 4
 _PLAN_TOLERANCE = 6.0  # percentage points
+_STYLE_EXAMPLE_CHARS = 6_000
 
 
 @dataclass
@@ -117,6 +118,8 @@ class GenerationContext:
     pages: dict[str, dict[int, dict[str, Any]]] = field(default_factory=dict)
     # The lecture PDFs downloaded for showing their slides, once per job (see slides.slide_images).
     files: dict[str, "asyncio.Future[bytes]"] = field(default_factory=dict)
+    # A mini quiz's writers see real questions from the previous exams, not only a description of them.
+    style_examples: str = ""
 
     @property
     def slides(self) -> SlideIndex:
@@ -151,6 +154,11 @@ class GenerationContext:
     def has_course_material(self) -> bool:
         return any(doc.category == "course_material" and doc.processing_status == "ready" for doc in self.documents)
 
+    @property
+    def mini_quiz(self) -> bool:
+        """A short, simple assessment, which gets less reasoning and an earlier result than a full exam."""
+        return self.spec.duration_minutes == MINI_QUIZ_MINUTES
+
     def common_sections(self, framer: DataFramer) -> list[str]:
         attachments = [
             f'- id {doc.id}: "{doc.original_name}"' + (f" — {(doc.summary or {}).get('summary', '')}" if doc.summary else "")
@@ -162,6 +170,12 @@ class GenerationContext:
             "APPROVED BRIEF (approved by the professor)\n" + self.enhanced_prompt,
             render_preferences(self.preferences),
             render_style_profile(self.style, framer),
+            (
+                "QUESTIONS FROM THE PROFESSOR'S PREVIOUS EXAMS (the style to match; never copy them)\n"
+                + framer.block("previous_exam", "previous exam questions", self.style_examples)
+                if self.style_examples
+                else ""
+            ),
             (
                 "IMAGE ATTACHMENTS (a question may show one by setting figure_document_id)\n"
                 + framer.block("attachments", "image attachments", "\n".join(attachments))
@@ -189,6 +203,7 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
             raise ConflictError("Improve with AI and approve the plan first.", code="spec_missing")
         spec = ExamSpec.model_validate(record.exam_spec["spec"])
     knowledge, pages = await asyncio.gather(context.get_knowledge(documents), context.get_pages(documents))
+    style_examples = await _style_examples(db, documents) if spec.duration_minutes == MINI_QUIZ_MINUTES else ""
     return GenerationContext(
         record=record,
         spec=spec,
@@ -198,12 +213,27 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
         preferences=preferences,
         knowledge=knowledge,
         pages=pages,
+        style_examples=style_examples,
     )
 
 
-async def load_planning_context(db: Database, assessment_id: str) -> GenerationContext:
+async def _style_examples(db: Database, documents: list[DocumentRecord]) -> str:
+    """The opening of the professor's previous exams, as they wrote them."""
+    exams = [doc.id for doc in documents if doc.category == "previous_exam" and doc.processing_status == "ready"]
+    if not exams:
+        return ""
+    rows = await db.select(
+        "document_chunks",
+        columns="content",
+        filters=[("document_id", "in", exams), ("professor_id", "eq", db.professor_id)],
+        order=[("chunk_index", "asc")],
+    )
+    return "\n\n".join(row["content"] for row in rows)[:_STYLE_EXAMPLE_CHARS]
+
+
+async def load_planning_context(db: Database, assessment_id: str, *, require_approved: bool = True) -> GenerationContext:
     """The context, with every lecture's slide words, which the planner is given."""
-    ctx = await load_generation_context(db, assessment_id)
+    ctx = await load_generation_context(db, assessment_id, require_approved=require_approved)
     # Lectures read before their slides' words were kept get them now (from their PDFs, no AI).
     if any(doc.id not in ctx.pages for doc in ctx.documents if has_slides(doc) and doc.processing_status == "ready"):
         await ensure_page_words(db, ctx.documents)
@@ -511,14 +541,16 @@ class ExamPlanningService:
         base_input = "\n\n".join(part for part in sections if part)
         figure_ids = ctx.figure_ids
         known = ctx.knowledge_refs
+        plan_effort: Effort = "medium" if ctx.mini_quiz else "high"
+        plan_tokens = 16_000 if ctx.mini_quiz else 24_000
 
         plan = await self.ai.parse(
             purpose="plan_exam",
-            instructions=planner_instructions(framer),
+            instructions=planner_instructions(framer, mini_quiz=ctx.mini_quiz),
             input=base_input,
             schema=ExamPlan,
-            effort="high",
-            max_output_tokens=24_000,
+            effort=plan_effort,
+            max_output_tokens=plan_tokens,
             validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
             usage=self.usage,
         )
@@ -528,7 +560,7 @@ class ExamPlanningService:
             try:
                 repaired = await self.ai.parse(
                     purpose="replan_exam",
-                    instructions=planner_instructions(framer),
+                    instructions=planner_instructions(framer, mini_quiz=ctx.mini_quiz),
                     input=[
                         {"role": "user", "content": [{"type": "input_text", "text": base_input}]},
                         {"role": "assistant", "content": [{"type": "output_text", "text": plan.model_dump_json()}]},
@@ -544,8 +576,8 @@ class ExamPlanningService:
                         },
                     ],
                     schema=ExamPlan,
-                    effort="high",
-                    max_output_tokens=24_000,
+                    effort=plan_effort,
+                    max_output_tokens=plan_tokens,
                     validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
                     usage=self.usage,
                 )
@@ -700,9 +732,20 @@ class ExamGenerationService:
             async with timed("full_generation.versions", self.usage):
                 await self.create_missing_variants(ctx, exam_id)
 
-        await run.stage("reviewing")
         from app.services.exam_review import ExamReviewService  # avoids an import cycle
 
+        if ctx.mini_quiz:
+            # The professor reads the quiz at once, and the quality check reports while they do.
+            await self.store.update_exam(exam_id, {"status": "ready", "error_message": None, "review_status": "running"})
+
+            async def check(review: RunContext) -> None:
+                await review.stage("reviewing")
+                await ExamReviewService(self.db, self.ai, review.usage).review(exam_id, ctx=ctx)
+
+            await job_runner.start(self.db, assessment_id=assessment_id, kind="review", work=check, exam_id=exam_id)
+            return
+
+        await run.stage("reviewing")
         # The full quality check runs once, after every question is written.
         async with timed("full_generation.review", self.usage):
             await ExamReviewService(self.db, self.ai, self.usage).review(exam_id, ctx=ctx)
@@ -765,12 +808,12 @@ class ExamGenerationService:
         ]
         batch_result = await self.ai.parse_with_files(
             purpose="generate_questions",
-            instructions=generator_instructions(framer),
+            instructions=generator_instructions(framer, mini_quiz=ctx.mini_quiz),
             text="\n\n".join(part for part in sections if part),
             files=image_parts(images, slides),
             schema=QuestionBatch,
-            effort=batch_effort(batch),
-            max_output_tokens=48_000,
+            effort="medium" if ctx.mini_quiz else batch_effort(batch),
+            max_output_tokens=20_000 if ctx.mini_quiz else 48_000,
             validate=lambda result: (
                 batch_problems(result, batch, others)
                 + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)

@@ -30,6 +30,7 @@ RUN_COLUMNS = (
 )
 
 INTERRUPTED_MESSAGE = "This was interrupted before it finished. Please try again."
+STOPPED_MESSAGE = "This was stopped because something newer replaced it."
 
 
 def now_iso() -> str:
@@ -97,6 +98,7 @@ class JobRunner:
     def __init__(self) -> None:
         # Keeps references so running tasks aren't garbage-collected.
         self._tasks: set[asyncio.Task[None]] = set()
+        self._by_run: dict[str, asyncio.Task[None]] = {}
 
     async def start(
         self,
@@ -122,7 +124,33 @@ class JobRunner:
         task = asyncio.create_task(self._run(context, work, kind))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        self._by_run[run["id"]] = task
+        task.add_done_callback(lambda _: self._by_run.pop(run["id"], None))
         return run
+
+    async def stop(self, db: Database, *, assessment_id: str, kind: str, stage: str) -> None:
+        """Stops this assessment's running job of `kind` at `stage`, so a newer one can start at once."""
+        running = await db.select(
+            "ai_runs",
+            columns="id",
+            filters=[
+                ("exam_project_id", "eq", assessment_id),
+                ("kind", "eq", kind),
+                ("status", "eq", "running"),
+                ("stage", "eq", stage),
+            ],
+        )
+        for row in running:
+            task = self._by_run.get(row["id"])
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await db.update(
+                "ai_runs",
+                {"status": "failed", "error_message": STOPPED_MESSAGE, "finished_at": now_iso()},
+                filters=[("id", "eq", row["id"]), ("status", "eq", "running")],
+                columns="id",
+            )
 
     async def wait_all(self) -> None:
         """Waits for every running job (used by tests)."""

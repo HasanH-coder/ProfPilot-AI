@@ -26,13 +26,25 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiRequest, errorMessage } from "@/lib/api/client";
 import { useRun } from "@/lib/api/runs";
-import type { AiStatus, Exam, Interpretation, StartedRun } from "@/lib/api/types";
+import type { AiStatus, Exam, Interpretation, QuestionPlan, StartedRun } from "@/lib/api/types";
 import { DEMO_MODE } from "@/lib/demo";
 import { timeAgo } from "@/lib/time";
 
 type PlanReviewProps = { assessmentId: string };
 
 type Pending = { kind: "interpretation" | "generation"; runId: string } | null;
+
+/** The question plan is made while the professor reads the prompt, so Next has little left to wait for. */
+async function preparePlan(assessmentId: string) {
+  try {
+    const plan = await apiRequest<QuestionPlan>(`/api/assessments/${assessmentId}/question-plan`);
+    if (plan.status === "none") {
+      await apiRequest<StartedRun>(`/api/assessments/${assessmentId}/question-plan`, { method: "POST", freshSession: true });
+    }
+  } catch {
+    // Nothing is lost: the plan page starts it again and reports any problem.
+  }
+}
 
 /**
  * Review screen for the interpreted request: the professor checks the
@@ -65,10 +77,19 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
         setStatus(nextStatus);
         setLoadError(null);
         // Pick up a job that is already running (e.g. started before a reload).
-        const running = nextStatus.runs.find(
-          (run) => run.status === "running" && (run.kind === "interpretation" || run.kind === "generation"),
+        const running = nextStatus.runs.filter((run) => run.status === "running");
+        // Planning runs as an interpretation, but the prompt stays readable meanwhile.
+        const blocking = running.find(
+          (run) => run.kind === "generation" || (run.kind === "interpretation" && run.stage !== "planning"),
         );
-        if (running) setPending({ kind: running.kind as "interpretation" | "generation", runId: running.id });
+        if (blocking) setPending({ kind: blocking.kind as "interpretation" | "generation", runId: blocking.id });
+        else if (
+          DEMO_MODE &&
+          (nextInterpretation.status === "draft" || nextInterpretation.status === "approved") &&
+          !running.some((run) => run.kind === "interpretation")
+        ) {
+          void preparePlan(assessmentId);
+        }
       })
       .catch((cause) => {
         if (!cancelled) setLoadError(errorMessage(cause));
@@ -262,7 +283,11 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
       <EnhancedPrompt
         assessmentId={assessmentId}
         interpretation={interpretation}
-        onSaved={(next) => setInterpretation(next)}
+        onSaved={(next) => {
+          setInterpretation(next);
+          // The edit dropped the plan: reloading starts a new one from the new prompt.
+          if (DEMO_MODE) load();
+        }}
       />
 
       {!DEMO_MODE && (
@@ -271,8 +296,8 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
         </ReviewSection>
       )}
 
-      {(spec.assumptions.length > 0 || spec.warnings.length > 0) && (
-        <ReviewSection title="Assumptions and warnings">
+      {(spec.warnings.length > 0 || (!DEMO_MODE && spec.assumptions.length > 0)) && (
+        <ReviewSection title={DEMO_MODE ? "Warnings" : "Assumptions and warnings"}>
           <div className="flex flex-col gap-3">
             {spec.warnings.map((warning, index) => (
               <Alert key={`w${index}`}>
@@ -282,7 +307,7 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
                 </AlertDescription>
               </Alert>
             ))}
-            {spec.assumptions.length > 0 && (
+            {!DEMO_MODE && spec.assumptions.length > 0 && (
               <ul className="list-disc rounded-xl border px-8 py-3 text-sm">
                 {spec.assumptions.map((assumption, index) => (
                   <li key={`a${index}`}>
@@ -399,13 +424,17 @@ function EnhancedPrompt({
 
   return (
     <ReviewSection
-      title="AI-enhanced instructions"
-      description="A complete brief built from everything you provided. Edit it if anything is off."
+      title={DEMO_MODE ? "Your improved prompt" : "AI-enhanced instructions"}
+      description={
+        DEMO_MODE
+          ? "What ProfPilot will follow, in short. Edit it if anything is off."
+          : "A complete brief built from everything you provided. Edit it if anything is off."
+      }
     >
       {editing ? (
         <div className="flex flex-col gap-3">
           <label htmlFor={textareaId} className="sr-only">
-            AI-enhanced instructions
+            {DEMO_MODE ? "Your improved prompt" : "AI-enhanced instructions"}
           </label>
           <Textarea
             id={textareaId}
@@ -417,7 +446,7 @@ function EnhancedPrompt({
           <div className="flex flex-wrap gap-2">
             <Button onClick={save} disabled={saving || !text.trim()}>
               {saving ? <Spinner /> : <Check />}
-              Save instructions
+              {DEMO_MODE ? "Save prompt" : "Save instructions"}
             </Button>
             <Button
               variant="outline"
@@ -436,7 +465,7 @@ function EnhancedPrompt({
           <BriefText text={interpretation.enhancedPrompt ?? ""} />
           <Button variant="outline" className="w-fit" onClick={() => setEditing(true)}>
             <Pencil />
-            Edit instructions
+            {DEMO_MODE ? "Edit prompt" : "Edit instructions"}
           </Button>
         </div>
       )}

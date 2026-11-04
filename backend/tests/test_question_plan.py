@@ -2,9 +2,15 @@
 
 import asyncio
 
+from app.domain import distribution
+from app.schemas.ai import ExamSpec, FormatSpec
+from app.services.jobs import job_runner
+from app.services.question_plan import stop_planning
 from tests.helpers import auth, wait_for_run
-from tests.seed import seed_assessment, seed_document
+from tests.seed import pdf_bytes, seed_assessment, seed_document
 from tests.test_workflow import interpret_and_approve
+
+OLD_EXAM = ["Question 1. What does CPU stand for? A. Central Processing Unit. B. Core Power Unit. " * 6]
 
 
 def run(coroutine):
@@ -16,6 +22,18 @@ def approved_assessment(api, supabase, db_a, **settings) -> str:
     run(seed_document(supabase, db_a, assessment["id"]))
     interpret_and_approve(api, assessment["id"])
     return assessment["id"]
+
+
+def approved_assessment_of(api, supabase, db_a, **settings) -> str:
+    assessment = run(seed_assessment(db_a, **settings))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    interpret_and_approve(api, assessment["id"])
+    return assessment["id"]
+
+
+def finish_quality_check(api, supabase) -> None:
+    """Waits for the quality check a mini quiz's generation started in the background."""
+    wait_for_run(api, next(row["id"] for row in supabase.tables["ai_runs"] if row["kind"] == "review"))
 
 
 def make_plan(api, assessment_id: str, token: str = "token-a") -> dict:
@@ -31,11 +49,76 @@ def test_there_is_no_plan_until_one_is_asked_for(api, supabase, db_a):
     assert plan == {"status": "none", "questions": [], "rationale": None}
 
 
-def test_planning_needs_an_approved_brief(api, supabase, db_a):
+def test_planning_needs_an_improved_prompt(api, supabase, db_a):
     assessment = run(seed_assessment(db_a))
     started = api.post(f"/api/assessments/{assessment['id']}/question-plan", headers=auth("token-a"))
     assert started.status_code == 409
-    assert started.json()["error"]["code"] == "spec_not_approved"
+    assert started.json()["error"]["code"] == "spec_missing"
+
+
+def interpreted(api, supabase, db_a, **settings) -> str:
+    """An improved prompt, on screen and not confirmed yet."""
+    assessment = run(seed_assessment(db_a, **settings))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    started = api.post(f"/api/assessments/{assessment['id']}/interpretation", headers=auth("token-a"))
+    assert wait_for_run(api, started.json()["run"]["id"], "token-a")["status"] == "succeeded"
+    return assessment["id"]
+
+
+def test_planning_starts_while_the_prompt_is_only_on_screen(api, supabase, db_a):
+    assessment_id = interpreted(api, supabase, db_a, duration_minutes=10)
+    assert make_plan(api, assessment_id)["status"] == "ready"
+    # Reading the prompt confirms nothing.
+    interpretation = api.get(f"/api/assessments/{assessment_id}/interpretation", headers=auth("token-a")).json()
+    assert interpretation["status"] == "draft"
+    # Confirming it keeps the plan, and generating without confirming is still refused.
+    refused = api.post(f"/api/assessments/{assessment_id}/exam", json={"mode": "full"}, headers=auth("token-a"))
+    assert refused.status_code == 409
+    api.post(f"/api/assessments/{assessment_id}/interpretation/approval", headers=auth("token-a"))
+    assert api.get(f"/api/assessments/{assessment_id}/question-plan", headers=auth("token-a")).json()["status"] == "ready"
+
+
+def test_a_new_prompt_stops_the_plan_being_made_from_the_old_one(api, supabase, db_a):
+    assessment_id = interpreted(api, supabase, db_a, duration_minutes=10)
+
+    async def stopped_while_running() -> dict:
+        began = asyncio.Event()
+        finished = False
+
+        async def work(_run) -> None:
+            nonlocal finished
+            began.set()
+            await asyncio.sleep(30)
+            finished = True
+
+        row = await job_runner.start(db_a, assessment_id=assessment_id, kind="interpretation", work=work, stage="planning")
+        await began.wait()
+        await stop_planning(db_a, assessment_id)
+        assert not finished
+        return row
+
+    row = run(stopped_while_running())
+    assert next(item for item in supabase.tables["ai_runs"] if item["id"] == row["id"])["status"] == "failed"
+    # The lock is free again: planning can start at once.
+    assert make_plan(api, assessment_id)["status"] == "ready"
+
+
+def test_editing_the_prompt_or_regenerating_is_never_blocked_by_planning(api, supabase, db_a):
+    assessment_id = interpreted(api, supabase, db_a, duration_minutes=10)
+    db_row = {"exam_project_id": assessment_id, "kind": "interpretation", "stage": "planning"}
+    run(db_a.insert("ai_runs", db_row, columns="id"))
+
+    edited = api.patch(
+        f"/api/assessments/{assessment_id}/interpretation",
+        json={"enhancedPrompt": "A different short prompt for this quiz, long enough to guide an author."},
+        headers=auth("token-a"),
+    )
+    assert edited.status_code == 200, edited.text
+
+    run(db_a.insert("ai_runs", db_row, columns="id"))
+    regenerated = api.post(f"/api/assessments/{assessment_id}/interpretation", headers=auth("token-a"))
+    assert regenerated.status_code == 202, regenerated.text
+    assert wait_for_run(api, regenerated.json()["run"]["id"], "token-a")["status"] == "succeeded"
 
 
 def test_the_plan_lists_each_question_for_the_professor(api, supabase, db_a):
@@ -162,3 +245,120 @@ def test_a_number_the_professor_asked_for_stays_theirs(api, supabase, db_a, ai):
     spec = interpret_and_approve(api, assessment["id"])["spec"]
     assert (spec["question_count_min"], spec["question_count_max"]) == (7, 7)
     assert spec["question_count_source"] == "professor"
+
+
+def test_a_mini_quiz_is_simple_by_default(api, supabase, db_a):
+    assessment_id = interpreted(api, supabase, db_a, duration_minutes=10)
+    spec = api.get(f"/api/assessments/{assessment_id}/interpretation", headers=auth("token-a")).json()["spec"]
+    assert (spec["difficulty"]["easy_percent"], spec["difficulty"]["hard_percent"]) == (60, 0)
+    assert spec["difficulty"]["source"] == "ai_assumption"
+    assert (spec["bloom"]["remember_percent"], spec["bloom"]["analyze_percent"]) == (40, 0)
+
+
+def test_a_learning_focus_the_professor_chose_stays_theirs(api, supabase, db_a):
+    assessment_id = interpreted(api, supabase, db_a, duration_minutes=10, learning_focus="critical")
+    spec = api.get(f"/api/assessments/{assessment_id}/interpretation", headers=auth("token-a")).json()["spec"]
+    assert spec["bloom"]["focus"] == "critical"
+    assert spec["bloom"]["source"] == "professor"
+
+
+def test_a_mini_quiz_is_written_to_be_simple_and_in_the_previous_exams_style(api, supabase, db_a, ai):
+    assessment = run(seed_assessment(db_a, duration_minutes=10))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    run(seed_document(supabase, db_a, assessment["id"], name="Old exam.pdf", category="previous_exam", data=pdf_bytes(OLD_EXAM)))
+    interpret_and_approve(api, assessment["id"])
+    make_plan(api, assessment["id"])
+    started = api.post(f"/api/assessments/{assessment['id']}/exam", json={"mode": "full"}, headers=auth("token-a"))
+    wait_for_run(api, started.json()["run"]["id"], "token-a")
+    finish_quality_check(api, supabase)
+
+    for purpose in ("plan_exam", "generate_questions"):
+        call = ai.calls_for(purpose)[-1]
+        assert "This overrules the guidance above" in call["instructions"], purpose
+        assert "What does CPU stand for?" in call["input"], purpose
+    assert "never make a question longer" in ai.calls_for("review_exam")[-1]["instructions"]
+
+
+def test_a_full_exam_gets_none_of_the_mini_quiz_rules(api, supabase, db_a, ai):
+    assessment = run(seed_assessment(db_a, duration_minutes=90))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    run(seed_document(supabase, db_a, assessment["id"], name="Old exam.pdf", category="previous_exam", data=pdf_bytes(OLD_EXAM)))
+    interpret_and_approve(api, assessment["id"])
+    make_plan(api, assessment["id"])
+
+    call = ai.calls_for("plan_exam")[-1]
+    assert "MINI QUIZ. This overrules" not in call["instructions"]
+    assert "QUESTIONS FROM THE PROFESSOR'S PREVIOUS EXAMS" not in call["input"]
+
+
+def test_a_difficulty_the_professor_chose_stays_theirs(api, supabase, db_a):
+    assessment_id = interpreted(
+        api, supabase, db_a, duration_minutes=10, easy_percentage=0, medium_percentage=0, hard_percentage=100
+    )
+    spec = api.get(f"/api/assessments/{assessment_id}/interpretation", headers=auth("token-a")).json()["spec"]
+    assert spec["difficulty"]["hard_percent"] == 100
+    assert spec["difficulty"]["source"] == "professor"
+
+
+def test_a_mini_quiz_asks_the_ai_for_less_and_a_shorter_prompt(api, supabase, db_a, ai):
+    assessment_id = approved_assessment_of(api, supabase, db_a, duration_minutes=10)
+    make_plan(api, assessment_id)
+    started = api.post(f"/api/assessments/{assessment_id}/exam", json={"mode": "full"}, headers=auth("token-a"))
+    wait_for_run(api, started.json()["run"]["id"], "token-a")
+    finish_quality_check(api, supabase)
+
+    interpret = ai.calls_for("interpret_assessment")[-1]
+    assert interpret["effort"] == "low"
+    assert "MINI QUIZ BRIEF" in interpret["instructions"]
+    assert ai.calls_for("plan_exam")[-1]["effort"] == "medium"
+    assert {call["effort"] for call in ai.calls_for("generate_questions")} == {"medium"}
+    assert ai.calls_for("review_exam")[-1]["effort"] == "medium"
+
+
+def test_a_full_exam_keeps_its_full_reasoning(api, supabase, db_a, ai):
+    assessment_id = approved_assessment(api, supabase, db_a)
+    make_plan(api, assessment_id)
+    interpret = ai.calls_for("interpret_assessment")[-1]
+    assert "MINI QUIZ BRIEF" not in interpret["instructions"]
+    assert ai.calls_for("plan_exam")[-1]["effort"] == "high"
+
+
+def test_a_mini_quiz_appears_before_its_quality_check_finishes(api, supabase, db_a, ai):
+    from tests.model import clean_review
+
+    assessment_id = approved_assessment_of(api, supabase, db_a, duration_minutes=10)
+    make_plan(api, assessment_id)
+    seen: list[str] = []
+
+    def review_seeing_the_exam(call):
+        seen.append(next(row for row in supabase.tables["exams"])["status"])
+        return clean_review(call)
+
+    ai.on("review_exam", review_seeing_the_exam)
+    started = api.post(f"/api/assessments/{assessment_id}/exam", json={"mode": "full"}, headers=auth("token-a"))
+    assert wait_for_run(api, started.json()["run"]["id"], "token-a")["status"] == "succeeded"
+    finish_quality_check(api, supabase)
+
+    assert seen == ["ready"]
+    exam = api.get(f"/api/assessments/{assessment_id}/exam", headers=auth("token-a")).json()
+    assert exam["reviewStatus"] != "running"
+
+
+def test_a_split_a_mini_quiz_can_only_roughly_meet_is_not_reported(api, supabase, db_a):
+    assessment_id = interpreted(api, supabase, db_a, duration_minutes=10)
+    spec = ExamSpec.model_validate(
+        api.get(f"/api/assessments/{assessment_id}/interpretation", headers=auth("token-a")).json()["spec"]
+    )
+    summary = {
+        "questionCount": 5,
+        "mcqPercent": 100,
+        "easyPercent": 60,
+        "mediumPercent": 40,
+        "hardPercent": 0,
+        "estimatedMinutes": 9,
+    }
+    assert [item for item in distribution.compare(summary, spec) if item["dimension"] == "difficulty"] == []
+    # A format the professor set is still exact.
+    spec.question_format = FormatSpec(mcq_percent=100, subjective_percent=0, source="professor")
+    missed = distribution.compare({**summary, "mcqPercent": 80}, spec)
+    assert [item["dimension"] for item in missed] == ["format"]

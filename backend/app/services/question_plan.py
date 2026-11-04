@@ -1,21 +1,31 @@
 """The question plan the professor reviews before the exam is written.
 
 The planner lists every question (its topic, type, difficulty, what students do). Here it runs early,
-once the brief is approved, so the professor can read it, change any question or give their own. It is
-kept next to the approved spec in the assessment's envelope, so a new interpretation or an edited brief
-drops it, and exam creation copies it to the exam, where generation uses it instead of planning again.
+as soon as the improved prompt is on screen, so it is usually ready by the time the professor confirms
+it; they can then change any question or give their own. It is kept next to the spec in the assessment's
+envelope, so a new interpretation or an edited brief drops it (and stops one still being made), and exam
+creation copies it to the exam, where generation uses it instead of planning again.
 """
 
 from typing import Any
 
 from app.ai.openai_service import OpenAIService, Usage
 from app.core.errors import ConflictError, InvalidInputError, NotFoundError
+from app.core.timing import timed
 from app.db.supabase import Database
 from app.schemas.ai import ExamPlan
 from app.services.assessment_context import AssessmentContextService, AssessmentRecord
 from app.services.exam_generation import ExamPlanningService, load_planning_context
-from app.services.jobs import RunContext
+from app.services.jobs import RunContext, job_runner
 from app.services.prompt_interpreter import QUESTION_PLAN_KEY
+
+# Tells planning apart from an interpretation, the kind of job it runs as: it must not overlap one, but
+# the professor reads the prompt while it runs, and whatever replaces the prompt stops it.
+PLANNING_STAGE = "planning"
+
+
+async def stop_planning(db: Database, assessment_id: str) -> None:
+    await job_runner.stop(db, assessment_id=assessment_id, kind="interpretation", stage=PLANNING_STAGE)
 
 
 def _serialize(plan: ExamPlan | None) -> dict[str, Any]:
@@ -53,14 +63,14 @@ class QuestionPlanService:
         return _serialize(_stored(await self.context.get_assessment(assessment_id)))
 
     async def create(self, assessment_id: str, run: RunContext) -> None:
-        ctx = await load_planning_context(self.db, assessment_id)
-        await run.stage("planning")
-        plan = await ExamPlanningService(self.db, self.ai, self.usage).plan(ctx)
+        ctx = await load_planning_context(self.db, assessment_id, require_approved=False)
+        async with timed("question_plan", self.usage):
+            plan = await ExamPlanningService(self.db, self.ai, self.usage).plan(ctx)
         for question in plan.questions:
             question.professor_question = ""
         latest = await self.context.get_assessment(assessment_id)
-        if latest.spec_status != "approved":
-            raise ConflictError("Your instructions changed during planning. Confirm them again.", code="spec_not_approved")
+        if latest.spec_status not in ("draft", "approved") or latest.enhanced_prompt != ctx.enhanced_prompt:
+            raise ConflictError("Your prompt changed during planning. Confirm it again.", code="spec_stale")
         await self._save(latest, plan)
 
     async def edit(
