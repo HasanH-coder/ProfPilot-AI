@@ -184,7 +184,7 @@ type SectionId =
 
 /** Open at first: what most assessments need. The optional extras start closed. */
 const INITIALLY_OPEN: readonly SectionId[] = DEMO_MODE
-  ? ["courseMaterial", "previousExams", "examDesign", "prompt"]
+  ? ["basics", "courseMaterial", "previousExams", "examDesign", "prompt"]
   : ["basics", "courseMaterial", "examDesign", "prompt"];
 
 /** The card each field error is shown in, so a closed card can be opened to reveal it. */
@@ -671,27 +671,27 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
             />
           ))}
 
-        {!DEMO_MODE && (
-          <div className={changedBy("basics")}>
-            <FormSection
-              title="Course & Assessment Details"
-              {...section(
-                "basics",
-                [course?.code, values.examName.trim()].filter(Boolean).join(" · ") || "No course or name yet",
-              )}
-            >
-              <AssessmentBasics
-                courses={courses}
-                courseId={values.courseId}
-                // Sources belong to one course, so another course starts with none.
-                onCourseChange={(courseId) => update({ courseId, sourceIds: [] })}
-                examName={values.examName}
-                onExamNameChange={(examName) => update({ examName })}
-                errors={errors}
-              />
-            </FormSection>
-          </div>
-        )}
+        <div className={changedBy("basics")}>
+          <FormSection
+            title={DEMO_MODE ? "Course" : "Course & Assessment Details"}
+            {...section(
+              "basics",
+              DEMO_MODE
+                ? course?.code || "No course yet"
+                : [course?.code, values.examName.trim()].filter(Boolean).join(" · ") || "No course or name yet",
+            )}
+          >
+            <AssessmentBasics
+              courses={courses}
+              courseId={values.courseId}
+              // Sources belong to one course, so another course starts with none.
+              onCourseChange={(courseId) => update({ courseId, sourceIds: [] })}
+              examName={values.examName}
+              onExamNameChange={(examName) => update({ examName })}
+              errors={errors}
+            />
+          </FormSection>
+        </div>
 
         <DocumentUploadSection
           title="Course material"
@@ -702,7 +702,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
           onRetryAnalysis={analysis.retry}
           section={section("courseMaterial", materialSummary)}
           footer={
-            courseSources.length > 0 && (
+            courseSources.length > 0 ? (
               <div className="flex flex-col gap-2 border-t pt-3">
                 <p className="text-sm font-medium">Or use material saved in Sources</p>
                 <CourseSourceSelector
@@ -714,6 +714,14 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
                   }
                 />
               </div>
+            ) : (
+              // Saved material is listed by course, so say what brings it up.
+              !values.courseId &&
+              sources.length > 0 && (
+                <p className="border-t pt-3 text-sm text-muted-foreground">
+                  Choose a course to use material saved in Sources.
+                </p>
+              )
             )
           }
         />
@@ -765,23 +773,21 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
             />
           </div>
           {!DEMO_MODE && (
-            <>
-              <div className={changedBy("versions")}>
-                <VersionSelector
-                  value={values.versions}
-                  onChange={(versions) => update({ versions })}
-                  error={errors.numberOfVersions}
-                />
-              </div>
-              <div className={changedBy("difficulty")}>
-                <DifficultyDistribution
-                  value={values.difficulty}
-                  onChange={(difficulty) => update({ difficulty })}
-                  error={errors.difficultyDistribution}
-                />
-              </div>
-            </>
+            <div className={changedBy("versions")}>
+              <VersionSelector
+                value={values.versions}
+                onChange={(versions) => update({ versions })}
+                error={errors.numberOfVersions}
+              />
+            </div>
           )}
+          <div className={changedBy("difficulty")}>
+            <DifficultyDistribution
+              value={values.difficulty}
+              onChange={(difficulty) => update({ difficulty })}
+              error={errors.difficultyDistribution}
+            />
+          </div>
 
           <div id="learning-focus" className={changedBy("learningFocus")}>
             <LearningFocus

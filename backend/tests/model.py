@@ -460,8 +460,15 @@ def figures_handler(call: dict[str, Any]) -> PictureReading:
     )
 
 
+def well_behaved_prompt_edit(call: dict[str, Any]) -> ExamSpec:
+    """The spec it was given, unchanged."""
+    current = call["input"].split("CURRENT EXAM SPEC\n", 1)[1].split("\n\nTHE BRIEF BEFORE THE EDIT", 1)[0]
+    return ExamSpec.model_validate_json(current)
+
+
 def install_well_behaved(ai: FakeAI) -> FakeAI:
     ai.on("interpret_assessment", well_behaved_interpretation)
+    ai.on("apply_prompt_edit", well_behaved_prompt_edit)
     ai.on("plan_exam", well_behaved_plan)
     ai.on("replan_exam", well_behaved_plan)
     ai.on("generate_questions", well_behaved_batch)

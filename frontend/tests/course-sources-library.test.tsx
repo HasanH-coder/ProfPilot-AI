@@ -3,6 +3,7 @@ import { render } from "vitest-browser-react";
 
 import { CourseSourcesLibrary } from "@/components/sources/course-sources-library";
 import { apiRequest } from "@/lib/api/client";
+import { createCourse } from "@/lib/courses/actions";
 import { removeCourseSource } from "@/lib/sources/actions";
 import type { CourseSource, CourseWithSources } from "@/lib/sources/types";
 
@@ -64,11 +65,46 @@ test("when the AI service can't be reached, an uploaded file says so truthfully 
     .toBe(2);
 });
 
+test("a course is added right here, ready for its lectures", async () => {
+  vi.mocked(createCourse).mockResolvedValue({ course: { id: "course-9", code: "CMPS 261", name: "Machine Learning" } });
+  const screen = await render(<CourseSourcesLibrary initialCourses={[]} professorId={professor.id} />);
+  await expect.element(screen.getByText("Add a course first")).toBeVisible();
+
+  await screen.getByRole("button", { name: "Add course" }).click();
+  await screen.getByLabelText("Course code").fill("CMPS 261");
+  await screen.getByRole("dialog").getByRole("button", { name: "Add course" }).click();
+
+  await expect.element(screen.getByRole("heading", { name: "CMPS 261" })).toBeVisible();
+  await expect.element(screen.getByText("Drag files here or")).toBeVisible();
+  await expect.element(screen.getByText("0 sources")).toBeVisible();
+});
+
 test("a source an assessment still uses explains why it can't be removed", async () => {
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.mocked(removeCourseSource).mockResolvedValueOnce({ error: "An assessment uses this source. Unselect it there first." });
   const screen = await render(<CourseSourcesLibrary initialCourses={courses} professorId={professor.id} />);
   await screen.getByRole("button", { name: "Remove Lecture 1.pdf" }).click();
+  await screen.getByRole("button", { name: "Remove source" }).click();
   await expect.element(screen.getByText("An assessment uses this source. Unselect it there first.")).toBeVisible();
-  await expect.element(screen.getByText("Lecture 1.pdf")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Remove Lecture 1.pdf", includeHidden: true })).toBeInTheDocument();
+});
+
+test("removing a source asks in the app's own dialog, not the browser's", async () => {
+  const confirm = vi.spyOn(window, "confirm");
+  vi.mocked(removeCourseSource).mockClear();
+  vi.mocked(removeCourseSource).mockResolvedValue({});
+  const screen = await render(<CourseSourcesLibrary initialCourses={courses} professorId={professor.id} />);
+
+  await screen.getByRole("button", { name: "Remove Lecture 1.pdf" }).click();
+  await expect.element(screen.getByRole("alertdialog")).toBeVisible();
+  expect(confirm).not.toHaveBeenCalled();
+
+  await screen.getByRole("button", { name: "Cancel" }).click();
+  await expect.element(screen.getByRole("alertdialog")).not.toBeInTheDocument();
+  expect(removeCourseSource).not.toHaveBeenCalled();
+
+  await screen.getByRole("button", { name: "Remove Lecture 1.pdf" }).click();
+  await screen.getByRole("button", { name: "Remove source" }).click();
+  await expect.element(screen.getByRole("alertdialog")).not.toBeInTheDocument();
+  expect(removeCourseSource).toHaveBeenCalledWith(courses[0].sources[0].id);
+  expect(screen.getByRole("button", { name: "Remove Lecture 1.pdf" }).query()).toBeNull();
 });

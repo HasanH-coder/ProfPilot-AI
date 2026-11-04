@@ -93,7 +93,7 @@ def test_pages_without_text_are_reported_not_silently_skipped(supabase, db_a, ai
     assert any("Page 2 has no extractable text" in warning for warning in knowledge["warnings"])
 
 
-def test_invented_locations_are_sent_back_for_repair(supabase, db_a, ai):
+def test_a_topic_with_only_invented_locations_is_sent_back_for_repair(supabase, db_a, ai):
     def invents_then_corrects(call):
         good = segment_handler(call)
         bad = good.model_copy(deep=True)
@@ -105,8 +105,36 @@ def test_invented_locations_are_sent_back_for_repair(supabase, db_a, ai):
     source = run(seed_course_source(supabase, db_a, course["id"]))
     process(db_a, ai, source["id"])
     call = ai.calls_for("analyze_lecture_segment")[0]
-    assert "Slide 99" in call["problems"][0][0] and call["problems"][1] == []
+    assert "not in this section" in call["problems"][0][0] and call["problems"][1] == []
     assert knowledge_of(db_a, source["id"])["status"] == "ready"
+
+
+def test_one_wrong_citation_is_removed_without_paying_for_the_section_again(supabase, db_a, ai):
+    def one_wrong_citation(call):
+        result = segment_handler(call)
+        topic = result.topics[0]
+        topic.locations = [*topic.locations, "Page 99"]
+        topic.misconceptions[0].locations = ["Page 99"]
+        return result
+
+    ai.on("analyze_lecture_segment", one_wrong_citation)
+    course = run(seed_course(db_a))
+    source = run(seed_course_source(supabase, db_a, course["id"]))
+    process(db_a, ai, source["id"])
+
+    calls = ai.calls_for("analyze_lecture_segment")
+    assert all(call["problems"] == [[]] for call in calls)  # Accepted at once, each with one answer.
+    knowledge = knowledge_of(db_a, source["id"])
+    assert knowledge["status"] == "ready"
+    assert "Page 99" not in str(knowledge["topics"])
+
+
+def test_a_range_of_pages_in_the_section_counts_as_in_the_section():
+    in_section = lecture_knowledge._in_section
+    allowed = {"Page 9", "Page 10", "Page 11"}
+    assert in_section("Pages 9–11", allowed) and in_section("Page 10", allowed)
+    assert not in_section("Pages 9–12", allowed) and not in_section("Page 12", allowed)
+    assert not in_section("the introduction", allowed)
 
 
 def test_formulas_are_kept_as_written_and_uncertain_ones_are_flagged(supabase, db_a, ai):
@@ -403,6 +431,7 @@ def test_generation_receives_the_cited_lecture_knowledge(api, supabase, db_a, ai
 @pytest.mark.parametrize(("count_max", "flagged"), [(3, True), (6, False)])
 def test_more_bloom_levels_than_questions_is_a_conflict(count_max, flagged):
     class Spec:
+        duration_minutes = 60
         question_format = None
         question_count_max = count_max
         bloom = BloomSpec(

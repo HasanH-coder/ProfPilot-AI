@@ -18,12 +18,18 @@ const ASSESSMENTS_ITEM = {
   icon: ClipboardCheck,
 };
 
+const SOURCES_ITEM = {
+  href: "/workspace/sources",
+  label: "Sources",
+  icon: FolderOpen,
+};
+
 const NAV_ITEMS = DEMO_MODE
-  ? [{ href: NEW_ASSESSMENT_PATH, label: "New assessment", icon: Plus }, ASSESSMENTS_ITEM]
+  ? [{ href: NEW_ASSESSMENT_PATH, label: "New assessment", icon: Plus }, SOURCES_ITEM, ASSESSMENTS_ITEM]
   : [
       { href: "/workspace", label: "Home", icon: House },
       { href: "/workspace/courses", label: "Courses", icon: BookOpen },
-      { href: "/workspace/sources", label: "Sources", icon: FolderOpen },
+      SOURCES_ITEM,
       ASSESSMENTS_ITEM,
     ];
 

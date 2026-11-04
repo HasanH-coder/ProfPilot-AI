@@ -8,6 +8,7 @@ import { QuestionPlanReview } from "@/components/plan/question-plan-review";
 import { apiRequest } from "@/lib/api/client";
 import type { QuestionPlan } from "@/lib/api/types";
 import { demoRedirect } from "@/lib/demo";
+import type { CourseSource } from "@/lib/sources/types";
 
 import { professor } from "./fixtures";
 import { router } from "./mocks/navigation";
@@ -79,13 +80,62 @@ test("the form shows only the demo's steps, with the mini quiz as the one durati
   for (const text of ["Set up with AI", "Course & Assessment Details", "Additional notes", "Additional images or attachments"]) {
     expect(screen.getByRole("heading", { name: text }).query()).toBeNull();
   }
-  expect(screen.getByText("Difficulty distribution").query()).toBeNull();
+  await expect.element(screen.getByText("Difficulty distribution", { exact: true })).toBeVisible();
+});
+
+test("choosing a course lists the material saved in Sources, with no assessment name to fill in", async () => {
+  const courses = [{ id: "course-1", code: "CMPS 261", name: "Machine Learning" }];
+  const saved: CourseSource = {
+    id: "lecture-1",
+    courseId: "course-1",
+    category: "course_material",
+    name: "Lecture 1.pdf",
+    size: 1000,
+    status: "ready",
+    error: null,
+    pageCount: 3,
+    title: null,
+    createdAt: "2026-10-16T10:00:00Z",
+    knowledge: { state: "none", topics: null },
+  };
+
+  const none = await render(<AssessmentForm courses={courses} sources={[saved]} />);
+  await expect.element(none.getByRole("heading", { name: /^Course\b(?! material)/ })).toBeVisible();
+  await expect.element(none.getByText("Choose a course to use material saved in Sources.")).toBeVisible();
+  expect(none.getByLabelText("Assessment name").query()).toBeNull();
+  await none.unmount();
+
+  const draft = {
+    courseId: "course-1",
+    examName: "10-minute mini quiz",
+    durationMinutes: 10,
+    mcqPercentage: null,
+    subjectivePercentage: null,
+    numberOfVersions: 1,
+    easyPercentage: null,
+    mediumPercentage: null,
+    hardPercentage: null,
+    learningFocus: "automatic" as const,
+    bloomDistribution: null,
+    additionalNotes: "",
+    professorPrompt: "",
+  };
+  const chosen = await render(
+    <AssessmentForm
+      courses={courses}
+      sources={[saved]}
+      saved={{ examProjectId: "draft-1", folder: "prof/draft-1", draft, files: [], sourceIds: [] }}
+    />,
+  );
+  await expect.element(chosen.getByText("Or use material saved in Sources")).toBeVisible();
+  await expect.element(chosen.getByText("Lecture 1.pdf")).toBeVisible();
+  expect(chosen.getByText("Choose a course to use material saved in Sources.").query()).toBeNull();
 });
 
 test("the sidebar has only the demo's pages", async () => {
   const screen = await render(<WorkspaceSidebar professor={professor} />);
   const links = screen.getByRole("navigation", { name: "Workspace" }).getByRole("link");
-  expect(links.elements().map((link) => link.textContent)).toEqual(["New assessment", "Assessments"]);
+  expect(links.elements().map((link) => link.textContent)).toEqual(["New assessment", "Sources", "Assessments"]);
 });
 
 test("the demo sends hidden pages away and keeps its own", () => {
@@ -94,10 +144,9 @@ test("the demo sends hidden pages away and keeps its own", () => {
   expect(demoRedirect("/", true)).toBe(home);
   expect(demoRedirect("/workspace", true)).toBe(home);
   expect(demoRedirect("/workspace/courses", true)).toBe(home);
-  expect(demoRedirect("/workspace/sources", true)).toBe(home);
   expect(demoRedirect("/workspace/preferences", true)).toBe(home);
   expect(demoRedirect("/workspace/assessments/a1/builder", true)).toBe("/workspace/assessments/a1/exam");
-  for (const page of [home, "/workspace/assessments", "/workspace/assessments/a1/plan", "/workspace/assessments/a1/question-plan", "/login"]) {
+  for (const page of [home, "/workspace/sources", "/workspace/assessments", "/workspace/assessments/a1/plan", "/workspace/assessments/a1/question-plan", "/login"]) {
     expect(demoRedirect(page, true)).toBeNull();
   }
 });

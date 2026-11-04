@@ -101,15 +101,19 @@ def bloom_conflicts(spec: ExamSpec) -> list[str]:
     if spec.bloom is None:
         return []
     conflicts = []
+    # A mini quiz meets these splits within one question's share of the marks (see compare), so a
+    # level with less than that doesn't need a question of its own.
+    mini_quiz = spec.duration_minutes == MINI_QUIZ_MINUTES and spec.question_count_max
+    spare = 100 / spec.question_count_max if mini_quiz else 0
     if spec.question_format is not None:
         create, subjective = spec.bloom.create_percent, spec.question_format.subjective_percent
-        if create > subjective:
+        if create - subjective > spare:
             conflicts.append(
                 f"{create}% of the marks are planned at the Create level, but only {subjective}% are for written "
                 "(subjective) answers, and multiple-choice questions can't assess creating. Lower Create to at most "
                 f"{subjective}% or raise the subjective share before approving."
             )
-    levels = [level for level, share in spec.bloom.shares().items() if share > 0]
+    levels = [level for level, share in spec.bloom.shares().items() if share > spare]
     if spec.question_count_max is not None and len(levels) > spec.question_count_max:
         conflicts.append(
             f"The Bloom's split gives marks to {len(levels)} levels ({', '.join(levels)}), but the assessment has at "

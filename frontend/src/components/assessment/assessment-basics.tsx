@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { LIMITS } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
+import { DEMO_MODE } from "@/lib/demo";
 
 type AssessmentBasicsProps = {
   courses: Course[];
@@ -94,16 +95,19 @@ export function AssessmentBasics({
         )}
       </Field>
 
-      <FormField
-        id={examNameId}
-        label="Assessment name"
-        placeholder="e.g. Midterm, Final Exam, Quiz 2"
-        autoComplete="off"
-        maxLength={LIMITS.examName}
-        value={examName}
-        onChange={(event) => onExamNameChange(event.target.value)}
-        error={errors.examName}
-      />
+      {/* The demo names its assessments itself (see assessment-form.tsx). */}
+      {!DEMO_MODE && (
+        <FormField
+          id={examNameId}
+          label="Assessment name"
+          placeholder="e.g. Midterm, Final Exam, Quiz 2"
+          autoComplete="off"
+          maxLength={LIMITS.examName}
+          value={examName}
+          onChange={(event) => onExamNameChange(event.target.value)}
+          error={errors.examName}
+        />
+      )}
     </div>
   );
 }

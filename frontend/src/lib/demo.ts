@@ -12,7 +12,7 @@ export const WORKSPACE_HOME = DEMO_MODE ? NEW_ASSESSMENT_PATH : "/workspace";
 /** The demo's only duration. Mirrored in backend/app/domain/setup.py. */
 export const MINI_QUIZ_MINUTES = 10;
 
-const HIDDEN_PAGES = ["/workspace/courses", "/workspace/sources", "/workspace/preferences"];
+const HIDDEN_PAGES = ["/workspace/courses", "/workspace/preferences"];
 const BUILDER_PAGE = /^(\/workspace\/assessments\/[^/]+)\/builder\/?$/;
 
 /** Where the demo sends a page it doesn't show, or null when the page is part of it. */

@@ -12,15 +12,17 @@ import re
 from types import SimpleNamespace
 
 from PIL import Image
+from pptx import Presentation
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
+from app.ai.prompts import DataFramer
 from app.core.config import settings
 from app.services.assessment_context import AssessmentContextService, DocumentRecord
 from app.services.document_ingestion import DocumentIngestionService, TranscribedPage, Transcription
-from app.services.document_parsers import PDF, parse_document
+from app.services.document_parsers import PDF, PPTX, parse_document
 from app.services.document_retrieval import DocumentRetrievalService
-from app.services.slides import SlideIndex, slide_problems
+from app.services.slides import SlideIndex, render_all_slides, slide_images, slide_problems
 from tests.helpers import auth, wait_for_run
 from tests.seed import pdf_bytes, seed_assessment, seed_document
 from tests.test_figure_reading import DOCKER, lecture, read_source
@@ -53,6 +55,87 @@ def planned_slides(call) -> list[str]:
 
 
 KUBERNETES = [f"Kubernetes topic {n}: pods group containers that share a network and storage, part {n}." for n in range(1, 5)]
+
+
+# -- A lecture saved in Sources is read once --------------------------------------------------------------
+
+
+def test_a_lecture_from_sources_is_read_once_however_many_assessments_use_it(api, supabase, db_a, ai):
+    READING = ("analyze_lecture_segment", "synthesize_lecture", "summarize_document", "read_figures", "transcribe_page")
+
+    def readings():
+        return [call["purpose"] for call in ai.calls if call["purpose"] in READING]
+
+    texts = [f"Topic {n}: gradient descent lowers the loss one step at a time, lesson {n}." for n in range(1, 5)]
+    source = read_source(supabase, db_a, ai, pdf_bytes(texts), name="Optimization.pdf")
+    assert source.processing_status == "ready"
+    read = readings()
+    assert read  # Reading it did cost something, once.
+
+    for _ in range(2):
+        assessment = run(seed_assessment(db_a, course_id=source.course_id))
+        run(db_a.insert("assessment_documents", {"exam_project_id": assessment["id"], "document_id": source.id}))
+        interpret_and_approve(api, assessment["id"])
+        # Its words reach the AI from what was saved...
+        assert texts[2] in ai.calls_for("interpret_assessment")[-1]["input"]
+        # ...with no second reading.
+        assert readings() == read
+
+
+# -- A PowerPoint is planned from every slide too ------------------------------------------------------
+
+
+def powerpoint(texts: list[str]) -> bytes:
+    deck = Presentation()
+    for text in texts:
+        slide = deck.slides.add_slide(deck.slide_layouts[1])
+        slide.shapes.title.text = text.split(":")[0]
+        slide.placeholders[1].text = text
+    buffer = io.BytesIO()
+    deck.save(buffer)
+    return buffer.getvalue()
+
+
+def test_every_slide_of_a_powerpoint_reaches_the_planner(supabase, db_a, ai):
+    texts = [f"Topic {n}: gradient descent lowers the loss one step at a time, lesson {n}." for n in range(1, 7)]
+    assessment = run(seed_assessment(db_a))
+    document = run(
+        seed_document(supabase, db_a, assessment["id"], name="Optimization.pptx", data=powerpoint(texts), mime=PPTX)
+    )
+    context = AssessmentContextService(db_a)
+    processed = run(DocumentIngestionService(db_a, ai).process(run(context.get_document(document["id"]))))
+    assert processed.processing_status == "ready"
+    slides = slides_of(db_a, processed.id)
+    assert sorted(slides) == list(range(1, 7))
+    assert all(texts[n - 1] in slides[n]["text_layer"] for n in slides)
+
+    pages = run(context.get_pages([processed]))
+    listed = render_all_slides(SlideIndex.build([processed], pages), DataFramer())
+    assert all(f"F1:p{n}" in listed and texts[n - 1] in listed for n in range(1, 7))
+
+
+def test_a_powerpoints_slides_are_never_rendered_as_images():
+    deck = SimpleNamespace(id="d1", category="course_material", mime_type=PPTX, original_name="Deck.pptx")
+    index = SlideIndex.build([deck], {"d1": {1: {"words": "Gradient descent", "pictures": 0}}})
+
+    async def unexpected(*_):
+        raise AssertionError("a PowerPoint isn't rendered")
+
+    assert run(slide_images(SimpleNamespace(download=unexpected), index, ["F1:p1"], limit=4, files={})) == []
+
+
+def test_a_plan_is_sent_back_when_a_lecture_gets_no_question():
+    words = "A slide that really teaches something about the course with enough words to count as content."
+    first, second = (
+        SimpleNamespace(id=name, category="course_material", mime_type=PDF, original_name=f"{name}.pdf") for name in ("L1", "L2")
+    )
+    index = SlideIndex.build([first, second], {name: {1: {"words": words, "pictures": 0}} for name in ("L1", "L2")})
+    question = SimpleNamespace(number=1, source_pages=["F1:p1"])
+
+    _, soft = slide_problems([question, SimpleNamespace(number=2, source_pages=["F1:p1"])], index)
+    assert soft == ['No question comes from "L2.pdf"; include it, unless the professor asked to leave it out.']
+    # With fewer questions than lectures, one has to go without.
+    assert slide_problems([question], index)[1] == []
 
 
 # -- Reading a lecture keeps its words, and nothing else is written ------------------------------------

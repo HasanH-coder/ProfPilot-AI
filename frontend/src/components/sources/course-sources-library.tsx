@@ -1,13 +1,28 @@
 "use client";
 
-import { Clock, ExternalLink, FileCheck2, LoaderCircle, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
+import { BookOpen, Clock, ExternalLink, FileCheck2, LoaderCircle, Plus, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
+import { unstable_rethrow } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { FileDropzone } from "@/components/assessment/file-dropzone";
 import { FileTypeIcon } from "@/components/assessment/file-type-icon";
+import { CourseFormDialog } from "@/components/courses/course-form-dialog";
 import { LectureKnowledgePanel } from "@/components/sources/lecture-knowledge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Spinner } from "@/components/ui/spinner";
 import { apiRequest, errorMessage } from "@/lib/api/client";
 import { ASSESSMENT_FILES_BUCKET, checkFile, fileTypeLabel, formatFileSize, safeFileName } from "@/lib/documents/files";
 import {
@@ -26,6 +41,10 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
   const [activity, setActivity] = useState<Record<string, string>>({});
   // The sources being brought up to date for AI work (null while Sources is still asking).
   const [preparing, setPreparing] = useState<Set<string> | null>(null);
+  // The source the professor is asked to confirm removing.
+  const [removal, setRemoval] = useState<{ courseId: string; courseCode: string; source: CourseSource } | null>(null);
+  const [removalError, setRemovalError] = useState<string>();
+  const [isRemoving, setIsRemoving] = useState(false);
 
   function updateSource(courseId: string, source: CourseSource) {
     setCourses((current) =>
@@ -152,18 +171,86 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
     if (result.url) window.open(result.url, "_blank", "noopener,noreferrer");
   }
 
-  async function remove(courseId: string, source: CourseSource) {
-    if (!window.confirm(`Remove “${source.name}” from this course?`)) return;
-    const result = await removeCourseSource(source.id);
-    if (result.error) {
-      setActivity((current) => ({ ...current, [courseId]: result.error! }));
-      return;
+  async function remove() {
+    if (!removal) return;
+    const { courseId, source } = removal;
+    setIsRemoving(true);
+    setRemovalError(undefined);
+    try {
+      const result = await removeCourseSource(source.id);
+      if (result.error) {
+        setRemovalError(result.error);
+        return;
+      }
+      setCourses((current) => current.map((course) => course.id === courseId ? { ...course, sources: course.sources.filter((item) => item.id !== source.id) } : course));
+      setRemoval(null);
+    } catch (cause) {
+      // For example, the session ended: Next.js then opens the login page.
+      unstable_rethrow(cause);
+      console.error("Course source removal failed:", cause);
+      setRemovalError(`${source.name} couldn't be removed. Check your connection and try again.`);
+    } finally {
+      setIsRemoving(false);
     }
-    setCourses((current) => current.map((course) => course.id === courseId ? { ...course, sources: course.sources.filter((item) => item.id !== source.id) } : course));
+  }
+
+  // A new course joins the list straight away, ready for its lectures.
+  const addCourseDialog = (
+    <CourseFormDialog
+      trigger={<Button><Plus /> Add course</Button>}
+      onSaved={(course) =>
+        setCourses((current) =>
+          [...current, { ...course, sources: [] }].sort((a, b) => a.code.localeCompare(b.code)),
+        )
+      }
+    />
+  );
+
+  if (courses.length === 0) {
+    return (
+      <Empty className="border border-dashed py-14">
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><BookOpen /></EmptyMedia>
+          <EmptyTitle>Add a course first</EmptyTitle>
+          <EmptyDescription>Sources are organized by course so material stays scoped to the right teaching context.</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>{addCourseDialog}</EmptyContent>
+      </Empty>
+    );
   }
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
+      <div className="flex justify-end lg:col-span-2">{addCourseDialog}</div>
+      <AlertDialog
+        open={removal !== null}
+        onOpenChange={(open) => {
+          if (open || isRemoving) return;
+          setRemoval(null);
+          setRemovalError(undefined);
+        }}
+      >
+        <AlertDialogContent className="workspace-theme">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {removal?.source.title || removal?.source.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the file from {removal?.courseCode}, along with everything ProfPilot read from it. This can&apos;t be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {removalError && (
+            <Alert variant="destructive">
+              <AlertDescription>{removalError}</AlertDescription>
+            </Alert>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRemoving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => void remove()} disabled={isRemoving}>
+              {isRemoving && <Spinner />}
+              Remove source
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {courses.map((course) => {
         const titleId = `course-sources-${course.id}`;
         const descriptionId = `${titleId}-description`;
@@ -205,7 +292,12 @@ export function CourseSourcesLibrary({ initialCourses, professorId }: { initialC
                           <RotateCcw />
                         </Button>
                       )}
-                      <Button variant="ghost" size="icon-sm" aria-label={`Remove ${source.name}`} onClick={() => void remove(course.id, source)}>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove ${source.name}`}
+                        onClick={() => setRemoval({ courseId: course.id, courseCode: course.code, source })}
+                      >
                         <Trash2 />
                       </Button>
                       {/* Its own full-width line, under the file name (aligned with it from small screens up). */}

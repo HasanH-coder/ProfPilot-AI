@@ -25,7 +25,7 @@ type AssessmentSummaryProps = {
   children?: ReactNode;
 };
 
-const NOT_IN_DEMO = new Set(["Course", "Assessment", "Versions", "Difficulty", "Attachments"]);
+const NOT_IN_DEMO = new Set(["Assessment", "Versions", "Attachments"]);
 
 /** A live overview of the assessment settings. Anything left unspecified says so. */
 export function AssessmentSummary({

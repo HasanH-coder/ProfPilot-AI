@@ -11,11 +11,12 @@ are applied again in code, so the AI can never change them.
 """
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from typing import Any
 
 from app.ai.openai_service import OpenAIService, Usage, gather_limited
-from app.ai.prompts import DataFramer, interpreter_instructions
+from app.ai.prompts import DataFramer, interpreter_instructions, prompt_edit_instructions
 from app.core.config import settings
 from app.core.errors import ConflictError
 from app.core.timing import timed
@@ -230,12 +231,17 @@ class PromptInterpreterService:
         record = await self.context.get_assessment(assessment_id)
         if record.spec_status == "none" or not record.exam_spec:
             raise ConflictError("Improve with AI first, then edit the result.", code="spec_missing")
+        enhanced_prompt = enhanced_prompt.strip()
+        spec = await self._spec_for_edited_prompt(record, enhanced_prompt)
         await self.db.update(
             "exam_projects",
             {
-                "enhanced_prompt": enhanced_prompt.strip(),
+                "enhanced_prompt": enhanced_prompt,
                 # A question plan made from the old prompt no longer applies (see question_plan.py).
-                "exam_spec": {key: value for key, value in record.exam_spec.items() if key != QUESTION_PLAN_KEY},
+                "exam_spec": {
+                    **{key: value for key, value in record.exam_spec.items() if key != QUESTION_PLAN_KEY},
+                    "spec": spec.model_dump(),
+                },
                 # An edited prompt needs approving again (a stale one stays stale).
                 "spec_status": "stale" if record.spec_status == "stale" else "draft",
                 "spec_approved_at": None,
@@ -243,6 +249,26 @@ class PromptInterpreterService:
             filters=[("id", "eq", assessment_id), ("professor_id", "eq", self.db.professor_id)],
             columns="id",
         )
+
+    async def _spec_for_edited_prompt(self, record: AssessmentRecord, enhanced_prompt: str) -> ExamSpec:
+        """The spec, brought in line with the edited brief: the exam is written from both."""
+        current = ExamSpec.model_validate(record.exam_spec["spec"])
+        spec = await self.ai.parse(
+            purpose="apply_prompt_edit",
+            instructions=prompt_edit_instructions(DataFramer(), mini_quiz=record.setup.duration_minutes == MINI_QUIZ_MINUTES),
+            input=(
+                f"CURRENT EXAM SPEC\n{json.dumps(current.model_dump(), indent=1)}\n\n"
+                f"THE BRIEF BEFORE THE EDIT\n{record.enhanced_prompt or '(none)'}\n\n"
+                f"THE EDITED BRIEF (the professor's own words)\n{enhanced_prompt}"
+            ),
+            schema=ExamSpec,
+            effort="low",
+            verbosity="low",
+            max_output_tokens=12_000,
+            validate=lambda result: _spec_problems(result, record),
+            usage=self.usage,
+        )
+        return apply_professor_settings(spec, record)
 
     async def approve(self, assessment_id: str) -> None:
         record = await self.context.get_assessment(assessment_id)
@@ -302,10 +328,14 @@ class PromptInterpreterService:
 
 
 def _interpretation_problems(output: InterpretationOutput, record: AssessmentRecord) -> list[str]:
-    problems: list[str] = []
-    spec = output.exam_spec
+    problems = _spec_problems(output.exam_spec, record)
     if len(output.enhanced_prompt.strip()) < 60:
         problems.append("enhanced_prompt is too short to guide an exam author; write a complete brief.")
+    return problems
+
+
+def _spec_problems(spec: ExamSpec, record: AssessmentRecord) -> list[str]:
+    problems: list[str] = []
     if spec.question_format and spec.question_format.mcq_percent + spec.question_format.subjective_percent != 100:
         problems.append("question_format percentages must add up to 100.")
     if spec.difficulty and spec.difficulty.easy_percent + spec.difficulty.medium_percent + spec.difficulty.hard_percent != 100:

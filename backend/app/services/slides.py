@@ -26,7 +26,7 @@ from app.ai.prompts import DataFramer
 from app.core.config import settings
 from app.db.supabase import Database
 from app.services.assessment_context import BUCKET, DocumentRecord
-from app.services.document_parsers import PDF, ParsedDocument, parse_document
+from app.services.document_parsers import PDF, PPTX, ParsedDocument, parse_document
 from app.services.figure_reading import data_url
 
 logger = logging.getLogger("profpilot.slides")
@@ -48,6 +48,12 @@ def has_slides(document: DocumentRecord) -> bool:
     return document.category == "course_material" and (document.mime_type or "").lower() == PDF
 
 
+def keeps_slide_words(document: DocumentRecord) -> bool:
+    """A course-material PDF or PowerPoint: its slides' words are kept page by page and planned from.
+    A PowerPoint isn't rendered as images, so its pictures are read into its words instead."""
+    return has_slides(document) or (document.category == "course_material" and (document.mime_type or "").lower() == PPTX)
+
+
 # -----------------------------------------------------------------------------
 # Every slide's words
 # -----------------------------------------------------------------------------
@@ -58,7 +64,7 @@ def page_words(parsed: ParsedDocument) -> dict[int, str]:
     words = {number: parsed.page_texts.get(number, "") for number in range(1, (parsed.page_count or 0) + 1)}
     for unit in parsed.units:
         number = unit.page_start
-        if unit.kind == "Page" and number in words and not words[number].strip():
+        if unit.kind in ("Page", "Slide") and number in words and not words[number].strip():
             words[number] = unit.text
     return words
 
@@ -70,7 +76,8 @@ async def save_page_words(db: Database, document: DocumentRecord, parsed: Parsed
     of pictures the parser found on a page is kept with it, so the planner knows which slides show more
     than their words.
     """
-    pictures = {spot.number: len(spot.pictures) for spot in parsed.figures}
+    # Only a PDF's slides reach the writer as images, so only they can show more than their words.
+    pictures = {spot.number: len(spot.pictures) for spot in parsed.figures} if has_slides(document) else {}
     rows = [
         {
             "document_id": document.id,
@@ -104,8 +111,8 @@ async def copy_page_words(db: Database, source_id: str, target_id: str) -> None:
 
 async def ensure_page_words(db: Database, documents: list[DocumentRecord]) -> None:
     """Keeps the slides' words of lectures read before they were kept page by page, from their stored
-    PDFs (no AI), and makes those whose pages were left waiting by an earlier reader searchable."""
-    lectures = [doc for doc in documents if has_slides(doc) and doc.processing_status == "ready"]
+    files (no AI), and makes those whose pages were left waiting by an earlier reader searchable."""
+    lectures = [doc for doc in documents if keeps_slide_words(doc) and doc.processing_status == "ready"]
     if not lectures:
         return
     rows = await db.select(
@@ -120,7 +127,7 @@ async def ensure_page_words(db: Database, documents: list[DocumentRecord]) -> No
             continue
         try:
             data = await db.download(BUCKET, doc.storage_path)
-            parsed = await asyncio.to_thread(parse_document, data, PDF)
+            parsed = await asyncio.to_thread(parse_document, data, (doc.mime_type or PDF).lower())
             await save_page_words(db, doc, parsed, digest=doc.content_sha256 or "")
             saved.add(doc.id)
         except Exception as error:  # its stored text still serves; the planner just doesn't list its slides
@@ -263,6 +270,7 @@ def slide_problems(planned: Iterable[Any], index: SlideIndex) -> tuple[list[str]
     hard, soft = [], []
     known = index.refs
     cited: dict[str, list[int]] = {}
+    planned = list(planned)
     for question in planned:
         pages = list(getattr(question, "source_pages", []) or [])
         unknown = [ref for ref in pages if ref not in known]
@@ -277,6 +285,8 @@ def slide_problems(planned: Iterable[Any], index: SlideIndex) -> tuple[list[str]
     for doc in index.files.values():
         content = index.content_pages(doc)
         pages = cited.get(doc.id, [])
+        if content and not pages and len(planned) >= len(index.files):
+            soft.append(f'No question comes from "{doc.original_name}"; include it, unless the professor asked to leave it out.')
         if len(content) >= 10 and len(set(pages)) >= 3 and max(pages) <= content[int(len(content) * 0.4)]:
             soft.append(
                 f'Every question on "{doc.original_name}" comes from its first slides (up to page {max(pages)} of '
@@ -324,7 +334,7 @@ async def slide_images(
 ) -> list[tuple[str, bytes]]:
     """These slides as images (the first `limit` of them), rendered from the stored PDFs. `files` keeps
     each PDF downloaded once per exam. A slide that can't be shown is left out: its words still go."""
-    chosen = [ref for ref in dict.fromkeys(refs) if ref in index.refs][:limit]
+    chosen = [ref for ref in dict.fromkeys(refs) if ref in index.refs and has_slides(index.refs[ref][0])][:limit]
     wanted: dict[str, tuple[DocumentRecord, list[tuple[str, int]]]] = {}
     for ref in chosen:
         doc, page = index.refs[ref]

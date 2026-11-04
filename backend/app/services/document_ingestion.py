@@ -52,7 +52,7 @@ from app.services.lecture_knowledge import (
     is_current,
     read_figure_pages,
 )
-from app.services.slides import copy_page_words, ensure_page_words, has_slides, save_page_words
+from app.services.slides import copy_page_words, ensure_page_words, has_slides, keeps_slide_words, save_page_words
 from app.services.source_preparation import needs_building, needs_reading, settled
 
 logger = logging.getLogger("profpilot.ingestion")
@@ -194,7 +194,7 @@ class DocumentIngestionService:
         parsed = await self._extract(document, data)
         if parsed.character_count == 0:
             raise DocumentParseError("No readable text was found in this file.")
-        if has_slides(document):
+        if keeps_slide_words(document):
             # A lecture's slides are shown to the AI as it writes the exam; only their words are kept now.
             await save_page_words(self.db, document, parsed, digest=digest)
         units, rows = await self._chunk_rows(document, parsed)
@@ -265,7 +265,7 @@ class DocumentIngestionService:
         with_readings(parsed, readings)
         if parsed.character_count == 0:
             raise AppError("No readable text was found in this file, so it wasn't changed.")
-        if has_slides(document):
+        if keeps_slide_words(document):
             await save_page_words(self.db, document, parsed, digest=document.content_sha256 or "")
         units, rows = await self._chunk_rows(document, parsed)
         base = max((chunk["chunk_index"] for chunk in stored), default=-1) + 1
@@ -413,7 +413,7 @@ class DocumentIngestionService:
         rows = [{**chunk, "document_id": document.id, "category": document.category} for chunk in chunks]
         for start in range(0, len(rows), _INSERT_BATCH):
             await self.db.insert("document_chunks", rows[start : start + _INSERT_BATCH], columns="id")
-        if has_slides(document):  # its slides' words come with the text
+        if keeps_slide_words(document):  # its slides' words come with the text
             await copy_page_words(self.db, twin.id, document.id)
         # Same bytes, same lecture: its current knowledge profile is reused too, not paid for again.
         twin_knowledge = best.get("knowledge")

@@ -206,7 +206,7 @@ class QuestionRevisionService:
 
         result = await self.ai.parse(
             purpose="revise_question",
-            instructions=reviser_instructions(framer),
+            instructions=reviser_instructions(framer, mini_quiz=ctx.mini_quiz),
             input="\n\n".join(
                 [
                     *ctx.common_sections(framer),

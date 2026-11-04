@@ -1,11 +1,7 @@
-import { BookOpen, Plus } from "lucide-react";
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { CourseSourcesLibrary } from "@/components/sources/course-sources-library";
-import { buttonVariants } from "@/components/ui/button";
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentProfessor } from "@/lib/auth/current-professor";
 import { getCoursesWithSources } from "@/lib/sources/queries";
 
@@ -20,22 +16,9 @@ export default async function SourcesPage() {
       <PageHeader
         title="Course Sources"
         highlight="Sources"
-        description="Build each course’s reusable knowledge library once. ProfPilot reads and indexes these files so future assessments and agents can use the same trusted material."
+        description="Add a course and upload its lectures once. ProfPilot reads and saves them, so every assessment can use them without uploading or reading them again."
       />
-      {courses.length ? (
-        <CourseSourcesLibrary initialCourses={courses} professorId={professor.id} />
-      ) : (
-        <Empty className="border border-dashed py-14">
-          <EmptyHeader>
-            <EmptyMedia variant="icon"><BookOpen /></EmptyMedia>
-            <EmptyTitle>Add a course first</EmptyTitle>
-            <EmptyDescription>Sources are organized by course so material stays scoped to the right teaching context.</EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Link href="/workspace/courses" className={buttonVariants()}><Plus /> Add course</Link>
-          </EmptyContent>
-        </Empty>
-      )}
+      <CourseSourcesLibrary initialCourses={courses} professorId={professor.id} />
     </div>
   );
 }

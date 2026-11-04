@@ -20,7 +20,7 @@ const FILE_SECTIONS: { category: DocumentCategory; title: string }[] = [
   ...(DEMO_MODE ? [] : [{ category: "additional_attachment" as const, title: "Additional attachments" }]),
 ];
 
-const NOT_IN_DEMO = new Set(["Course", "Assessment name", "Versions", "Difficulty distribution"]);
+const NOT_IN_DEMO = new Set(["Assessment name", "Versions"]);
 
 /** A read-only overview of everything saved for an assessment. */
 export function AssessmentOverview({ assessment }: { assessment: Assessment }) {

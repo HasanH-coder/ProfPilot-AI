@@ -53,9 +53,10 @@ logger = logging.getLogger("profpilot.knowledge")
 # Bump when the analysis changes enough that older profiles should be offered a rebuild.
 KNOWLEDGE_VERSION = 1
 # Text per analysis call: large enough for whole lecture sections, small enough
-# for a complete, unhurried answer.
+# for a complete, unhurried answer. Sections of real lectures use 10–14k output tokens, so the limit
+# leaves room: a reply cut off is paid for and thrown away.
 _SEGMENT_CHARS = 24_000
-_SEGMENT_OUTPUT_TOKENS = 16_000
+_SEGMENT_OUTPUT_TOKENS = 24_000
 # Rough sizes for the cost estimate shown before a build (not a guarantee).
 _INSTRUCTION_TOKENS = 1_800
 # Output includes reasoning: a one-section, 39-page lecture used about 10k output tokens in all.
@@ -160,25 +161,31 @@ def segment_locations(segment: list[dict[str, Any]]) -> set[str]:
     return {location for chunk in segment if chunk.get("location_label") for location in expand_location(chunk["location_label"])}
 
 
-def _cited(result: SegmentKnowledge) -> set[str]:
-    cited: set[str] = set()
-    for topic in result.topics:
-        cited.update(topic.locations)
-        for name in _ITEM_LISTS:
-            for item in getattr(topic, name):
-                cited.update(getattr(item, "locations", []))
-    return cited
+def _in_section(location: str, allowed: set[str]) -> bool:
+    """A label of this section, or a range ('Pages 9–11') all of whose pages are in it."""
+    return location in allowed or all(part in allowed for part in expand_location(location)[1:] or [location])
 
 
 def segment_problems(result: SegmentKnowledge, allowed: set[str]) -> list[str]:
-    """Locations the model cited that this section doesn't contain (when it has labels at all)."""
+    """Removes locations the model cited that this section doesn't contain (when it has labels at all):
+    writing a whole section again over one wrong citation costs thousands of tokens. Only a topic left
+    with no location at all is sent back."""
     if not allowed:
         return []
-    unknown = sorted(_cited(result) - allowed)
-    if not unknown:
+    unplaced = []
+    for topic in result.topics:
+        kept = [location for location in topic.locations if _in_section(location, allowed)]
+        if topic.locations and not kept:
+            unplaced.append(topic.name)
+        topic.locations = kept
+        for name in _ITEM_LISTS:
+            for item in getattr(topic, name):
+                if hasattr(item, "locations"):
+                    item.locations = [location for location in item.locations if _in_section(location, allowed)]
+    if not unplaced:
         return []
     shown = ", ".join(sorted(allowed, key=_location_order)[:60])
-    return [f"These locations are not in this section: {', '.join(unknown[:20])}. Use only: {shown}."]
+    return [f"These topics cite only locations that are not in this section: {', '.join(unplaced[:20])}. Use only: {shown}."]
 
 
 def _location_order(label: str) -> tuple[int, str]:

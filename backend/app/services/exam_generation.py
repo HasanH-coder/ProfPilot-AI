@@ -86,8 +86,8 @@ from app.services.slides import (
     SlideIndex,
     ensure_page_words,
     first_line,
-    has_slides,
     image_parts,
+    keeps_slide_words,
     render_all_slides,
     render_slides,
     slide_images,
@@ -98,7 +98,7 @@ logger = logging.getLogger("profpilot.generation")
 
 _BATCH_SIZE = 4
 _PLAN_TOLERANCE = 6.0  # percentage points
-_STYLE_EXAMPLE_CHARS = 6_000
+_STYLE_EXAMPLE_CHARS = 20_000
 
 
 @dataclass
@@ -234,8 +234,8 @@ async def _style_examples(db: Database, documents: list[DocumentRecord]) -> str:
 async def load_planning_context(db: Database, assessment_id: str, *, require_approved: bool = True) -> GenerationContext:
     """The context, with every lecture's slide words, which the planner is given."""
     ctx = await load_generation_context(db, assessment_id, require_approved=require_approved)
-    # Lectures read before their slides' words were kept get them now (from their PDFs, no AI).
-    if any(doc.id not in ctx.pages for doc in ctx.documents if has_slides(doc) and doc.processing_status == "ready"):
+    # Lectures read before their slides' words were kept get them now (from their files, no AI).
+    if any(doc.id not in ctx.pages for doc in ctx.documents if keeps_slide_words(doc) and doc.processing_status == "ready"):
         await ensure_page_words(db, ctx.documents)
         ctx.pages = await AssessmentContextService(db).get_pages(ctx.documents)
     return ctx
