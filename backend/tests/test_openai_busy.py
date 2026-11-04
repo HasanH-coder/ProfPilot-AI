@@ -21,9 +21,9 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
-def rate_limited(message="Rate limit reached for requests", *, code=None, headers=None):
+def rate_limited(message="Rate limit reached for requests", *, code=None, error_type=None, headers=None):
     response = httpx2.Response(429, request=httpx2.Request("POST", URL), headers=headers or {})
-    return openai.RateLimitError(message, response=response, body={"code": code, "message": message})
+    return openai.RateLimitError(message, response=response, body={"code": code, "type": error_type, "message": message})
 
 
 def overloaded():
@@ -82,6 +82,7 @@ def test_a_service_still_busy_after_every_pause_is_reported_as_busy(pauses):
     ("error", "code"),
     [
         (rate_limited(QUOTA, code="insufficient_quota"), "ai_quota"),
+        (rate_limited(QUOTA, code="credit_balance_exhausted", error_type="insufficient_quota"), "ai_quota"),
         (rate_limited(TOO_LARGE, code="rate_limit_exceeded"), "ai_request_too_large"),
         (rejected(), "ai_bad_request"),
     ],

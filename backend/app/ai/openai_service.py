@@ -404,7 +404,7 @@ def _busy_pause(error: openai.OpenAIError, attempt: int) -> float | None:
     if attempt >= len(_BUSY_PAUSES):
         return None
     if isinstance(error, openai.RateLimitError):
-        if getattr(error, "code", None) == "insufficient_quota" or _too_large(error):
+        if _out_of_credit(error) or _too_large(error):
             return None
     elif not (isinstance(error, openai.APIStatusError) and error.status_code >= 500):
         return None
@@ -414,6 +414,11 @@ def _busy_pause(error: openai.OpenAIError, attempt: int) -> float | None:
     except ValueError:
         after = 0.0
     return min(after, _MAX_BUSY_PAUSE) if after > 0 else _BUSY_PAUSES[attempt]
+
+
+def _out_of_credit(error: openai.OpenAIError) -> bool:
+    """OpenAI may send this as the error's code or, with a more specific code, as its type."""
+    return "insufficient_quota" in (getattr(error, "code", None), getattr(error, "type", None))
 
 
 def _too_large(error: openai.OpenAIError) -> tuple[int, int] | None:
@@ -427,7 +432,7 @@ def _too_large(error: openai.OpenAIError) -> tuple[int, int] | None:
 def _translate_error(error: Exception, purpose: str) -> AppError:
     """OpenAI errors become safe messages. Details are logged without content."""
     if isinstance(error, openai.RateLimitError):
-        if getattr(error, "code", None) == "insufficient_quota":
+        if _out_of_credit(error):
             # OpenAI reports an exhausted balance or budget as a rate limit; waiting won't help.
             logger.error("%s: the OpenAI account is out of credit", purpose)
             return AIServiceError(

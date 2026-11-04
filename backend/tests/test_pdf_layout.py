@@ -1,13 +1,24 @@
 """Preservation and pagination of printed mathematical questions and tables."""
 
 import io
+import re
+import shutil
+from pathlib import Path
 
 from pypdf import PdfReader
 from reportlab.platypus import Paragraph, Table
 
 from app.services.exam_store import FullExam
 from app.services.pdf_export import ExportHeader, PdfExportService, rich_text
-from app.services.pdf_math import Equation, is_equation, math_source
+from app.services.pdf_math import Equation, _inline_images, inline_equation, is_equation, math_source
+
+
+def test_inline_equations_survive_the_temp_folder_being_removed():
+    # The same equation twice: the second must not rely on what the first left on disk.
+    for _ in range(2):
+        shutil.rmtree(_inline_images.name, ignore_errors=True)
+        image = re.search(r'src="([^"]+)"', inline_equation("x^2 + y^2"))[1]
+        assert Path(image).is_file()
 
 
 def test_equations_have_fraction_rules_and_keep_prose_as_prose():

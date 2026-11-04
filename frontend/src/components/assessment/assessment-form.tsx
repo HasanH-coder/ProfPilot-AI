@@ -312,7 +312,8 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
   );
   // Field errors appear after the first attempt to save, then update while editing.
   const [showErrors, setShowErrors] = useState(false);
-  const [saveResult, setSaveResult] = useState<SaveDraftResult>({});
+  // `afterSave`: the draft saved and a later step failed, so the error isn't a failed save.
+  const [saveResult, setSaveResult] = useState<SaveDraftResult & { afterSave?: boolean }>({});
   const [isSaving, startSaving] = useTransition();
   const [savingFor, setSavingFor] = useState<"stay" | "continue">("stay");
   // Stops a quick second click from saving twice.
@@ -371,7 +372,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
   // the server keeps what is valid, so a source added after the page loaded (for example chosen by
   // Set up with AI) is saved, and appears with the refresh that follows the save.
   const selectedSourceIds = values.sourceIds.filter((id) => courseSources.some((source) => source.id === id));
-  const saveFailed = Boolean(saveResult.error || saveResult.fieldErrors);
+  const saveFailed = !saveResult.afterSave && Boolean(saveResult.error || saveResult.fieldErrors);
   // What closed cards show, derived from the form (never stored separately).
   const settings = describeSettings(draft);
   const fileCount = (category: DocumentCategory) => uploadedCount(uploads.items, category);
@@ -562,7 +563,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
         router.push(`${assessmentPath(id)}/plan`);
       } catch (cause) {
         unstable_rethrow(cause);
-        setSaveResult({ error: errorMessage(cause) });
+        setSaveResult({ error: errorMessage(cause), afterSave: true });
       } finally {
         saveInProgress.current = false;
       }

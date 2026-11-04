@@ -15,6 +15,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.core.config import settings
+
 logger = logging.getLogger("profpilot")
 
 
@@ -106,7 +108,16 @@ def install_error_handlers(app: FastAPI) -> None:
     async def handle_unexpected_error(request: Request, error: Exception) -> JSONResponse:
         # The type and route only: exception messages can contain professor content.
         logger.error("Unexpected %s on %s %s", type(error).__name__, request.method, request.url.path)
+        # This handler runs outside the CORS middleware. Without these headers the browser
+        # hides the reply, and the app can only say the service can't be reached.
+        origin = request.headers.get("origin")
+        headers = (
+            {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true", "Vary": "Origin"}
+            if origin in settings.cors_origin_list
+            else None
+        )
         return JSONResponse(
             status_code=500,
             content={"error": {"code": "internal_error", "message": "Something went wrong. Please try again."}},
+            headers=headers,
         )

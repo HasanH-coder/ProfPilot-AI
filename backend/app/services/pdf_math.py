@@ -121,8 +121,7 @@ def _layout(text: str, latex: bool = False):
 
 
 @lru_cache(maxsize=128)
-def inline_equation(source: str) -> str:
-    """High-resolution inline LaTeX, bounded and embedded directly in the PDF."""
+def _inline_image(source: str) -> tuple[bytes, float, float]:
     if len(source) > 1000:
         raise ValueError("Equation is too long")
     buffer = io.BytesIO()
@@ -134,8 +133,17 @@ def inline_equation(source: str) -> str:
     width, height = width * 72 / 300, height * 72 / 300
     if width > 400 or height > 80:
         raise ValueError("Use a display equation for this expression")
+    return data, width, height
+
+
+def inline_equation(source: str) -> str:
+    """High-resolution inline LaTeX, bounded and embedded directly in the PDF."""
+    data, width, height = _inline_image(source)
     path = Path(_inline_images.name) / (hashlib.sha256(source.encode()).hexdigest() + ".png")
-    path.write_bytes(data)
+    # The temp folder can be cleaned up while the server runs, so don't assume it or the file survived.
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     return f'<img src="{path.as_posix()}" width="{width:.2f}" height="{height:.2f}" valign="middle"/>'
 
 
