@@ -1,0 +1,53 @@
+# Render Blueprint: the demo build of ProfPilot, deployed from feat/demo-mode only.
+# See "Deploying on Render" in README.md. Values marked sync: false are asked for
+# when the Blueprint is created, and are never stored in this file.
+
+services:
+  - type: web
+    name: profpilot-api
+    runtime: python
+    # Long AI jobs run inside this process, so a plan that sleeps when idle interrupts them.
+    plan: starter
+    # Closest to the Supabase project (ap-northeast-2). Can't be changed after creation.
+    region: singapore
+    branch: feat/demo-mode
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      # Secret: server-only.
+      - key: OPENAI_API_KEY
+        sync: false
+      # The frontend's URL, with no trailing slash.
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: profpilot-web
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: feat/demo-mode
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 22.17.0
+      # NEXT_PUBLIC_* values are built into the frontend: changing one needs a new deploy.
+      - key: NEXT_PUBLIC_DEMO_MODE
+        value: "true"
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      # The backend's URL, with no trailing slash.
+      - key: NEXT_PUBLIC_API_URL
+        sync: false

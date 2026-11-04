@@ -158,6 +158,16 @@ PROFPILOT_LIVE_TESTS=1 pytest tests/test_live_smoke.py
 
 Real `.env` files are ignored by git; never commit secrets or API keys.
 
+## Deploying on Render
+
+`render.yaml` deploys the demo build from `feat/demo-mode` as two web services, `profpilot-api` and `profpilot-web`. Pushes to other branches don't deploy.
+
+1. In Render, choose **New > Blueprint**, connect this repository and pick the `feat/demo-mode` branch. Enter the values it asks for; the two addresses can be filled in once Render has given each service its URL.
+2. Set the backend's `CORS_ORIGINS` to the frontend's URL and the frontend's `NEXT_PUBLIC_API_URL` to the backend's URL, both with no trailing slash, then deploy both again. `NEXT_PUBLIC_*` values are built into the frontend, so changing one needs a new deploy.
+3. In Supabase, under **Authentication > URL Configuration**, add the frontend's URL.
+
+Long AI jobs run inside the backend process, so use a plan that doesn't sleep when idle. The services are in Singapore, the closest region to the Supabase project; a region can't be changed after a service is created.
+
 ## Current status
 
 **In place**
