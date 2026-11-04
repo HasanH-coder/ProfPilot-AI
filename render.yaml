@@ -6,8 +6,9 @@ services:
   - type: web
     name: profpilot-api
     runtime: python
-    # Long AI jobs run inside this process, so a plan that sleeps when idle interrupts them.
-    plan: starter
+    # Free while setting up. Long AI jobs run inside this process and this plan sleeps when idle,
+    # so move to a paid plan before the talk.
+    plan: free
     # Closest to the Supabase project (ap-northeast-2). Can't be changed after creation.
     region: singapore
     branch: feat/demo-mode
@@ -32,7 +33,7 @@ services:
   - type: web
     name: profpilot-web
     runtime: node
-    plan: starter
+    plan: free
     region: singapore
     branch: feat/demo-mode
     rootDir: frontend
