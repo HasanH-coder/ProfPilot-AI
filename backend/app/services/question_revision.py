@@ -532,6 +532,10 @@ def _revision_effort(question_type: str, target_difficulty: str, instruction: st
     """Medium reasoning for a normal revision; high when the result is hard or a
     multi-step problem, or the professor's own instruction asks for something demanding."""
     effort = question_effort(question_type, target_difficulty)
+    # A multiple-choice revision starts from a finished question and a checked key, so even a
+    # hard one doesn't need the slowest reasoning (it took over a minute per attempt).
+    if question_type == "mcq":
+        return "medium"
     if effort == "medium" and instruction and (_DEMANDING.search(instruction) or len(instruction) > 300):
         return "high"
     return effort
