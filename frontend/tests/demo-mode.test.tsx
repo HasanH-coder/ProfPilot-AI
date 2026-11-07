@@ -10,7 +10,7 @@ import type { QuestionPlan } from "@/lib/api/types";
 import { demoRedirect } from "@/lib/demo";
 import type { CourseSource } from "@/lib/sources/types";
 
-import { professor } from "./fixtures";
+import { deferred, professor } from "./fixtures";
 import { router } from "./mocks/navigation";
 
 vi.mock("@/lib/demo", async (importOriginal) => ({
@@ -229,6 +229,28 @@ test("with no plan yet, planning starts by itself and shows its progress", async
 
   await expect.element(screen.getByText("Planning the assessment…")).toBeVisible();
   expect(sent).toEqual([{ url: "/api/assessments/a1/question-plan", method: "POST", body: undefined }]);
+});
+
+test("when planning finishes, the plan replaces the progress without flashing 'Try again'", async () => {
+  const sent = servePlan({ status: "none", questions: [], rationale: null });
+  const serve = vi.mocked(apiRequest).getMockImplementation()!;
+  const finishedPlan = deferred<QuestionPlan>();
+  let planReads = 0;
+  vi.mocked(apiRequest).mockImplementation(async (path, options) => {
+    const url = String(path);
+    if (url.startsWith("/api/runs/")) return { id: "run-1", kind: "interpretation", status: "succeeded", stage: "done" };
+    // The first read is the page loading; the next one fetches the finished plan, which is slow here.
+    if (url.endsWith("/question-plan") && !options?.method && ++planReads > 1) return finishedPlan.promise;
+    return serve(path, options);
+  });
+  const screen = await render(<QuestionPlanReview assessmentId="a1" />);
+
+  await vi.waitFor(() => expect(planReads).toBeGreaterThan(1));
+  expect(screen.getByText("ProfPilot hasn't planned the questions yet.").query()).toBeNull();
+  expect(screen.getByRole("button", { name: "Try again" }).query()).toBeNull();
+  finishedPlan.resolve(planned);
+  await expect.element(screen.getByText("Topic 1")).toBeVisible();
+  expect(sent.filter((request) => request.method === "POST")).toHaveLength(1);
 });
 
 test("a planning failure offers Try again and doesn't start again by itself", async () => {

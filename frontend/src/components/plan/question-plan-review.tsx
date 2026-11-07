@@ -94,9 +94,21 @@ export function QuestionPlanReview({ assessmentId }: { assessmentId: string }) {
   }, [assessmentId, reloads, startPlanning]);
 
   const { run } = useRun(planningRun, (finished) => {
-    setPlanningRun(null);
-    if (finished.status === "failed") setActionError(finished.errorMessage ?? "ProfPilot couldn't plan the questions. Please try again.");
-    load();
+    if (finished.status === "failed") {
+      setPlanningRun(null);
+      setActionError(finished.errorMessage ?? "ProfPilot couldn't plan the questions. Please try again.");
+      load();
+      return;
+    }
+    // Done: keep showing the progress until the finished plan is here. Clearing it first would
+    // show the old, empty plan ("hasn't planned the questions yet - Try again") until the reload ends.
+    apiRequest<QuestionPlan>(`/api/assessments/${assessmentId}/question-plan`)
+      .then(setPlan)
+      .catch(() => {})
+      .finally(() => {
+        setPlanningRun(null);
+        load();
+      });
   });
 
   async function generate(replace: boolean) {
