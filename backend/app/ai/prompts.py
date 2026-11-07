@@ -61,18 +61,102 @@ AUTHORITY = (
     "preferences and your own judgement."
 )
 
+# The difficulty scale, for every step that plans, writes or checks questions. The score predicts
+# demand; it is a shared heuristic so every step judges alike, not a measurement of student results.
 DIFFICULTY_GUIDE = (
-    "DIFFICULTY means cognitive demand, never just longer wording. "
-    "Easy: one concept, direct cues, recall or straightforward application, 1–2 steps. "
-    "Medium: apply concepts to a familiar situation, 2–4 steps, some interpretation needed. "
-    "Hard: multi-step reasoning, synthesis across topics, transfer to an unfamiliar scenario, "
-    "subtle distinctions or less direct cues. Hard questions must stay fair and answerable from "
-    "the course material. Demanding pairs keep their Bloom's level: a medium or hard Remember "
-    "question gets its difficulty from recalling closely related distinctions, several facts that "
-    "must all be right, or precise terms (never trick wording or hidden application); a hard "
-    "Understand question asks students to explain an unfamiliar case or connect several ideas in "
-    "their own words, without the stem supplying the interpretation (intermediate values, conclusions "
-    "or what to mention)."
+    "DIFFICULTY means expected difficulty FOR THESE students, given the course material they were "
+    "taught and the exam conditions. Never judge difficulty by how easy the question is for you, "
+    "by length, fancy wording, or Bloom's level. Bloom describes the kind of thinking; difficulty "
+    "describes how challenging that thinking is for the target students. "
+    "If the professor's previous exams show what their easy, medium and hard questions look like, "
+    "use them as the reference for scoring; where they disagree with the bands below, follow the "
+    "professor's standard. "
+    "Never create difficulty through ambiguity, trick wording, obscure untaught facts, unnecessary "
+    "reading, misleading presentation, or missing information. Hard questions must remain fair, "
+    "clear, and answerable from the taught course material. "
+    "Estimate the question's PREDICTED DEMAND on five dimensions, each scored 0, 1, or 2. "
+    "REASONING: 0 = recall, recognition, or 1-2 routine operations; 1 = several meaningfully linked "
+    "operations, interpretations, or inferences; 2 = substantial dependent reasoning, justification, "
+    "or a key non-obvious insight. Repetitive routine work does not increase this score merely "
+    "because it is long. "
+    "INTEGRATION: 0 = one concept used directly; 1 = two related ideas must be connected; 2 = several "
+    "concepts, representations, or constraints must interact. "
+    "STRATEGY: 0 = the method is given or immediately apparent from practised examples; 1 = the "
+    "student must select among familiar practised methods; 2 = the student must devise, adapt, or "
+    "organise a non-obvious approach. "
+    "TRANSFER: 0 = closely matches practised examples or representations; 1 = applies a familiar "
+    "principle in a somewhat new setting or representation; 2 = applies taught knowledge in a "
+    "substantially unfamiliar but fair situation or representation. Novelty must test the intended "
+    "learning, not irrelevant background knowledge. "
+    "INFORMATION: 0 = all and only the necessary information is explicit; 1 = the student must select "
+    "relevant information or make a simple inference; 2 = the student must combine separated clues, "
+    "infer a necessary relationship from taught knowledge, or distinguish relevant from plausible "
+    "irrelevant information. Do not add irrelevant information merely to manufacture difficulty "
+    "unless selecting information is part of the intended skill. "
+    "PREDICTED DIFFICULTY from the total: 0-2 = EASY; 3-6 = MEDIUM; 7-10 = HARD. "
+    "Two safeguards apply. First, Strategy 2 together with Transfer 2 makes the predicted difficulty "
+    "at least HARD, because the student must both recognise the transfer and devise or adapt an "
+    "approach. Second, repeated routine operations cannot by themselves make a question HARD; lower "
+    "the classification if length is the main source of the score. Do not double-count the same "
+    "challenge across dimensions or through extra bonuses. "
+    "MISCONCEPTIONS: use known student misconceptions to design meaningful distractors or conceptual "
+    "distinctions, but do not add difficulty merely because a misconception exists. Only call a "
+    "misconception known when the course material, the professor's previous exams, or well-established "
+    "domain knowledge supports it. One exception: if the total is on a band boundary (2 or 6) and the "
+    "question targets a known misconception, predict the higher band, because AI models consistently "
+    "underestimate how hard such questions are for students. "
+    "BLOOM: keep any requested Bloom level fixed and judge difficulty separately. Remember and "
+    "Understand questions cannot reach the Hard band on the five scores, so for them use these levels "
+    "instead of the bands, raising difficulty only through valid demands within the same process. "
+    "REMEMBER: Easy = one familiar fact or term; Medium = one close distinction, or two or three facts "
+    "that must all be right; Hard = several closely related facts, distinctions or precise terms that "
+    "students commonly confuse, all of which must be right. "
+    "UNDERSTAND: Easy = explain or restate a case taught in the material; Medium = explain a changed "
+    "case with some guidance in the stem; Hard = explain an unfamiliar case or connect several ideas "
+    "in their own words, without the stem supplying the interpretation (intermediate values, "
+    "conclusions or what to mention). "
+    "If a requested Bloom level and difficulty still cannot coexist without obscurity, ambiguity, "
+    "untaught content or changing the cognitive process, report the conflict in a warning rather "
+    "than forcing the question."
+)
+
+# Added for the steps that write questions: the writer, the variant writer and the reviser.
+DIFFICULTY_WRITING = (
+    "VALIDATE EVERY QUESTION YOU WRITE before accepting it. Solve it independently. Confirm that the "
+    "keyed answer is correct, all necessary information is available, the wording has one clear "
+    "interpretation, the question assesses the intended learning objective, and all required "
+    "knowledge comes from the taught course material. If any check fails, revise the question. "
+    "Design each question to land in the requested predicted difficulty band. If its demand profile "
+    "falls outside that band, revise the question rather than merely changing its label. A "
+    "replacement or variant must preserve the learning objective, the Bloom level when fixed, and the "
+    "predicted difficulty band, while changing enough surface details to be a genuine variant. "
+    "For MCQs, every distractor must be plausible to a student making a recognisable reasoning, "
+    "conceptual, computational, or interpretation error. Medium and Hard items should use stronger "
+    "plausible distractors; for Hard MCQs, at least two distractors should represent meaningful "
+    "incorrect reasoning paths when such errors are known or well supported. Never invent evidence "
+    "that a misconception is common. "
+    "Among the questions you write together at the same Bloom's level, compare the boundary items: "
+    "the hardest Easy against the easiest Medium, and the hardest Medium against the easiest Hard. "
+    "The overall construct-relevant challenge for these students should increase clearly across "
+    "those boundaries; a question need not be higher on every dimension. If the order is unclear, "
+    "revise the borderline question."
+)
+
+# Added for the reviewer, which reports difficulty problems but can't rewrite questions or relabel them.
+DIFFICULTY_REVIEW = (
+    "VALIDATE BEFORE JUDGING DIFFICULTY. Solve each question independently and check the key, "
+    "information sufficiency, clarity, course alignment, learning objective, and any fixed Bloom "
+    "requirement. Report ambiguity, miskeys, missing information, or untaught content as validity "
+    "problems; never treat those defects as legitimate difficulty. "
+    "Then score Reasoning, Integration, Strategy, Transfer, and Information using the shared rubric "
+    "(or the Remember/Understand levels for those questions). Report with category 'difficulty' a "
+    "question whose label does not match the rubric after the stated safeguards, giving the "
+    "predicted total and the band it implies. "
+    "Among questions at the same Bloom's level, check the order at the Easy/Medium and Medium/Hard "
+    "boundaries and report cases where the overall expected challenge for the target students is "
+    "not clearly ordered. Do not require a Hard item to exceed a Medium item on every dimension. "
+    "Never call an item too easy merely because it is easy for you: difficulty is always judged "
+    "relative to the target students and their taught material."
 )
 
 DISTRIBUTION_GUIDE = (
@@ -96,11 +180,13 @@ BLOOM_GUIDE = (
 )
 
 GROUNDING = (
-    "GROUNDING. Base course-specific content on the professor's uploaded course material. Do not "
-    "invent specialised facts, definitions, notation or results that the material does not "
-    "support. General background knowledge a student of the course would have is fine. If the "
-    "material is missing or too thin for what is asked, say so in a warning instead of inventing "
-    "content. Refer to the material by file name and pages (or slides) and, where given, lecture "
+    "GROUNDING. The professor's uploaded course material is the only source of course content. Every "
+    "fact, definition, term, notation, formula, method and result in a question, its choices and its "
+    "answer key must come from the material: never add content from your own knowledge, even when it "
+    "is correct and related. A new scenario is fine when it needs only everyday knowledge any student "
+    "has (simple arithmetic, ordinary situations) and is answered entirely with what the lectures "
+    "teach. If the material is missing or too thin for what is asked, say so in a warning instead of "
+    "inventing content. Refer to the material by file name and pages (or slides) and, where given, lecture "
     "topic ids: excerpt ids (S1, S2…) are numbered for one request only, so never use them anywhere "
     "except a question's source_excerpt_ids. A '[Figure on page N, read by ProfPilot: …]' block is "
     "ProfPilot's reading of a picture on that page (a diagram, chart, table, code or equation) and is "
@@ -128,6 +214,19 @@ FORMULA_FIDELITY = (
     "standard form only when one is given and the question doesn't depend on a detail the extraction "
     "could have changed (a constant, sign, index or term); otherwise test the idea without that formula. "
     "Never reconstruct a formula the lecture doesn't make clear."
+)
+
+CLEAR_WORDING = (
+    "CLEAR WORDING. Students must understand every question on the first reading; some read in a "
+    "second language. Length is not a problem: a question may be as long as it needs to be. What "
+    "matters is that it reads naturally and is easy to follow: clear, well-ordered sentences in "
+    "everyday words, and a plain statement of what students must do ('Find…', 'Explain why…', "
+    "'Which…'). Use the course's technical terms exactly as the lectures use them, and no other "
+    "advanced or formal words: 'use', not 'utilise'; 'show', not 'demonstrate'; 'about', not "
+    "'regarding'. No idioms, no double negatives, no confusing sentence structure. Explain in plain "
+    "words any scenario detail that isn't from the lectures. A question is hard because of the "
+    "thinking it needs, never because it is hard to read. The same applies to choices, answers, "
+    "solutions and rubrics. Follow the professor's own wording instructions where they differ."
 )
 
 PREVIOUS_EXAMS = (
@@ -529,8 +628,10 @@ def generator_instructions(framer: DataFramer) -> str:
         "the excerpt, except for UNVERIFIED formulas (see FORMULAS). Never use content from neither.",
         FORMULA_FIDELITY,
         DIFFICULTY_GUIDE,
+        DIFFICULTY_WRITING,
         BLOOM_GUIDE,
         GROUNDING,
+        CLEAR_WORDING,
         PREVIOUS_EXAMS,
         FORMATTING,
     )
@@ -550,8 +651,10 @@ def variant_instructions(framer: DataFramer) -> str:
         "number of the question you are varying, and describe the variation briefly.",
         FORMULA_FIDELITY,
         DIFFICULTY_GUIDE,
+        DIFFICULTY_WRITING,
         BLOOM_GUIDE,
         GROUNDING,
+        CLEAR_WORDING,
         FORMATTING,
     )
 
@@ -570,6 +673,12 @@ def reviewer_instructions(framer: DataFramer) -> str:
         "reference in its text. When SOURCE SLIDES are given (each question's slides, attached as images, with "
         "their words), check each answer key against its question's slides: an answer they don't support, or a "
         "question that needs a slide students can't see, is an answerability issue.",
+        "STICKING TO THE LECTURES. Report with category 'answerability' any question, choice or answer "
+        "key that needs a fact, term, formula or method the course material doesn't teach.",
+        "EASY READING. Judge each question by CLEAR WORDING (never by its length). Report with category "
+        "'clarity' a question that is confusing or hard to follow, or uses advanced words the lectures "
+        "don't use, and propose "
+        "'clarify_wording' with a plainer version that tests exactly the same thing.",
         "ANSWER LEAKAGE. Check every question against every other: report with category "
         "'answer_leakage' any question whose text states, shows or strongly hints at another "
         "question's answer (the same formula written differently, a paraphrased definition, a value "
@@ -608,8 +717,10 @@ def reviewer_instructions(framer: DataFramer) -> str:
         FORMULA_FIDELITY,
         DISTRIBUTION_GUIDE,
         DIFFICULTY_GUIDE,
+        DIFFICULTY_REVIEW,
         BLOOM_GUIDE,
         GROUNDING,
+        CLEAR_WORDING,
     )
 
 
@@ -627,8 +738,10 @@ def reviser_instructions(framer: DataFramer) -> str:
         "closest reasonable change and explain it in change_summary.",
         FORMULA_FIDELITY,
         DIFFICULTY_GUIDE,
+        DIFFICULTY_WRITING,
         BLOOM_GUIDE,
         GROUNDING,
+        CLEAR_WORDING,
         PREVIOUS_EXAMS,
         FORMATTING,
     )
@@ -646,6 +759,7 @@ def solution_instructions(framer: DataFramer) -> str:
         "explain the problem in notes.",
         FORMULA_FIDELITY,
         GROUNDING,
+        CLEAR_WORDING,
         FORMATTING,
     )
 

@@ -379,5 +379,12 @@ def test_planner_writer_and_reviewer_rules():
     assert "Don't write marks into the prompt" in writer and "never sources or ids" in writer
     assert "category 'answer_leakage'" in reviewer and "category 'marks'" in reviewer
     for text in (planner, writer, reviewer):  # the shared difficulty guide
-        assert "a hard Understand question asks students to explain an unfamiliar case" in text
+        assert "Hard = explain an unfamiliar case" in text and "PREDICTED DIFFICULTY from the total" in text
+    # Writing rules only where questions are written; the difficulty check only for the reviewer.
+    assert "VALIDATE EVERY QUESTION YOU WRITE" in writer and "VALIDATE EVERY QUESTION YOU WRITE" not in planner + reviewer
+    assert "VALIDATE BEFORE JUDGING DIFFICULTY" in reviewer and "VALIDATE BEFORE JUDGING" not in planner + writer
+    # Course content only from the lectures, and questions easy to read.
+    for text in (planner, writer, reviewer):
+        assert "never add content from your own knowledge" in text
+    assert "CLEAR WORDING" in writer and "category 'clarity'" in reviewer
     assert {"answer_leakage", "marks"} <= set(ReviewIssue.model_fields["category"].annotation.__args__)
