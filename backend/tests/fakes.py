@@ -610,10 +610,12 @@ class FakeAI:
         max_output_tokens=32_000,
         validate=None,
         usage=None,
+        model=None,
         **_,
     ):
         text = input if isinstance(input, str) else _flatten(input)
         call = {"purpose": purpose, "instructions": instructions, "input": text, "schema": schema, "effort": effort}
+        call["model"] = model
         self.calls.append(call)
         if purpose not in self.handlers:
             raise AssertionError(f"FakeAI has no handler for {purpose!r}")
@@ -667,8 +669,12 @@ class FakeAI:
             usage.embedding_calls += 1
         return [embed_text(text) for text in texts]
 
-    async def run_tool_loop(self, *, purpose, instructions, messages, tools, execute, effort="low", max_rounds=6, usage=None):
-        self.calls.append({"purpose": purpose, "instructions": instructions, "messages": messages, "tools": tools})
+    async def run_tool_loop(
+        self, *, purpose, instructions, messages, tools, execute, effort="low", max_rounds=6, usage=None, model=None
+    ):
+        self.calls.append(
+            {"purpose": purpose, "instructions": instructions, "messages": messages, "tools": tools, "model": model}
+        )
         if usage is not None:
             usage.model_call(purpose)
         plan, reply = self.tool_scripts[purpose](messages)

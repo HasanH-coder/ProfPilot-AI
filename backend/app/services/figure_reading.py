@@ -119,6 +119,7 @@ class FigureReader:
                 effort="medium",
                 validate=lambda reading: _page_problems(reading, len(batch)),
                 usage=self.usage,
+                model=settings.light_model,
             )
         except Exception as error:  # the pages keep their markers; the file is still read
             logger.warning("Reading pictures on %ss %s failed: %s", unit, batch[0].number, type(error).__name__)

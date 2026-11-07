@@ -21,6 +21,7 @@ from typing import Any
 from app.ai.openai_service import OpenAIService, Usage
 from app.ai.prompts import DataFramer, builder_chat_instructions, reviewer_instructions
 from app.ai.tools import function_tool
+from app.core.config import settings
 from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
 from app.db.supabase import Database
@@ -405,6 +406,7 @@ class ExamBuilderService:
             execute=execute,
             effort="low",
             usage=self.usage,
+            model=settings.light_model,
         )
         reply = result.text or "Done."
         await self.add_message(exam_id, "assistant", reply[:8000], channel="text")

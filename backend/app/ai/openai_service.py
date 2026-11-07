@@ -213,6 +213,7 @@ class OpenAIService:
         effort: Effort = "low",
         max_rounds: int = 6,
         usage: Usage | None = None,
+        model: str | None = None,
     ) -> ToolLoopResult:
         """Lets the model call application tools until it has a reply for the professor.
 
@@ -228,7 +229,7 @@ class OpenAIService:
                 response = await _patiently(
                     purpose,
                     lambda: self.client.responses.create(
-                        model=settings.reasoning_model,
+                        model=model or settings.reasoning_model,
                         instructions=instructions,
                         input=items,
                         tools=list(tools),

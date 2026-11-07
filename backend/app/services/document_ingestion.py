@@ -338,6 +338,7 @@ class DocumentIngestionService:
             files=[{"type": "input_image", "image_url": data_url(mime, data), "detail": "high"}],
             schema=ImageReading,
             usage=self.usage,
+            model=settings.light_model,
         )
         parts = [reading.description.strip()]
         if reading.transcribed_text.strip():
@@ -361,6 +362,7 @@ class DocumentIngestionService:
                 schema=Transcription,
                 max_output_tokens=48_000,
                 usage=self.usage,
+                model=settings.light_model,
             )
             for page in result.pages:
                 if 1 <= page.page_number <= len(batch) and page.text.strip():
@@ -380,6 +382,7 @@ class DocumentIngestionService:
             verbosity="low",
             max_output_tokens=8_000,
             usage=self.usage,
+            model=settings.light_model,
         )
         return result.model_dump()
 

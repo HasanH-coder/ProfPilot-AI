@@ -465,6 +465,49 @@ def plan_problems(
     return hard, soft
 
 
+# Exams of at most this many questions are planned with medium reasoning; bigger ones with high.
+_SMALL_EXAM_QUESTIONS = 10
+
+
+def plan_effort(spec: ExamSpec) -> Effort:
+    count = spec.question_count_max or spec.question_count_min
+    return "medium" if count is not None and count <= _SMALL_EXAM_QUESTIONS else "high"
+
+
+def fit_points(plan: ExamPlan, total: int | None) -> ExamPlan:
+    """Scales the planned points to add up to the exam's total, in code, so a points total alone never
+    costs another model call. The shares by type, difficulty and level stay as planned (points scale
+    together). Whole points when the plan used whole points, else halves. Unchanged when it can't fit."""
+    questions = plan.questions
+    current = sum(q.points for q in questions)
+    if not total or not questions or current <= 0 or abs(current - total) <= 0.01:
+        return plan
+    unit = 1.0 if all(float(q.points).is_integer() for q in questions) else 0.5
+    if unit * len(questions) > total:
+        return plan
+    scaled = [max(unit, round(q.points * total / current / unit) * unit) for q in questions]
+    # Rounding leaves a few units over or under: settle them on the biggest questions first.
+    steps = round((total - sum(scaled)) / unit)
+    biggest_first = sorted(range(len(questions)), key=lambda i: -scaled[i])
+    for _ in range(4 * len(questions)):
+        if steps == 0:
+            break
+        for i in biggest_first:
+            if steps == 0:
+                break
+            if steps > 0:
+                scaled[i] += unit
+                steps -= 1
+            elif scaled[i] - unit >= unit:
+                scaled[i] -= unit
+                steps += 1
+    if steps != 0:
+        return plan
+    return plan.model_copy(
+        update={"questions": [q.model_copy(update={"points": points}) for q, points in zip(questions, scaled, strict=True)]}
+    )
+
+
 class ExamPlanningService:
     def __init__(self, db: Database, ai: OpenAIService, usage: Usage) -> None:
         self.db = db
@@ -507,11 +550,12 @@ class ExamPlanningService:
             instructions=planner_instructions(framer),
             input=base_input,
             schema=ExamPlan,
-            effort="high",
+            effort=plan_effort(ctx.spec),
             max_output_tokens=24_000,
             validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
             usage=self.usage,
         )
+        plan = fit_points(plan, ctx.spec.total_points)
         _, soft = plan_problems(plan, ctx.spec, figure_ids, known, slides)
         if soft:
             # One focused repair for targets the plan misses.
@@ -534,11 +578,12 @@ class ExamPlanningService:
                         },
                     ],
                     schema=ExamPlan,
-                    effort="high",
+                    effort=plan_effort(ctx.spec),
                     max_output_tokens=24_000,
                     validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
                     usage=self.usage,
                 )
+                repaired = fit_points(repaired, ctx.spec.total_points)
                 remaining = plan_problems(repaired, ctx.spec, figure_ids, known, slides)[1]
                 if len(remaining) <= len(soft):
                     plan, soft = repaired, remaining

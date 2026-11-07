@@ -66,6 +66,7 @@ class StyleAnalysisService:
             verbosity="low",
             max_output_tokens=12_000,
             usage=self.usage,
+            model=settings.light_model,
         )
         profile.exams_analyzed = len(exams)
         values = {

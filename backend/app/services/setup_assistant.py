@@ -18,6 +18,7 @@ from typing import Any
 from app.ai.openai_service import OpenAIService, Usage
 from app.ai.prompts import setup_chat_instructions
 from app.ai.tools import function_tool
+from app.core.config import settings
 from app.core.errors import InvalidInputError
 from app.core.timing import timed
 from app.domain.setup import LEARNING_FOCUS_LABELS, LEARNING_FOCUSES, LIMITS, AssessmentSetup
@@ -588,6 +589,7 @@ class SetupAssistantService:
                 execute=execute,
                 effort="low",
                 usage=self.usage,
+                model=settings.light_model,
             )
         return {
             "reply": result.text or "Done.",

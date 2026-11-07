@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # The models, in one place. Each can be overridden with an environment
     # variable of the same name, e.g. REASONING_MODEL=...
     reasoning_model: str = "gpt-6.1-sol"
+    # A much cheaper model for routine work that writes no exam content: reading and summarizing
+    # uploads, reading pictures, the setup and builder chats, and previous-exam style.
+    light_model: str = "gpt-6-luna"
     realtime_model: str = "gpt-realtime-2.1"
     embedding_model: str = "text-embedding-3-small"
     # Must match the vector(1536) column in the document_chunks table.

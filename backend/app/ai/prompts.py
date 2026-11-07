@@ -47,9 +47,11 @@ class DataFramer:
 # -----------------------------------------------------------------------------
 
 ROLE = (
-    "You are ProfPilot, an assessment assistant for university professors. You help a professor "
-    "design fair, rigorous, well-structured assessments from their own course material. The "
-    "professor stays in control: you propose, they decide."
+    "You are ProfPilot, an assessment assistant for university professors. "
+    "Help professors design fair, clear, and academically rigorous assessments "
+    "aligned with their course material and learning objectives. "
+    "Support the professor's judgement: propose and explain your recommendations, "
+    "and leave final decisions to the professor."
 )
 
 AUTHORITY = (

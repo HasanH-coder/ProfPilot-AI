@@ -581,6 +581,7 @@ class LectureKnowledgeService:
             max_output_tokens=_SEGMENT_OUTPUT_TOKENS,
             validate=lambda result: segment_problems(result, allowed),
             usage=self.usage,
+            model=settings.light_model,
         )
 
     async def _synthesize(self, framer: DataFramer, document: DocumentRecord, topics: list[dict[str, Any]]) -> LectureSynthesis:
@@ -599,6 +600,7 @@ class LectureKnowledgeService:
             verbosity="low",
             max_output_tokens=8_000,
             usage=self.usage,
+            model=settings.light_model,
         )
 
     def _usage_since(self, before: tuple[int, int, int]) -> dict[str, int]:

@@ -27,7 +27,7 @@ from app.db.supabase import Database
 from app.domain import distribution
 from app.schemas.ai import QuestionFix, ReviewIssue, ReviewOutput
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
-from app.services.exam_generation import GenerationContext, load_generation_context
+from app.services.exam_generation import GenerationContext, load_generation_context, question_effort
 from app.services.exam_store import (
     ExamStore,
     FullExam,
@@ -283,7 +283,15 @@ class ExamReviewService:
                 if part
             ),
             schema=ReviewOutput,
-            effort="high",
+            # Solving hard and multi-step questions needs high effort; an exam without any is checked at medium.
+            effort=(
+                "high"
+                if any(
+                    question_effort(row.get("type") or "", row.get("difficulty") or "") == "high"
+                    for row in full.version_questions(full.primary_version["id"])
+                )
+                else "medium"
+            ),
             max_output_tokens=40_000,
             usage=self.usage,
         )
