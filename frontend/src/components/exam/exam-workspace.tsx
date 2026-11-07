@@ -19,6 +19,9 @@ import { ApiError, apiRequest, errorMessage } from "@/lib/api/client";
 import { useRun } from "@/lib/api/runs";
 import type { AiStatus, Exam, Question, StartedRun } from "@/lib/api/types";
 
+/** While the exam is being written, its questions appear here as soon as each is saved. */
+const REFRESH_WHILE_GENERATING_MS = 2000;
+
 /** The exam editor: every question, the quality check, final review and export. */
 export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
   const [exam, setExam] = useState<Exam | null>(null);
@@ -67,6 +70,18 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
       cancelled = true;
     };
   }, [assessmentId, reloads]);
+
+  // While the exam is being written, each question appears as soon as it is saved.
+  const generating = exam?.status === "generating";
+  useEffect(() => {
+    if (!generating) return;
+    const timer = setInterval(() => {
+      apiRequest<Exam>(`/api/assessments/${assessmentId}/exam`)
+        .then(setExam)
+        .catch(() => undefined); // the next refresh, or the end of the job, reloads it
+    }, REFRESH_WHILE_GENERATING_MS);
+    return () => clearInterval(timer);
+  }, [generating, assessmentId]);
 
   const generation = useRun(generationRun, () => {
     setGenerationRun(null);
@@ -139,13 +154,64 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
   if (!exam) return <ExamSkeleton />;
 
   if (exam.status === "generating") {
+    // Question 1, 2, 3… in order: each one as soon as it is written (at its planned number), the others
+    // shown as being written. Editing opens once the whole exam is written.
+    const first = exam.versions[0];
+    const written = new Map(
+      exam.questions.filter((question) => question.versionId === first?.id).map((question) => [question.position, question]),
+    );
+    const planned = Math.max(exam.plannedQuestionCount, 0, ...written.keys());
     return (
-      <div className="flex flex-col gap-4">
-        <JobProgress run={generation.run} startingLabel="Generating the exam…" />
-        {exam.questions.length > 0 && (
-          <p className="text-sm text-muted-foreground">
-            {exam.questions.length} question{exam.questions.length === 1 ? "" : "s"} written so far.
-          </p>
+      <div className="flex flex-col gap-6">
+        {planned === 0 ? (
+          <JobProgress run={generation.run} startingLabel="Generating the exam…" />
+        ) : (
+          <Alert role="status">
+            <Spinner />
+            <AlertTitle>
+              Writing the exam: {written.size} of {planned} {planned === 1 ? "question" : "questions"} ready
+            </AlertTitle>
+            <AlertDescription>
+              Each question appears below as soon as it is written, with its answer key. Start reading while the others
+              are being written; you can edit them once the whole exam is written.
+            </AlertDescription>
+          </Alert>
+        )}
+        {planned > 0 && (
+          <>
+            <div className="flex items-center justify-end gap-2">
+              <Checkbox id={showKeyId} checked={showKey} onCheckedChange={(checked) => setShowKey(Boolean(checked))} />
+              <Label htmlFor={showKeyId} className="font-normal">
+                Show answer keys
+              </Label>
+            </div>
+            <ol className="flex flex-col gap-6" aria-label="Questions">
+              {Array.from({ length: planned }, (_, index) => index + 1).map((number) => {
+                const question = written.get(number);
+                return (
+                  <li key={number}>
+                    {question ? (
+                      <QuestionCard
+                        question={{ ...question, number }}
+                        showKey={showKey}
+                        multiVersion={false}
+                        readOnly
+                        onChanged={() => undefined}
+                      />
+                    ) : (
+                      <div
+                        role="status"
+                        className="flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-muted-foreground sm:p-5"
+                      >
+                        <Spinner />
+                        Writing question {number} and its answer key…
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </>
         )}
       </div>
     );
@@ -222,7 +288,11 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
       {reviewing && (
         <Alert role="status">
           <Spinner />
-          <AlertTitle>The quality check is running</AlertTitle>
+          <AlertTitle>
+            {exam.versions.length > 1 && !exam.questions.some((question) => question.versionId !== exam.versions[0].id)
+              ? "Creating the other versions and running the quality check"
+              : "The quality check is running"}
+          </AlertTitle>
           <AlertDescription>
             You can keep working. A question you approve now is locked, so the check will report its issues but
             can&apos;t fix them; approve after the check to let it apply safe fixes.

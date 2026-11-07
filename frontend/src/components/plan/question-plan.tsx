@@ -49,8 +49,8 @@ type Job =
   | { kind: "planning" | "changing"; runId: string }
   | { kind: "writing"; runId: string; number: number | null };
 
-/** While the exam is being finished, the written questions appear as they come. */
-const REFRESH_WHILE_WRITING_MS = 4000;
+/** While questions are being written, each appears under its plan as soon as it is saved. */
+const REFRESH_WHILE_WRITING_MS = 2000;
 
 /**
  * The page where the exam is built: ProfPilot's plan, question by question. The professor reads each
@@ -68,6 +68,8 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
   // A write the professor must confirm first, because it replaces an exam made another way.
   const [confirmingReplace, setConfirmingReplace] = useState<{ number: number | null } | null>(null);
   const [confirmingReplan, setConfirmingReplan] = useState(false);
+  // Every question is written: the professor keeps reading here, and opens the exam when they choose.
+  const [allWritten, setAllWritten] = useState(false);
   // Planning starts by itself when this page opens, once: a failure offers Try again, never a loop.
   const planningStarted = useRef(false);
   const base = `/workspace/assessments/${assessmentId}`;
@@ -132,6 +134,7 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
 
   const { run } = useRun(job?.runId ?? null, (finished) => {
     const kind = job?.kind;
+    const finishing = job?.kind === "writing" && job.number === null;
     setJob(null);
     if (finished.status === "failed") {
       setActionError(
@@ -142,8 +145,8 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
     void apiRequest<QuestionPlan>(`/api/assessments/${assessmentId}/question-plan`)
       .then((next) => {
         setPlan(next);
-        // Finishing ends on the exam page, with every version, the answer keys and the quality check.
-        if (kind === "writing" && finished.status === "succeeded" && next.exam?.status === "ready") router.push(`${base}/exam`);
+        // No jump to the exam page: the professor may be reading a question here.
+        if (finishing && finished.status === "succeeded" && next.exam?.status === "ready") setAllWritten(true);
       })
       .catch(() => load());
   });
@@ -164,6 +167,12 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
         : `/api/assessments/${assessmentId}/question-plan/${number}/question`;
     try {
       const started = await apiRequest<StartedRun>(path, { method: "POST", body: { replace }, freshSession: true });
+      setAllWritten(false);
+      // The whole exam is written on the exam page, where each question appears as soon as it is written.
+      if (number === null) {
+        router.push(`${base}/exam`);
+        return;
+      }
       setJob({ kind: "writing", runId: started.run.id, number });
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === "exam_exists") setConfirmingReplace({ number });
@@ -241,6 +250,7 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
   const total = plan.questions.length;
   const outdated = plan.questions.filter((question) => question.outdated).map((question) => question.number);
   const examReady = plan.exam?.status === "ready";
+  const finishing = job?.kind === "writing" && job.number === null;
   const finishLabel = written === 0 ? "Write the whole exam" : written === total ? "Finish the exam" : `Write the other ${total - written} and finish`;
 
   return (
@@ -257,6 +267,34 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
         </Alert>
       )}
 
+      {finishing && (
+        <Alert role="status">
+          <Spinner />
+          <AlertTitle>
+            Writing the exam: {written} of {total} {total === 1 ? "question" : "questions"} ready
+          </AlertTitle>
+          <AlertDescription>
+            Each question appears under its plan as soon as it is written. Start reading while the others are being
+            written.
+          </AlertDescription>
+        </Alert>
+      )}
+      {allWritten && !finishing && (
+        <Alert>
+          <Check />
+          <AlertTitle>All {total} questions are written</AlertTitle>
+          <AlertDescription>
+            <span>
+              The other versions and the quality check are finishing in the background.{" "}
+              <Link href={`${base}/exam`} className="font-medium underline underline-offset-4">
+                Open the exam
+              </Link>{" "}
+              to review everything and download it.
+            </span>
+          </AlertDescription>
+        </Alert>
+      )}
+
       <ol className="flex flex-col gap-6" aria-label="Planned questions">
         {plan.questions.map((question) => (
           <li key={question.number}>
@@ -265,6 +303,7 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
               question={question}
               disabled={busy}
               writing={job?.kind === "writing" && job.number === question.number}
+              pending={(job?.kind === "writing" && job.number === question.number) || (finishing && (!question.written || question.outdated))}
               onSaved={setPlan}
               onWrite={() => void startWriting(question.number, false)}
               onChanged={() => void refreshPlan()}
@@ -281,17 +320,18 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
             {written} of {total} questions written
           </h2>
           <p className="text-sm text-muted-foreground">
-            Finishing writes every question still missing
-            {outdated.length > 0 ? ` and rewrites ${listNumbers(outdated)}, whose plan you changed,` : ""} then creates the
-            other versions and runs the quality check. You then see the whole exam with its answer keys, ready to download.
+            Write questions one at a time above, or write the rest at once
+            {outdated.length > 0 ? ` (this also rewrites ${listNumbers(outdated)}, whose plan you changed)` : ""}: the exam
+            page opens, and each question appears there with its answer key as soon as it is written. The other versions
+            and the quality check finish in the background while you read.
           </p>
         </div>
-        {job?.kind === "writing" && job.number === null && (
+        {finishing && (
           <JobProgress run={run} startingLabel="Writing the exam…" note="Questions appear above as they are written. You can leave this page." />
         )}
         <div className="flex flex-wrap gap-2">
           <Button size="lg" disabled={busy} onClick={() => void startWriting(null, false)}>
-            {job?.kind === "writing" && job.number === null ? <Spinner /> : <Wand2 />}
+            {finishing ? <Spinner /> : <Wand2 />}
             {finishLabel}
           </Button>
           {examReady && (
@@ -525,6 +565,7 @@ function PlannedQuestionCard({
   question,
   disabled,
   writing,
+  pending,
   onSaved,
   onWrite,
   onChanged,
@@ -533,6 +574,8 @@ function PlannedQuestionCard({
   question: PlannedQuestion;
   disabled: boolean;
   writing: boolean;
+  /** Being written now: shown where the question will appear. */
+  pending: boolean;
   onSaved: (plan: QuestionPlan) => void;
   onWrite: () => void;
   onChanged: () => void;
@@ -749,8 +792,18 @@ function PlannedQuestionCard({
         )}
       </article>
 
-      {question.written && (
+      {question.written && !(pending && question.outdated) ? (
         <QuestionCard question={question.written} headingLevel={3} showKey multiVersion={false} onChanged={onChanged} />
+      ) : (
+        pending && (
+          <div
+            role="status"
+            className="flex items-center gap-2 rounded-xl border border-dashed bg-card p-4 text-sm text-muted-foreground sm:p-5"
+          >
+            <Spinner />
+            Writing question {question.number} and its answer key…
+          </div>
+        )
       )}
     </div>
   );

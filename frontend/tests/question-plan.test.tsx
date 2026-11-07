@@ -136,3 +136,13 @@ test("the plan is edited by hand", async () => {
   const [, options] = vi.mocked(apiRequest).mock.calls.find(([, request]) => request?.method === "PATCH")!;
   expect(options?.body).toMatchObject({ topic: "Load balancing", points: 10, type: "mcq" });
 });
+
+test("writing the whole exam opens the exam page, where the questions appear", async () => {
+  const { router } = await import("./mocks/navigation");
+  serve(makePlan([planned(1, true), planned(2)]));
+  const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
+
+  await screen.getByRole("button", { name: "Write the other 1 and finish" }).click();
+  await expect.poll(() => vi.mocked(router.push).mock.calls).toContainEqual(["/workspace/assessments/assessment-1/exam"]);
+  expect(posts().map(([path]) => path)).toContain("/api/assessments/assessment-1/question-plan/exam");
+});

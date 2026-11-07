@@ -62,7 +62,10 @@ class Settings(BaseSettings):
     page_render_scale: float = 2.0
     page_image_side: int = 2048
 
-    max_concurrent_generation_calls: int = 3
+    # Question-writing calls one exam runs at once. More calls write fewer questions each, so the exam is
+    # ready sooner (each call re-reads the shared context, so it costs a little more). Lower it when many
+    # professors generate at the same time and OpenAI's per-minute limits are reached.
+    max_concurrent_generation_calls: int = 6
 
     @property
     def cors_origin_list(self) -> list[str]:

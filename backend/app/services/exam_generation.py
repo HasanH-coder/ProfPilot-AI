@@ -757,20 +757,18 @@ class ExamGenerationService:
         missing = [q for q in plan.questions if q.number not in existing]
         await self.write_slots(ctx, exam_id, plan, missing, run=run)
 
-        if len(full.versions) > 1:
-            await run.stage("creating_versions")
-            async with timed("full_generation.versions", self.usage):
-                await self.create_missing_variants(ctx, exam_id)
-
-        await run.stage("reviewing")
-        from app.services.exam_review import ExamReviewService  # avoids an import cycle
-
-        # The full quality check runs once, after every question is written.
-        async with timed("full_generation.review", self.usage):
-            await ExamReviewService(self.db, self.ai, self.usage).review(exam_id, ctx=ctx)
-
+        # The professor reads the exam as soon as its questions are written. The other versions and the
+        # quality check (once, after every question is written) follow in the background, as in Build
+        # with AI; the review keeps a professor's edits and approvals made meanwhile.
         await run.stage("finalizing")
-        await self.store.update_exam(exam_id, {"status": "ready", "error_message": None})
+        await self.store.update_exam(exam_id, {"status": "ready", "error_message": None, "review_status": "running"})
+        from app.services.exam_builder import start_finish_job  # avoids an import cycle
+
+        try:
+            await start_finish_job(self.db, self.ai, full.exam)
+        except ConflictError:
+            # Already creating the versions and checking this exam.
+            logger.info("Versions and quality check already running for exam %s", exam_id)
 
     async def write_slots(
         self,

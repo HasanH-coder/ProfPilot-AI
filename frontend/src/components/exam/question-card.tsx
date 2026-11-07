@@ -65,6 +65,8 @@ type QuestionCardProps = {
   highlighted?: boolean;
   /** Moving within the section; a direction is null where the question can't go. Omit to hide moving. */
   move?: { up: (() => Promise<void>) | null; down: (() => Promise<void>) | null };
+  /** Shown only, without actions (e.g. while the rest of the exam is still being written). */
+  readOnly?: boolean;
 };
 
 type Notice = { summary: string | null; warnings: DistributionWarning[] };
@@ -83,6 +85,7 @@ export const QuestionCard = memo(function QuestionCard({
   onChanged,
   highlighted,
   move,
+  readOnly = false,
 }: QuestionCardProps) {
   const Heading = headingLevel === 3 ? "h3" : "h2";
   const headingId = useId();
@@ -171,7 +174,7 @@ export const QuestionCard = memo(function QuestionCard({
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
+        <div className={cn("flex shrink-0 items-center gap-1", readOnly && "hidden")}>
           <Button
             type="button"
             variant="outline"
