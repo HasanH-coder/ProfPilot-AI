@@ -47,7 +47,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { apiRequest, errorMessage } from "@/lib/api/client";
+import { apiRequest, apiRequestLong, errorMessage } from "@/lib/api/client";
 import type { DistributionWarning, Question, QuestionResult, RubricItem } from "@/lib/api/types";
 import { BLOOM_LABELS } from "@/lib/assessments/draft";
 import { cn } from "@/lib/utils";
@@ -117,7 +117,7 @@ export const QuestionCard = memo(function QuestionCard({
 
   const revise = (preset: QuickAction | null, text?: string) =>
     run(preset ? `${QUICK_ACTIONS.find((item) => item.preset === preset)?.label}…` : "Revising…", () =>
-      apiRequest<QuestionResult>(`${base}/revision`, { method: "POST", body: { preset, instruction: text || null } }),
+      apiRequestLong<QuestionResult>(`${base}/revision`, { method: "POST", body: { preset, instruction: text || null } }),
     );
 
   async function handleAsk(event: FormEvent<HTMLFormElement>) {
@@ -236,7 +236,7 @@ export const QuestionCard = memo(function QuestionCard({
                 disabled={locked}
                 onClick={() =>
                   void run("Regenerating the answer key…", () =>
-                    apiRequest<QuestionResult>(`${base}/solution`, { method: "POST" }),
+                    apiRequestLong<QuestionResult>(`${base}/solution`, { method: "POST" }),
                   )
                 }
               >
@@ -247,7 +247,7 @@ export const QuestionCard = memo(function QuestionCard({
                 <DropdownMenuItem
                   onClick={() =>
                     void run("Updating the other versions…", async () => {
-                      await apiRequest(`${base}/variants`, { method: "POST" });
+                      await apiRequestLong(`${base}/variants`, { method: "POST" });
                     })
                   }
                 >

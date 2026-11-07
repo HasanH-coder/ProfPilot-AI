@@ -122,6 +122,33 @@ export async function apiStream<T extends { event: string }>(
   }
 }
 
+type LongEvent = { event: string; code?: string; message?: string; [key: string]: unknown };
+
+/**
+ * A request that can take a minute or more (an AI edit). The API streams blank
+ * keepalive lines while it works, so the hosting gateway doesn't drop the
+ * connection as idle, then sends the reply. Throws ApiError like apiRequest.
+ */
+export async function apiRequestLong<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  let result: T | undefined;
+  let failure: ApiError | undefined;
+  await apiStream<LongEvent>(
+    path,
+    (event) => {
+      // Recorded, not thrown: apiStream would report a throw from here as a lost connection.
+      if (event.event === "done") {
+        result = Object.fromEntries(Object.entries(event).filter(([key]) => key !== "event")) as T;
+      } else if (event.event === "error") {
+        failure = new ApiError(event.code ?? "error", event.message ?? "Something went wrong. Please try again.", 500);
+      }
+    },
+    options,
+  );
+  if (failure) throw failure;
+  if (result === undefined) throw new ApiError("network_error", UNREACHABLE, 0);
+  return result;
+}
+
 /** Downloads a file (e.g. an exam PDF) and saves it with the name the API gives it. */
 export async function apiDownload(path: string): Promise<void> {
   const response = await send(path, {});

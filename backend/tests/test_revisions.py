@@ -61,6 +61,51 @@ def test_scenario_f_revising_one_question_changes_only_that_question(api, supaba
     assert restored["question"]["prompt"] == q4["prompt"]
 
 
+def test_a_streamed_revision_keeps_the_connection_alive_and_ends_with_the_reply(api, supabase, db_a, monkeypatch):
+    """A slow AI edit streams blank keepalive lines, so the hosting gateway doesn't drop it as idle."""
+    import json
+
+    from app.api import exams as exams_api
+    from app.services.question_revision import QuestionRevisionService
+
+    exam = ready_exam(api, supabase, db_a)
+    q4 = version_a(exam)[3]
+    real_revise = QuestionRevisionService.revise
+
+    async def slow_revise(self, *args, **kwargs):
+        await asyncio.sleep(0.25)
+        return await real_revise(self, *args, **kwargs)
+
+    monkeypatch.setattr(QuestionRevisionService, "revise", slow_revise)
+    monkeypatch.setattr(exams_api, "STREAM_KEEPALIVE_SECONDS", 0.05)
+
+    reply = api.post(
+        f"/api/questions/{q4['id']}/revision",
+        json={"preset": "harder"},
+        headers={**auth(), "Accept": "application/x-ndjson"},
+    )
+    assert reply.status_code == 200 and "ndjson" in reply.headers["content-type"]
+    lines = reply.text.split("\n")
+    assert lines.count("") > 2  # keepalives while the edit ran
+    events = [json.loads(line) for line in lines if line.strip()]
+    assert [event["event"] for event in events] == ["done"]
+    assert events[0]["question"]["id"] == q4["id"] and events[0]["changeSummary"]
+
+
+def test_a_streamed_revision_reports_a_failure_as_an_error_event(api, supabase, db_a):
+    import json
+
+    exam = ready_exam(api, supabase, db_a)
+    reply = api.post(
+        "/api/questions/00000000-0000-4000-8000-000000000000/revision",
+        json={"preset": "harder"},
+        headers={**auth(), "Accept": "application/x-ndjson"},
+    )
+    events = [json.loads(line) for line in reply.text.split("\n") if line.strip()]
+    assert [event["event"] for event in events] == ["error"] and events[0]["message"]
+    assert exam  # the exam itself is untouched
+
+
 def test_approved_questions_are_locked(api, supabase, db_a):
     exam = ready_exam(api, supabase, db_a)
     q1 = version_a(exam)[0]

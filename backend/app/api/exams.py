@@ -3,12 +3,13 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.ai.openai_service import OpenAIService
 from app.api.deps import get_ai, get_db
@@ -63,6 +64,43 @@ async def _question_out(db: Database, row: dict[str, Any]) -> dict[str, Any]:
         filters=[("question_id", "eq", row["id"]), ("professor_id", "eq", db.professor_id)],
     )
     return serialize_question(row, number, len(revisions))
+
+
+# Hosting gateways drop a connection that stays silent for about a minute, and an AI
+# edit can take two. While one runs, a streamed reply sends a blank line this often.
+STREAM_KEEPALIVE_SECONDS = 10
+# Lets a streamed edit finish (and save) even if the browser goes away.
+_stream_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _wants_stream(request: Request) -> bool:
+    return "application/x-ndjson" in request.headers.get("accept", "")
+
+
+def _streamed(work: Callable[[], Awaitable[BaseModel]]) -> StreamingResponse:
+    """Runs a slow request, streaming blank keepalive lines, then a `done` event with its reply (or `error`)."""
+
+    async def events() -> AsyncIterator[str]:
+        task = asyncio.create_task(work())
+        _stream_tasks.add(task)
+        task.add_done_callback(_stream_tasks.discard)
+        while True:
+            finished, _ = await asyncio.wait({task}, timeout=STREAM_KEEPALIVE_SECONDS)
+            if finished:
+                break
+            yield "\n"
+        try:
+            event: dict[str, Any] = {"event": "done", **task.result().model_dump(by_alias=True)}
+        except AppError as error:
+            event = {"event": "error", "code": error.code, "message": error.message}
+        except Exception as error:  # the type only: messages can contain professor content
+            logger.error("Streamed request failed: %s", type(error).__name__)
+            event = {"event": "error", "code": "internal_error", "message": "Something went wrong. Please try again."}
+        yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
+
+    return StreamingResponse(
+        events(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+    )
 
 
 async def _result(db: Database, result: dict[str, Any]) -> QuestionResultOut:
@@ -200,20 +238,35 @@ async def edit_question(
     return await _result(db, await QuestionRevisionService(db, ai).edit(question_id, body))
 
 
-@router.post("/questions/{question_id}/revision")
+@router.post("/questions/{question_id}/revision", response_model=QuestionResultOut)
 async def revise_question(
-    question_id: str, body: ReviseQuestionIn, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
-) -> QuestionResultOut:
-    """Asks the AI to change one question; the answer key changes with it."""
-    result = await QuestionRevisionService(db, ai).revise(question_id, instruction=body.instruction, preset=body.preset)
-    return await _result(db, result)
+    question_id: str,
+    body: ReviseQuestionIn,
+    request: Request,
+    db: Database = Depends(get_db),
+    ai: OpenAIService = Depends(get_ai),
+) -> Any:
+    """Asks the AI to change one question; the answer key changes with it.
+
+    With `Accept: application/x-ndjson` the reply streams (keepalive lines, then `done`),
+    so a slow edit isn't cut off by the hosting gateway.
+    """
+
+    async def work() -> QuestionResultOut:
+        result = await QuestionRevisionService(db, ai).revise(question_id, instruction=body.instruction, preset=body.preset)
+        return await _result(db, result)
+
+    return _streamed(work) if _wants_stream(request) else await work()
 
 
-@router.post("/questions/{question_id}/solution")
+@router.post("/questions/{question_id}/solution", response_model=QuestionResultOut)
 async def regenerate_solution(
-    question_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
-) -> QuestionResultOut:
-    return await _result(db, await QuestionRevisionService(db, ai).regenerate_solution(question_id))
+    question_id: str, request: Request, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> Any:
+    async def work() -> QuestionResultOut:
+        return await _result(db, await QuestionRevisionService(db, ai).regenerate_solution(question_id))
+
+    return _streamed(work) if _wants_stream(request) else await work()
 
 
 @router.put("/questions/{question_id}/approval")
@@ -243,12 +296,18 @@ async def restore_revision(
     return await _result(db, await QuestionRevisionService(db, ai).restore(question_id, revision_id))
 
 
-@router.post("/questions/{question_id}/variants")
-async def sync_variants(question_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)) -> VariantsOut:
+@router.post("/questions/{question_id}/variants", response_model=VariantsOut)
+async def sync_variants(
+    question_id: str, request: Request, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> Any:
     """Rewrites this question's equivalents in the other versions to match it."""
-    result = await QuestionRevisionService(db, ai).sync_variants(question_id)
-    questions = [await _question_out(db, row) for row in result["questions"]]
-    return VariantsOut.model_validate({"questions": questions, "skippedVersions": result["skippedVersions"]})
+
+    async def work() -> VariantsOut:
+        result = await QuestionRevisionService(db, ai).sync_variants(question_id)
+        questions = [await _question_out(db, row) for row in result["questions"]]
+        return VariantsOut.model_validate({"questions": questions, "skippedVersions": result["skippedVersions"]})
+
+    return _streamed(work) if _wants_stream(request) else await work()
 
 
 # -----------------------------------------------------------------------------
