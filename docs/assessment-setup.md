@@ -24,7 +24,7 @@ How a professor sets up an assessment in ProfPilot AI, how drafts and uploaded f
    - a reading status on every uploaded file: **Being read…**, **Read by ProfPilot**, or **Couldn't be read** with the reason and **Read again**;
    - a note under **Previous assessments** once their style has been analysed;
    - **Improve with AI** under **Tell ProfPilot what you want**, which saves the draft and opens the plan (`/workspace/assessments/[id]/plan`).
-3. **Save draft** keeps the professor on the page and shows **Saving…**, then **Saved** (or **Save failed** with the reason). The first save moves the page to the draft's own address, `/workspace/assessments/[id]/edit`, so reloading reopens it. **Continue** saves, starts interpretation when there is no current plan, and opens plan review. After approving the plan, the professor chooses **Generate full exam** or **Build with AI** for a voice call or chat with a live exam preview. Both options are visible before approval and unlock after approval. An interpretation already running is reused.
+3. **Save draft** keeps the professor on the page and shows **Saving…**, then **Saved** (or **Save failed** with the reason). The first save moves the page to the draft's own address, `/workspace/assessments/[id]/edit`, so reloading reopens it. **Continue** saves, starts interpretation when there is no current plan, and opens plan review. **Next** approves the prompt and opens the question plan, where the exam is built question by question or all at once; **Build with AI** (a voice call or chat with a live exam preview) stays available on the prompt page. An interpretation already running is reused.
 4. **Overview** (`/workspace/assessments/[id]`). A read-only summary: settings, notes, instructions, and the files in each category, with **Edit assessment** and **Delete**. Its **AI assessment** section shows how many files ProfPilot has read, the plan's status and the exam's, with the next step (**Improve with AI**, **Review the plan** or **Open exam**).
 5. **Edit** (`/workspace/assessments/[id]/edit`). The same form, reopened with every option, text and uploaded file restored.
 6. **Assessments list** (`/workspace/assessments`). Every assessment, most recently updated first, with its course, duration, versions, file count and last update. Each row opens its overview. The difficulty distribution is left out of the rows to keep them short; the overview and summary show it.
@@ -151,7 +151,7 @@ To try the AI steps that follow (with the backend running), see the [Assessment 
 
 ```text
 Setup form  →  files read  →  Prompt Interpreter  →  Enhanced prompt + ExamSpec  →  approval
-            →  Generate full exam  or  Build with AI  →  exam editor  →  final review  →  PDF export
+            →  question plan (or Build with AI)  →  exam editor  →  final review  →  PDF export
 ```
 
 Each step is described in [Assessment Agent](assessment-agent.md).

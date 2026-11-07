@@ -335,6 +335,9 @@ class PlannedQuestion(BaseModel):
     # The pages it draws on, from the SLIDE INVENTORY (e.g. "F1:p8"), so every question can be traced to
     # its slides. (A default_factory keeps earlier plans valid without a schema default; see above.)
     source_pages: list[str] = Field(default_factory=list)
+    # The professor's own question for this slot, given when reviewing the plan; the planner leaves it
+    # empty. (A default_factory keeps earlier plans valid without a schema default; see above.)
+    professor_question: str = Field(default_factory=str)
 
 
 class ExamPlan(BaseModel):

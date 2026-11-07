@@ -460,10 +460,22 @@ def figures_handler(call: dict[str, Any]) -> PictureReading:
     )
 
 
+def well_behaved_plan_change(call: dict[str, Any]) -> ExamPlan:
+    """The plan it was shown, with question 2 moved to the subject the professor's request names."""
+    text = call["input"]
+    start = text.index('{"sections":')
+    current, _ = json.JSONDecoder().raw_decode(text[start:])
+    plan = ExamPlan.model_validate(current)
+    request = text.split("(their own words):\n", 1)[1].split("\n\nReturn the complete revised plan", 1)[0]
+    plan.questions[1].topic = request.strip()
+    return plan
+
+
 def install_well_behaved(ai: FakeAI) -> FakeAI:
     ai.on("interpret_assessment", well_behaved_interpretation)
     ai.on("plan_exam", well_behaved_plan)
     ai.on("replan_exam", well_behaved_plan)
+    ai.on("change_plan", well_behaved_plan_change)
     ai.on("generate_questions", well_behaved_batch)
     ai.on("generate_question", well_behaved_single)
     ai.on("write_variants", well_behaved_variants)

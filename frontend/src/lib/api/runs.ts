@@ -15,6 +15,7 @@ export const STAGE_LABELS: Record<string, string> = {
   analyzing_previous_exams: "Analysing your previous exams…",
   interpreting: "Interpreting your request…",
   planning: "Planning the assessment…",
+  changing_plan: "Changing the plan…",
   generating_questions: "Writing questions and answer keys…",
   creating_versions: "Creating equivalent versions…",
   reviewing: "Running the AI quality check…",

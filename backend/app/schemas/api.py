@@ -183,6 +183,64 @@ class ExamOut(ApiModel):
     questions: list[QuestionOut]
 
 
+# -----------------------------------------------------------------------------
+# The question plan (see services/question_plan.py)
+# -----------------------------------------------------------------------------
+
+
+class PlannedQuestionOut(ApiModel):
+    number: int
+    type: str
+    difficulty: str
+    cognitive_level: str
+    points: float
+    estimated_minutes: float
+    topic: str
+    learning_objective: str
+    assessment_target: str
+    source_hint: str | None
+    source_pages: list[str]
+    professor_question: str
+    # Written before its plan changed: rewritten when the professor asks, or when the exam is finished.
+    outdated: bool
+    written: QuestionOut | None
+
+
+class PlanExamOut(ApiModel):
+    id: str
+    status: str
+    error_message: str | None
+
+
+class QuestionPlanOut(ApiModel):
+    status: Literal["none", "ready"]
+    questions: list[PlannedQuestionOut]
+    rationale: str | None
+    warnings: list[str] = []
+    summary: dict[str, Any] | None = None
+    distribution_warnings: list[dict[str, Any]] = []
+    exam: PlanExamOut | None = None
+
+
+class PlannedQuestionEditIn(ApiModel):
+    type: Literal["mcq", "short_answer", "long_answer", "problem"]
+    difficulty: Literal["easy", "medium", "hard"]
+    cognitive_level: Literal["remember", "understand", "apply", "analyze", "evaluate", "create"]
+    points: float = Field(gt=0, le=1000)
+    topic: str = Field(min_length=1, max_length=300)
+    assessment_target: str = Field(max_length=1000)
+    professor_question: str = Field(max_length=4000)
+
+
+class PlanChangeIn(ApiModel):
+    instruction: str = Field(min_length=1, max_length=2000)
+
+
+class PlanWriteIn(ApiModel):
+    # Replace an exam the assessment already has (one not written from this plan).
+    replace: bool = False
+
+
 class CreateExamOut(ApiModel):
     exam: ExamOut | None = None
     run: RunOut | None = None

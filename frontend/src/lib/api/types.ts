@@ -45,6 +45,36 @@ export type AiStatus = {
   runs: Run[];
 };
 
+/** One planned question: what ProfPilot will ask, and the question once it is written. */
+export type PlannedQuestion = {
+  number: number;
+  type: QuestionType;
+  difficulty: QuestionDifficulty;
+  cognitiveLevel: BloomLevel;
+  points: number;
+  estimatedMinutes: number;
+  topic: string;
+  learningObjective: string;
+  assessmentTarget: string;
+  sourceHint: string | null;
+  sourcePages: string[];
+  professorQuestion: string;
+  /** Written before its plan changed: rewritten on request, or when the exam is finished. */
+  outdated: boolean;
+  written: Question | null;
+};
+
+/** The page where the exam is built: the plan, the questions written so far, and the targets. */
+export type QuestionPlan = {
+  status: "none" | "ready";
+  questions: PlannedQuestion[];
+  rationale: string | null;
+  warnings: string[];
+  summary: DistributionSummary | null;
+  distributionWarnings: DistributionWarning[];
+  exam: { id: string; status: ExamStatus; errorMessage: string | null } | null;
+};
+
 // -- ExamSpec (snake_case: it is the model's structured output, stored as is) --
 
 export type Provenance = "professor" | "ai_inferred" | "ai_assumption";

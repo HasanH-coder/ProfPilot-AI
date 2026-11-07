@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, CircleCheck, FileText, Pencil, RefreshCw, Sparkles, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, CircleCheck, FileText, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
@@ -26,17 +26,32 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiRequest, errorMessage } from "@/lib/api/client";
 import { useRun } from "@/lib/api/runs";
-import type { AiStatus, Exam, Interpretation, StartedRun } from "@/lib/api/types";
+import type { AiStatus, Interpretation, QuestionPlan, StartedRun } from "@/lib/api/types";
 import { timeAgo } from "@/lib/time";
 
 type PlanReviewProps = { assessmentId: string };
 
-type Pending = { kind: "interpretation" | "generation"; runId: string } | null;
+type Pending = { runId: string } | null;
+
+/** Plan and plan-change jobs run as interpretations, but the prompt stays readable while they run. */
+const PLAN_STAGES = new Set(["planning", "changing_plan"]);
+
+/** The question plan is made while the professor reads the prompt, so Next has little left to wait for. */
+async function preparePlan(assessmentId: string) {
+  try {
+    const plan = await apiRequest<QuestionPlan>(`/api/assessments/${assessmentId}/question-plan`);
+    if (plan.status === "none") {
+      await apiRequest<StartedRun>(`/api/assessments/${assessmentId}/question-plan`, { method: "POST", freshSession: true });
+    }
+  } catch {
+    // Nothing is lost: the plan page starts it again and reports any problem.
+  }
+}
 
 /**
  * Review screen for the interpreted request: the professor checks the
- * enhanced prompt and ExamSpec, edits or regenerates them, and approves before
- * any exam is generated. Then they choose how to create the exam.
+ * enhanced prompt and ExamSpec, edits or regenerates them, then presses Next
+ * to build the exam from ProfPilot's question plan (made meanwhile).
  */
 export function PlanReview({ assessmentId }: PlanReviewProps) {
   const router = useRouter();
@@ -63,11 +78,17 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
         setInterpretation(nextInterpretation);
         setStatus(nextStatus);
         setLoadError(null);
-        // Pick up a job that is already running (e.g. started before a reload).
-        const running = nextStatus.runs.find(
-          (run) => run.status === "running" && (run.kind === "interpretation" || run.kind === "generation"),
-        );
-        if (running) setPending({ kind: running.kind as "interpretation" | "generation", runId: running.id });
+        // Pick up an interpretation that is already running (e.g. started before a reload).
+        const interpreting = nextStatus.runs.filter((run) => run.status === "running" && run.kind === "interpretation");
+        const rewriting = interpreting.find((run) => !PLAN_STAGES.has(run.stage ?? ""));
+        if (rewriting) setPending({ runId: rewriting.id });
+        else if (
+          (nextInterpretation.status === "draft" || nextInterpretation.status === "approved") &&
+          interpreting.length === 0
+        ) {
+          // Start the question plan now, while the professor reads the prompt.
+          void preparePlan(assessmentId);
+        }
       })
       .catch((cause) => {
         if (!cancelled) setLoadError(errorMessage(cause));
@@ -78,15 +99,9 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
   }, [assessmentId, reloads]);
 
   const { run } = useRun(pending?.runId ?? null, (finished) => {
-    const kind = pending?.kind;
     setPending(null);
-    if (finished.status === "failed") {
-      setActionError(finished.errorMessage ?? "Something went wrong. Please try again.");
-      if (kind === "generation") load();
-      return;
-    }
-    if (kind === "generation") router.push(`${base}/exam`);
-    else load();
+    if (finished.status === "failed") setActionError(finished.errorMessage ?? "Something went wrong. Please try again.");
+    load();
   });
 
   async function regenerate() {
@@ -96,37 +111,37 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
         method: "POST",
         freshSession: true,
       });
-      setPending({ kind: "interpretation", runId: started.run.id });
+      setPending({ runId: started.run.id });
     } catch (cause) {
       setActionError(errorMessage(cause));
     }
   }
 
-  async function approve() {
+  /** Confirms the prompt, then opens the question plan, where the exam is built. */
+  async function next() {
     setActionError(null);
     setApproving(true);
     try {
-      setInterpretation(
-        await apiRequest<Interpretation>(`/api/assessments/${assessmentId}/interpretation/approval`, { method: "POST" }),
-      );
+      if (interpretation?.status !== "approved") {
+        await apiRequest<Interpretation>(`/api/assessments/${assessmentId}/interpretation/approval`, { method: "POST" });
+      }
+      router.push(`${base}/question-plan`);
     } catch (cause) {
       setActionError(errorMessage(cause));
       if (cause instanceof ApiError && cause.code === "spec_stale") load();
-    } finally {
       setApproving(false);
     }
   }
 
-  async function createExam(mode: "full" | "interactive", replace: boolean) {
+  async function buildWithAi(replace: boolean) {
     setActionError(null);
     try {
-      const result = await apiRequest<{ exam?: Exam; run?: { id: string } }>(`/api/assessments/${assessmentId}/exam`, {
+      await apiRequest(`/api/assessments/${assessmentId}/exam`, {
         method: "POST",
-        body: { mode, replace },
+        body: { mode: "interactive", replace },
         freshSession: true,
       });
-      if (mode === "interactive") router.push(`${base}/builder`);
-      else if (result.run) setPending({ kind: "generation", runId: result.run.id });
+      router.push(`${base}/builder`);
     } catch (cause) {
       setActionError(errorMessage(cause));
     }
@@ -149,10 +164,7 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
 
   if (pending) {
     return (
-      <JobProgress
-        run={run}
-        startingLabel={pending.kind === "generation" ? "Starting generation…" : "Interpreting your request…"}
-      />
+      <JobProgress run={run} startingLabel="Interpreting your request…" />
     );
   }
 
@@ -194,7 +206,7 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
           <AlertTitle>Plan approved</AlertTitle>
           <AlertDescription>
             {interpretation.approvedAt ? `Approved ${timeAgo(interpretation.approvedAt)}. ` : ""}
-            Choose how to create the exam below. Editing the enhanced instructions will need a new approval.
+            Press Next to see the question plan and build the exam. Editing the enhanced instructions makes a new plan.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -245,7 +257,11 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
       <EnhancedPrompt
         assessmentId={assessmentId}
         interpretation={interpretation}
-        onSaved={(next) => setInterpretation(next)}
+        onSaved={(saved) => {
+          setInterpretation(saved);
+          // The edit dropped the question plan: reloading starts a new one from the new prompt.
+          load();
+        }}
       />
 
       <ReviewSection title="Assessment plan" description="What ProfPilot will follow. Each value shows whether it came from you or from the AI.">
@@ -278,29 +294,26 @@ export function PlanReview({ assessmentId }: PlanReviewProps) {
 
       {actionError && <ErrorAlert message={actionError} />}
 
-      {!approved && (
-        <div className="flex flex-wrap gap-2 border-t pt-6">
-          <Button onClick={approve} disabled={stale || approving}>
-            {approving ? <Spinner /> : <Check />}
-            Approve &amp; continue
-          </Button>
-          <Button variant="outline" onClick={regenerate}>
-            <RefreshCw />
-            Regenerate
-          </Button>
-          <Link href={`${base}/edit`} className={buttonVariants({ variant: "outline" })}>
-            <Pencil />
-            Edit setup
-          </Link>
-        </div>
-      )}
+      <div className="flex flex-wrap gap-2 border-t pt-6">
+        <Button onClick={next} disabled={stale || approving}>
+          Next: question plan
+          {approving ? <Spinner data-icon="inline-end" /> : <ArrowRight data-icon="inline-end" />}
+        </Button>
+        <Button variant="outline" onClick={regenerate}>
+          <RefreshCw />
+          Regenerate
+        </Button>
+        <Link href={`${base}/edit`} className={buttonVariants({ variant: "outline" })}>
+          <Pencil />
+          Edit setup
+        </Link>
+      </div>
 
-      <ModeChoice
+      <BuildWithAi
         approved={approved}
         hasExam={Boolean(exam)}
-        examPath={exam ? `${base}/${exam.mode === "interactive" && exam.status === "building" ? "builder" : "exam"}` : null}
-        onChoose={createExam}
-        onRegenerate={regenerate}
+        examPath={exam ? `${base}/${examPage(exam)}` : null}
+        onChoose={buildWithAi}
       />
     </div>
   );
@@ -455,50 +468,41 @@ function BriefText({ text }: { text: string }) {
   );
 }
 
-function ModeChoice({
+/** Where an existing exam is opened: still being built from its plan, built in a conversation, or ready. */
+export function examPage(exam: { mode: "full" | "interactive"; status: string }): string {
+  if (exam.mode === "interactive" && exam.status === "building") return "builder";
+  if (exam.mode === "full" && exam.status === "building") return "question-plan";
+  return "exam";
+}
+
+function BuildWithAi({
   approved,
   hasExam,
   examPath,
   onChoose,
-  onRegenerate,
 }: {
   approved: boolean;
   hasExam: boolean;
   examPath: string | null;
-  onChoose: (mode: "full" | "interactive", replace: boolean) => Promise<void>;
-  onRegenerate: () => void;
+  onChoose: (replace: boolean) => Promise<void>;
 }) {
-  const [confirming, setConfirming] = useState<"full" | "interactive" | null>(null);
-  const [busy, setBusy] = useState<"full" | "interactive" | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  async function choose(mode: "full" | "interactive", replace: boolean) {
-    setBusy(mode);
+  async function choose(replace: boolean) {
+    setBusy(true);
     try {
-      await onChoose(mode, replace);
+      await onChoose(replace);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  const options = [
-    {
-      mode: "full" as const,
-      icon: Wand2,
-      title: "Generate full exam",
-      text: "ProfPilot plans and writes the complete assessment with answer keys, runs a quality check, then you review and edit every question.",
-      action: "Generate full exam",
-    },
-    {
-      mode: "interactive" as const,
-      icon: Sparkles,
-      title: "Build with AI",
-      text: "Start a live call with ProfPilot or use chat. Watch questions appear in the exam preview, request changes, and approve each question before moving on.",
-      action: "Build with AI",
-    },
-  ];
-
   return (
-    <ReviewSection title="Create the exam" description={approved ? "Choose how you'd like to work. You can edit everything afterwards." : "Review and approve the plan above to unlock these two options."}>
+    <ReviewSection
+      title="Prefer a conversation?"
+      description="Instead of the question plan, build the exam in a live call or chat with ProfPilot."
+    >
       {hasExam && examPath && (
         <Alert>
           <FileText />
@@ -507,41 +511,34 @@ function ModeChoice({
             <Link href={examPath} className="font-medium underline underline-offset-4">
               Open it
             </Link>
-            , or create a new one below (it replaces the current exam).
+            . Building a new one replaces it.
           </AlertDescription>
         </Alert>
       )}
-      <div className="grid gap-4 md:grid-cols-2">
-        {options.map(({ mode, icon: Icon, title, text, action }) => (
-          <div key={mode} className="flex flex-col gap-4 rounded-xl border bg-card p-5">
-            <div className="flex flex-col gap-2">
-              <h3 className="flex items-center gap-2 font-semibold">
-                <Icon className="size-4 shrink-0" />
-                {title}
-              </h3>
-              <p className="text-sm text-muted-foreground">{text}</p>
-            </div>
-            <Button
-              className="mt-auto w-fit"
-              variant={mode === "full" ? "default" : "outline"}
-              disabled={!approved || busy !== null}
-              onClick={() => (hasExam ? setConfirming(mode) : void choose(mode, false))}
-            >
-              {busy === mode ? <Spinner /> : <Icon />}
-              {action}
-            </Button>
-          </div>
-        ))}
+      <div className="flex flex-col gap-4 rounded-xl border bg-card p-5">
+        <div className="flex flex-col gap-2">
+          <h3 className="flex items-center gap-2 font-semibold">
+            <Sparkles className="size-4 shrink-0" />
+            Build with AI
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            Start a live call with ProfPilot or use chat. Watch questions appear in the exam preview, request changes, and
+            approve each question before moving on.
+          </p>
+        </div>
+        <Button
+          className="mt-auto w-fit"
+          variant="outline"
+          disabled={!approved || busy}
+          onClick={() => (hasExam ? setConfirming(true) : void choose(false))}
+        >
+          {busy ? <Spinner /> : <Sparkles />}
+          Build with AI
+        </Button>
+        {!approved && <p className="text-xs text-muted-foreground">Press Next once to confirm your prompt first.</p>}
       </div>
-      <p className="text-sm text-muted-foreground">
-        Want a different plan?{" "}
-        <button type="button" className="underline underline-offset-4" onClick={onRegenerate}>
-          Regenerate it
-        </button>
-        .
-      </p>
 
-      <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogContent className="workspace-theme">
           <AlertDialogHeader>
             <AlertDialogTitle>Replace the current exam?</AlertDialogTitle>
@@ -554,9 +551,8 @@ function ModeChoice({
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
-                const mode = confirming;
-                setConfirming(null);
-                if (mode) void choose(mode, true);
+                setConfirming(false);
+                void choose(true);
               }}
             >
               Replace exam

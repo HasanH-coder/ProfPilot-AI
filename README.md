@@ -183,7 +183,7 @@ Real `.env` files are ignored by git; never commit secrets or API keys.
   - **Set up with AI**: fill in the setup form by voice (OpenAI Realtime over WebRTC) or text;
   - **Exam Learning Focus**: the exam's marks across Bloom's six levels (Automatic, three presets, or a custom split), used by planning, writing and the quality check;
   - **Improve with AI**: an enhanced prompt and an ExamSpec showing where each setting came from, to review, edit, regenerate and approve, and marked out of date when the setup or files change;
-  - **Generate full exam** (plan, questions and answer keys, equivalent versions, AI quality check), or **Build with AI** question by question, by voice or text;
+  - a **question plan** made while the professor reads the prompt: every planned question to read and change (by hand, with their own question, or by asking the AI), written one at a time or all at once, with answer keys, equivalent versions and an AI quality check; or **Build with AI** question by question, by voice or text;
   - an exam editor with manual edits, AI revisions and quick actions, approve and lock, revision history and restore, version sync, reordering and distribution warnings;
   - final review checks and PDF export of the student exam and the answer key, per version;
   - personalization from finalized exams and approved revisions only, which the professor can switch off or clear

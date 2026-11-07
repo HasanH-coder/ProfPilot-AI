@@ -40,6 +40,8 @@ from app.services.slides import SlideIndex, ensure_page_words, render_all_slides
 from app.services.source_preparation import settled
 from app.services.style_analysis import StyleAnalysisService
 
+# Where the assessment's envelope keeps the question plan the professor works on (see question_plan.py).
+QUESTION_PLAN_KEY = "question_plan"
 SPEC_ENVELOPE_VERSION = 1
 
 
@@ -230,6 +232,8 @@ class PromptInterpreterService:
             "exam_projects",
             {
                 "enhanced_prompt": enhanced_prompt.strip(),
+                # A question plan made from the old prompt no longer applies (see question_plan.py).
+                "exam_spec": {key: value for key, value in record.exam_spec.items() if key != QUESTION_PLAN_KEY},
                 # An edited prompt needs approving again (a stale one stays stale).
                 "spec_status": "stale" if record.spec_status == "stale" else "draft",
                 "spec_approved_at": None,
@@ -256,6 +260,16 @@ class PromptInterpreterService:
             filters=[("id", "eq", assessment_id), ("professor_id", "eq", self.db.professor_id)],
             columns="id",
         )
+
+    async def require_current(self, assessment_id: str) -> AssessmentRecord:
+        """The assessment, while its interpretation matches its setup, approved or not."""
+        record = await self.context.get_assessment(assessment_id)
+        if record.spec_status == "none" or not record.exam_spec:
+            raise ConflictError("Improve with AI first.", code="spec_missing")
+        if stale_reasons(record, await self.context.list_documents(record.id)):
+            await self._mark_stale(record.id)
+            raise ConflictError("Your setup changed since this was written. Regenerate it first.", code="spec_stale")
+        return record
 
     async def require_approved(self, assessment_id: str) -> tuple[AssessmentRecord, ExamSpec]:
         """The approved, up-to-date spec, or a clear error. Generation always calls this."""

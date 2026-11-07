@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { examPage } from "@/components/plan/plan-review";
 import { apiRequest, errorMessage } from "@/lib/api/client";
 import { stageLabel } from "@/lib/api/runs";
 import type { AiStatus, StartedRun } from "@/lib/api/types";
@@ -60,7 +61,7 @@ export function AiWorkflowCard({ assessmentId }: { assessmentId: string }) {
   const read = files.filter((file) => file.status === "ready").length;
   const running = status.runs.find((run) => run.status === "running");
   const exam = status.exam;
-  const examPath = exam ? `${base}/${exam.mode === "interactive" && exam.status === "building" ? "builder" : "exam"}` : null;
+  const examPath = exam ? `${base}/${examPage(exam)}` : null;
 
   return (
     <div className="flex flex-col gap-4 rounded-xl border bg-card p-4 sm:p-5">

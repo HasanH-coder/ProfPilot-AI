@@ -201,6 +201,16 @@ async def load_generation_context(db: Database, assessment_id: str, *, require_a
     )
 
 
+async def load_planning_context(db: Database, assessment_id: str, *, require_approved: bool = True) -> GenerationContext:
+    """The context, with every lecture's slide words, which the planner is given."""
+    ctx = await load_generation_context(db, assessment_id, require_approved=require_approved)
+    # Lectures read before their slides' words were kept get them now (from their PDFs, no AI).
+    if any(doc.id not in ctx.pages for doc in ctx.documents if has_slides(doc) and doc.processing_status == "ready"):
+        await ensure_page_words(db, ctx.documents)
+        ctx.pages = await AssessmentContextService(db).get_pages(ctx.documents)
+    return ctx
+
+
 def excerpt_ref_map(excerpts: list[Excerpt]) -> dict[str, dict[str, Any]]:
     return {e.ref: {"chunk_id": e.chunk_id, "document_id": e.document_id, "label": e.label} for e in excerpts}
 
@@ -508,14 +518,25 @@ def fit_points(plan: ExamPlan, total: int | None) -> ExamPlan:
     )
 
 
+def change_request(instruction: str) -> str:
+    return (
+        "THE PROFESSOR ASKS FOR THESE CHANGES TO THE PLAN ABOVE (their own words):\n"
+        + instruction.strip()
+        + "\n\nReturn the complete revised plan. Change only what the request needs and keep every other "
+        "question exactly as it is: the same type, difficulty, points, Bloom's level, topic, assessment target, "
+        "source pages and professor_question. Number the questions 1, 2, 3… in exam order. If the request "
+        "breaks a target of the spec (a split, the total points, the time), still do what the professor asks, "
+        "and add a warning naming the problem and a concrete fix."
+    )
+
+
 class ExamPlanningService:
     def __init__(self, db: Database, ai: OpenAIService, usage: Usage) -> None:
         self.db = db
         self.ai = ai
         self.usage = usage
 
-    async def plan(self, ctx: GenerationContext) -> ExamPlan:
-        framer = DataFramer()
+    async def _planning_input(self, ctx: GenerationContext, framer: DataFramer) -> str:
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
         slides = ctx.slides
         # Lectures whose every slide is listed below need no sample of their wording.
@@ -541,7 +562,12 @@ class ExamPlanningService:
             render_excerpts(spread, framer, title="SAMPLE OF THE COURSE MATERIAL") if spread else "",
             "Plan the exam now.",
         ]
-        base_input = "\n\n".join(part for part in sections if part)
+        return "\n\n".join(part for part in sections if part)
+
+    async def plan(self, ctx: GenerationContext) -> ExamPlan:
+        framer = DataFramer()
+        slides = ctx.slides
+        base_input = await self._planning_input(ctx, framer)
         figure_ids = ctx.figure_ids
         known = ctx.knowledge_refs
 
@@ -596,6 +622,40 @@ class ExamPlanningService:
         if not plan.ordering_request and not professor_requested_order(ctx):
             plan = interleave_plan(plan, [doc.original_name for doc in ctx.documents if doc.category == "course_material"])
         return plan
+
+    async def change(self, ctx: GenerationContext, current: ExamPlan, instruction: str) -> ExamPlan:
+        """The plan with the professor's requested changes, and everything else as it was.
+
+        Points aren't refitted to the total here: what the professor asked for wins, and a total that
+        no longer matches shows on the plan page with the other targets."""
+        framer = DataFramer()
+        slides = ctx.slides
+        base_input = await self._planning_input(ctx, framer)
+        figure_ids = ctx.figure_ids
+        known = ctx.knowledge_refs
+        changed = await self.ai.parse(
+            purpose="change_plan",
+            instructions=planner_instructions(framer),
+            input=[
+                {"role": "user", "content": [{"type": "input_text", "text": base_input}]},
+                {"role": "assistant", "content": [{"type": "output_text", "text": current.model_dump_json()}]},
+                {"role": "user", "content": [{"type": "input_text", "text": change_request(instruction)}]},
+            ],
+            schema=ExamPlan,
+            effort=plan_effort(ctx.spec),
+            max_output_tokens=24_000,
+            validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
+            usage=self.usage,
+        )
+        # The professor's own questions stay with their slots unless the request moved them.
+        before = {q.number: q for q in current.questions}
+        for question in changed.questions:
+            old = before.get(question.number)
+            if old and old.professor_question and not question.professor_question and old.topic == question.topic:
+                question.professor_question = old.professor_question
+        _, soft = plan_problems(changed, ctx.spec, figure_ids, known, slides)
+        changed.warnings = soft
+        return changed
 
 
 # =============================================================================
@@ -675,11 +735,7 @@ class ExamGenerationService:
             raise
 
     async def _run_full(self, assessment_id: str, exam_id: str, run: RunContext) -> None:
-        ctx = await load_generation_context(self.db, assessment_id)
-        # Lectures read before their slides' words were kept get them now (from their PDFs, no AI).
-        if any(doc.id not in ctx.pages for doc in ctx.documents if has_slides(doc) and doc.processing_status == "ready"):
-            await ensure_page_words(self.db, ctx.documents)
-            ctx.pages = await AssessmentContextService(self.db).get_pages(ctx.documents)
+        ctx = await load_planning_context(self.db, assessment_id)
         full = await self.store.load(exam_id)
 
         await run.stage("planning")
@@ -697,11 +753,41 @@ class ExamGenerationService:
         full = await self.store.load(exam_id)
 
         await run.stage("generating_questions")
+        existing = {q["position"] for q in full.version_questions(full.primary_version["id"])}
+        missing = [q for q in plan.questions if q.number not in existing]
+        await self.write_slots(ctx, exam_id, plan, missing, run=run)
+
+        if len(full.versions) > 1:
+            await run.stage("creating_versions")
+            async with timed("full_generation.versions", self.usage):
+                await self.create_missing_variants(ctx, exam_id)
+
+        await run.stage("reviewing")
+        from app.services.exam_review import ExamReviewService  # avoids an import cycle
+
+        # The full quality check runs once, after every question is written.
+        async with timed("full_generation.review", self.usage):
+            await ExamReviewService(self.db, self.ai, self.usage).review(exam_id, ctx=ctx)
+
+        await run.stage("finalizing")
+        await self.store.update_exam(exam_id, {"status": "ready", "error_message": None})
+
+    async def write_slots(
+        self,
+        ctx: GenerationContext,
+        exam_id: str,
+        plan: ExamPlan,
+        slots: list[PlannedQuestion],
+        *,
+        run: RunContext | None = None,
+    ) -> None:
+        """Writes these planned questions into the exam's first version, each at its planned number."""
+        if not slots:
+            return
+        full = await self.store.load(exam_id)
         slides = ctx.slides
         primary = full.primary_version
-        existing = {q["position"] for q in full.version_questions(primary["id"])}
-        missing = [q for q in plan.questions if q.number not in existing]
-        batches = _batches(missing, settings.max_concurrent_generation_calls)
+        batches = _batches(slots, settings.max_concurrent_generation_calls)
         written = [q["prompt"] for q in full.version_questions(primary["id"])]
         sections = sorted(full.sections, key=lambda s: s["position"])
 
@@ -727,27 +813,13 @@ class ExamGenerationService:
                     },
                 )
                 written.append(row["prompt"])
-            await run.heartbeat()
+            if run is not None:
+                await run.heartbeat()
 
         # Independent batches run concurrently (bounded); each question keeps its
         # planned number as its position, so the order never depends on timing.
         async with timed("full_generation.questions", self.usage):
             await gather_limited(settings.max_concurrent_generation_calls, [generate(batch) for batch in batches])
-
-        if len(full.versions) > 1:
-            await run.stage("creating_versions")
-            async with timed("full_generation.versions", self.usage):
-                await self.create_missing_variants(ctx, exam_id)
-
-        await run.stage("reviewing")
-        from app.services.exam_review import ExamReviewService  # avoids an import cycle
-
-        # The full quality check runs once, after every question is written.
-        async with timed("full_generation.review", self.usage):
-            await ExamReviewService(self.db, self.ai, self.usage).review(exam_id, ctx=ctx)
-
-        await run.stage("finalizing")
-        await self.store.update_exam(exam_id, {"status": "ready", "error_message": None})
 
     async def _write_batch(
         self, ctx: GenerationContext, plan: ExamPlan, batch: list[PlannedQuestion], written: list[str]
@@ -760,7 +832,7 @@ class ExamGenerationService:
         slides = ctx.slides
         titles = {ref: first_line(slides.words(doc.id, page)) for ref, (doc, page) in slides.refs.items()}
         queries = [
-            f"{slot.topic}. {slot.learning_objective}. {slot.source_hint or ''} "
+            f"{slot.topic}. {slot.learning_objective}. {slot.professor_question} {slot.source_hint or ''} "
             + " ".join(topics[ref][1]["name"] for ref in slot.knowledge_refs if ref in topics)
             + " ".join(titles.get(ref, "") for ref in slot.source_pages)
             for slot in batch
@@ -780,6 +852,7 @@ class ExamGenerationService:
             + (f"; pages: {', '.join(q.source_pages)}" if q.source_pages else "")
             + (f"; lecture knowledge: {', '.join(q.knowledge_refs)}" if q.knowledge_refs else "")
             + (f"; target: {q.assessment_target}" if q.assessment_target else "")
+            + (f"; the professor's own question: {' '.join(q.professor_question.split())}" if q.professor_question else "")
             + ")"
             for q in plan.questions
         ]

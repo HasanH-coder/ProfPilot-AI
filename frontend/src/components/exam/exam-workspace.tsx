@@ -188,7 +188,20 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
           </AlertDescription>
         </Alert>
       )}
-      {exam.status === "building" && (
+      {exam.status === "building" && exam.mode === "full" && (
+        <Alert>
+          <MessagesSquare />
+          <AlertTitle>This exam is still being built from its question plan</AlertTitle>
+          <AlertDescription>
+            You can edit questions here too.{" "}
+            <Link href={`${base}/question-plan`} className="font-medium underline underline-offset-4">
+              Continue on the plan
+            </Link>{" "}
+            to write the remaining questions, create the other versions and run the quality check.
+          </AlertDescription>
+        </Alert>
+      )}
+      {exam.status === "building" && exam.mode === "interactive" && (
         <Alert>
           <MessagesSquare />
           <AlertTitle>You&apos;re building this exam with AI</AlertTitle>

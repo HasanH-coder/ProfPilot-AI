@@ -497,7 +497,8 @@ def planner_instructions(framer: DataFramer) -> str:
         "enhanced prompt exactly. Choose sections, then list every question with its number "
         "(1, 2, 3… in exam order), section_index (0-based into your sections), type, difficulty, "
         "points, topic, learning objective, Bloom's level (cognitive_level), the source material it "
-        "should draw on, and a realistic estimate of the minutes a prepared student needs. "
+        "should draw on, and a realistic estimate of the minutes a prepared student needs. Leave "
+        "professor_question empty: it is for the professor, who reviews this plan. "
         "Every warning names the problem and a concrete fix the professor can make (e.g. 'lower "
         "Create to 20%', 'upload the notes for Lecture 4', 'allow 75 minutes').",
         "The plan must satisfy the spec: format, difficulty and Bloom's splits by points (within a "
@@ -574,6 +575,9 @@ def generator_instructions(framer: DataFramer) -> str:
         "TASK. Write the planned questions, each with a complete, correct answer key. Follow "
         "the plan exactly for each question's number, type, difficulty, Bloom's level "
         "(cognitive_level) and points, and follow the ExamSpec and enhanced prompt.",
+        "THE PROFESSOR'S OWN QUESTION. When a planned question gives the professor's own question, that is the "
+        "question to write: keep its wording and meaning (fix only obvious typos) in place of the planned topic and "
+        "target, and complete what its type needs (choices, answer key, explanation).",
         "THE SLIDES. The slides each question is planned on (its source_pages) are attached as images, each "
         "after a line naming it, and every word on them is in THE SLIDES OF THESE QUESTIONS. Read each slide as "
         "a student sees it: the image is the authority on diagrams, charts, tables, code and formulas, the "

@@ -10,8 +10,8 @@ The setup form itself (fields, drafts, uploads, the private bucket) is described
 | --- | --- | --- |
 | 1. Set up | `/workspace/assessments/new`, `[id]/edit` | The setup form. Optional **Set up with AI** fills it by voice or text. Uploaded files are read in the background. |
 | 2. Improve with AI | the form, or the overview's **AI assessment** card | The Prompt Interpreter reads everything and writes an **Enhanced prompt** and an **ExamSpec**. |
-| 3. Review the plan | `[id]/plan` | The professor checks the plan, edits the enhanced prompt, regenerates or approves it. |
-| 4. Choose a mode | `[id]/plan` | **Generate full exam** (ProfPilot writes everything) or **Build with AI** (question by question, with the professor). |
+| 3. Review the prompt | `[id]/plan` | The professor checks the enhanced prompt and spec, edits or regenerates them, and presses **Next**. The question plan is made in the background meanwhile. |
+| 4. Build from the question plan | `[id]/question-plan` | Every planned question, to read and change (by hand, with the professor's own question, or by asking the AI); questions are written one at a time or all at once, and the exam is finished here. **Build with AI** (a call or chat) remains the other way. |
 | 5. Edit | `[id]/exam` or `[id]/builder` | The exam editor: manual edits, AI revisions, approve and lock, history, versions, quality check. |
 | 6. Final review and export | `[id]/exam` | Readiness checks, **Mark as final**, and PDF export of the student paper and the answer key. |
 | Preferences | `/workspace/preferences` | The professor's own notes, what ProfPilot has learned from accepted work, and a switch to turn learning off. |
@@ -215,7 +215,7 @@ The plan page (`[id]/plan`) shows the spec with provenance badges, the assumptio
 
 - **Edit** the enhanced prompt; the plan goes back to **draft**.
 - **Regenerate** the plan.
-- **Approve & continue**; generation only starts from an approved plan.
+- **Next** approves the prompt and opens the question plan; nothing is written from an unapproved prompt.
 
 A plan becomes **out of date** when the setup changes, a file is added or removed, or a file that failed to read is now ready. The page then explains what changed and asks for a new plan; an out-of-date plan can't be approved. The staleness check runs both in the database (triggers) and in the API (`stale_reasons`).
 
@@ -237,6 +237,15 @@ The professor chooses how the exam's **marks** are spread across Bloom's six lev
 - **Where it shows.** The setup form (cards, an advanced panel with six sliders and a doughnut chart), the summary, the plan page (with an **Adjust** link back to the form), question cards and the exam's **At a glance** panel.
 
 ## Generating the exam
+
+### The question plan (`[id]/question-plan`)
+
+The planner runs as soon as the prompt is on screen (`POST /api/assessments/{id}/question-plan`, an interpretation job at stage `planning`), so the plan is usually ready when the professor presses **Next**. It is kept in the assessment's envelope (`exam_spec.question_plan`: the plan, the exam written from it, and the numbers of "outdated" questions), so editing the prompt or interpreting again drops it and stops one still being made (`stop_planning`). See `services/question_plan.py`.
+
+- **Read and change.** Each planned question shows its type, difficulty, Bloom's level, marks, time, topic and what students do. The professor edits any of these (`PATCH …/question-plan/{n}`), gives their own question for the slot (the writer keeps its wording), or asks the AI to change the plan in their own words (`POST …/question-plan/changes`, stage `changing_plan`: the planner returns the whole plan with only the requested changes). The targets (marks, time, MCQ share, difficulty and Bloom's splits) are recomputed in code after every change.
+- **Write one question.** `POST …/question-plan/{n}/question` writes that question (with its slides and answer key) into the exam's first version at its planned number. The first write creates the exam (replacing an exam made another way only after the professor confirms). The written question appears under its plan, with the usual question card (edit, AI revision, approve). Changing the plan of a written question marks it **outdated**; it is rewritten only when the professor asks, or when the exam is finished.
+- **Finish.** `POST …/question-plan/exam` writes every question still missing, rewrites the outdated ones, then runs the same steps as a full generation from this plan (versions, quality check), and opens the exam page.
+- While a question is being written, the plan can't change, and vice versa.
 
 ### Generate full exam
 
