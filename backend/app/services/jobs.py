@@ -16,7 +16,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.ai.openai_service import Usage
-from app.core.errors import AppError, AuthenticationError, ConflictError
+from app.core.config import settings
+from app.core.errors import AITimeoutError, AppError, AuthenticationError, ConflictError
 from app.db.supabase import Database
 
 logger = logging.getLogger("profpilot.jobs")
@@ -175,7 +176,12 @@ class JobRunner:
     async def _run(self, context: RunContext, work: Work, kind: str) -> None:
         beat = asyncio.create_task(self._beat(context))
         try:
-            await work(context)
+            async with asyncio.timeout(settings.job_max_seconds):
+                await work(context)
+        except TimeoutError:
+            logger.error("%s job %s: stopped after %.0f s", kind, context.run_id, settings.job_max_seconds)
+            await self._finish(context, "failed", AITimeoutError().message)
+            return
         except AuthenticationError:
             # The professor's session expired mid-job; nothing can be written any
             # more. The missing heartbeat reports it as interrupted.

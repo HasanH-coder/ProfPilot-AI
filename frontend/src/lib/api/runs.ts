@@ -26,6 +26,8 @@ export function stageLabel(stage: string | null | undefined) {
 }
 
 const POLL_MS = 1500;
+/** Failed checks in a row (about a minute) before the page gives up on a job it can't reach. */
+const MAX_POLL_FAILURES = 40;
 
 /**
  * Polls a job until it finishes. `onFinish` runs once, with the final run.
@@ -44,11 +46,13 @@ export function useRun(runId: string | null, onFinish?: (run: Run) => void) {
     if (!runId) return;
     let cancelled = false;
     let timeout: ReturnType<typeof setTimeout>;
+    let failures = 0;
 
     async function poll() {
       try {
         const current = await apiRequest<Run>(`/api/runs/${runId}`);
         if (cancelled) return;
+        failures = 0;
         setRun(current);
         setError(null);
         if (current.status !== "running") {
@@ -60,7 +64,29 @@ export function useRun(runId: string | null, onFinish?: (run: Run) => void) {
         }
       } catch (cause) {
         if (cancelled) return;
-        setError(errorMessage(cause));
+        const message = errorMessage(cause);
+        setError(message);
+        failures += 1;
+        if (failures >= MAX_POLL_FAILURES) {
+          // The server can't be reached: stop spinning and report it, rather than wait forever.
+          const lost: Run = {
+            id: runId as string,
+            assessmentId: "",
+            examId: null,
+            kind: "generation",
+            status: "failed",
+            stage: null,
+            errorMessage: `ProfPilot lost contact with the server (${message}). Please try again.`,
+            startedAt: null,
+            finishedAt: null,
+          };
+          setRun(lost);
+          if (finished.current !== lost.id) {
+            finished.current = lost.id;
+            callback.current?.(lost);
+          }
+          return;
+        }
       }
       timeout = setTimeout(poll, POLL_MS);
     }

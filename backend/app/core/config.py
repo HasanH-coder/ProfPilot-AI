@@ -41,8 +41,11 @@ class Settings(BaseSettings):
     # How long a browser's voice credential stays valid before a call must start
     # (the call itself may last longer). OpenAI accepts 10–7200 seconds.
     realtime_client_secret_seconds: int = 120
-    openai_timeout_seconds: float = 600.0
-    openai_max_retries: int = 2
+    # One OpenAI request may take this long (x retries) before it counts as stuck.
+    openai_timeout_seconds: float = 300.0
+    openai_max_retries: int = 1
+    # A whole background job (planning, writing, checking) is stopped and reported as failed after this long.
+    job_max_seconds: float = 20 * 60
 
     # --- Limits -------------------------------------------------------------
     max_extracted_characters: int = 2_000_000
