@@ -82,6 +82,8 @@ def test_scenario_a_manual_configuration_to_full_exam(api, supabase, db_a, ai):
     assert spec["difficulty"] == {"easy_percent": 30, "medium_percent": 40, "hard_percent": 30, "source": "professor"}
     assert spec["versions"] == 2 and spec["assessment_title"] == "Midterm"
     assert approved["enhancedPrompt"] and approved["inputs"]["professor_prompt"] == A_SETTINGS["professor_prompt"]
+    # The professor reads what easy, medium and hard mean at the end of the improved prompt.
+    assert approved["enhancedPrompt"].rstrip().splitlines()[-1].startswith("What the levels mean")
 
     exam = generate(api, assessment["id"])
 

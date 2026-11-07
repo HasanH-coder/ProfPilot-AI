@@ -39,17 +39,17 @@ DIFFICULTY_DEFINITION_LIMIT = 400
 # Mirrored in frontend/src/lib/assessments/draft.ts.
 DEFAULT_DIFFICULTY_DEFINITIONS: dict[str, str] = {
     "easy": (
-        "One idea taught directly in the course, cued plainly: recall or a one- or two-step application. "
-        "About 70% or more of prepared students should answer it correctly."
+        "One idea taught directly in the course, asked in the form it was taught: recalling, recognising or "
+        "plainly applying it. About 70% or more of prepared students should answer it correctly."
     ),
     "medium": (
-        "A taught idea applied to a familiar situation in two to four steps, with some interpretation. "
-        "About 30% to 70% of prepared students should answer it correctly."
+        "A taught idea used or explained in a familiar situation, or two taught ideas linked, with some "
+        "interpretation or justification. About 30% to 70% of prepared students should answer it correctly."
     ),
     "hard": (
-        "Multi-step reasoning, ideas combined across topics, or a new situation, with subtle distinctions "
-        "and less direct cues, yet fair and answerable from the course material. About 30% or fewer of "
-        "prepared students should answer it correctly."
+        "Several ideas combined, or taught ideas applied to a new situation, with judgement between close "
+        "alternatives; yet fair and answerable from the course material. About 30% or fewer of prepared "
+        "students should answer it correctly."
     ),
 }
 
@@ -68,6 +68,31 @@ BLOOM_PRESETS: dict[str, dict[str, int]] = {
     "practical": {"remember": 5, "understand": 15, "apply": 40, "analyze": 25, "evaluate": 10, "create": 5},
     "critical": {"remember": 5, "understand": 10, "apply": 20, "analyze": 30, "evaluate": 25, "create": 10},
 }
+
+
+# Short forms of the defaults, for the end of the improved prompt (the full texts above go to the writer).
+DEFAULT_DIFFICULTY_SUMMARIES: dict[str, str] = {
+    "easy": (
+        "one idea asked as it was taught: recall, recognise or plainly apply it "
+        "(about 70% or more of prepared students answer correctly)"
+    ),
+    "medium": (
+        "a taught idea used in a familiar situation, or two ideas linked, with some interpretation "
+        "(about 30% to 70% answer correctly)"
+    ),
+    "hard": (
+        "several ideas combined, or a new situation needing judgement between close options (about 30% or fewer answer correctly)"
+    ),
+}
+DIFFICULTY_MEANING_LABEL = "What the levels mean"
+
+
+def with_difficulty_meaning(prompt: str, setup: "AssessmentSetup") -> str:
+    """The improved prompt with the meaning of easy, medium and hard added at its end, once."""
+    prompt = prompt.strip()
+    if DIFFICULTY_MEANING_LABEL.lower() in prompt.lower():
+        return prompt
+    return f"{prompt}\n\n{setup.difficulty_meaning_line}"
 
 
 class AssessmentSetup(ApiModel):
@@ -210,6 +235,16 @@ class AssessmentSetup(ApiModel):
         custom = self.custom_difficulty_definitions
         definitions = custom or DEFAULT_DIFFICULTY_DEFINITIONS
         return "\n".join(f"  {level.capitalize()}: {definitions[level]}" for level in DIFFICULTIES)
+
+    @property
+    def difficulty_meaning_line(self) -> str:
+        """One line for the end of the improved prompt, so the professor reads what each level means.
+        The professor's own words when they wrote them, otherwise short forms of the defaults."""
+        custom = self.custom_difficulty_definitions
+        meanings = custom or DEFAULT_DIFFICULTY_SUMMARIES
+        parts = [f"{level.capitalize()}: {meanings[level].rstrip('. ')}." for level in DIFFICULTIES]
+        label = DIFFICULTY_MEANING_LABEL + (" (your definitions)" if custom else "")
+        return f"{label}: " + " ".join(parts)
 
     @property
     def learning_focus_text(self) -> str:

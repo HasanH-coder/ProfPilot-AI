@@ -2,7 +2,12 @@
 
 import pytest
 
-from app.domain.setup import DEFAULT_DIFFICULTY_DEFINITIONS, DIFFICULTY_DEFINITION_LIMIT, AssessmentSetup
+from app.domain.setup import (
+    DEFAULT_DIFFICULTY_DEFINITIONS,
+    DIFFICULTY_DEFINITION_LIMIT,
+    AssessmentSetup,
+    with_difficulty_meaning,
+)
 from app.services.assessment_context import AssessmentRecord, render_difficulty_definitions, render_settings
 
 CUSTOM = {
@@ -80,6 +85,26 @@ def test_the_settings_give_the_interpreter_the_definitions_in_use():
     own = render_settings(record_for(AssessmentSetup(difficulty_definitions=CUSTOM)))
     assert "the professor's own definitions" in own and CUSTOM["medium"] in own
     assert DEFAULT_DIFFICULTY_DEFINITIONS["medium"] not in own
+
+
+def test_the_improved_prompt_ends_with_what_the_levels_mean():
+    brief = "Write a short quiz on probability."
+    default = with_difficulty_meaning(brief, AssessmentSetup())
+    assert default.startswith(brief) and default.rstrip().endswith(".")
+    assert "What the levels mean:" in default and "(your definitions)" not in default
+    for level in ("Easy:", "Medium:", "Hard:"):
+        assert level in default
+
+    own = with_difficulty_meaning(brief, AssessmentSetup(difficulty_definitions=CUSTOM))
+    assert "(your definitions)" in own and CUSTOM["hard"].rstrip(".") in own
+
+
+def test_the_meaning_line_is_added_once_and_never_to_an_edited_prompt_that_has_it():
+    setup = AssessmentSetup()
+    once = with_difficulty_meaning("A brief.", setup)
+    assert with_difficulty_meaning(once, setup) == once
+    mine = "My brief. What the levels mean: easy is easy."
+    assert with_difficulty_meaning(mine, setup) == mine
 
 
 def test_the_writer_and_reviewer_hear_only_the_professors_own_definitions():

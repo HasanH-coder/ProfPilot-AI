@@ -383,8 +383,7 @@ def interpreter_instructions(framer: DataFramer, *, mini_quiz: bool = False) -> 
         "Bloom's requirements: the focus and the exact split by marks, the cognitive operations that fit "
         "each level here, and how genuine higher-order thinking will be ensured.\n"
         "Difficulty requirements: the exact split by marks and what easy, medium and hard mean for this "
-        "material (independent of Bloom's level): give the definitions from the settings, in the professor's own "
-        "words when they wrote them.\n"
+        "material (independent of Bloom's level).\n"
         "Constraints: duration, question count, marks, question types, versions, allowed materials and "
         "every professor instruction or restriction.\n"
         "Grounding and quality: source-based questions only, formula and solution checks, no duplicates, "
@@ -426,7 +425,8 @@ def interpreter_instructions(framer: DataFramer, *, mini_quiz: bool = False) -> 
         "reasoning in one assumption. Mention the cognitive emphasis in the enhanced prompt.",
         "DIFFICULTY DEFINITIONS. The settings say what easy, medium and hard mean: the professor's own "
         "words (binding) or ProfPilot's defaults. Follow them, and write generation_instructions that make each "
-        "level checkable by them. In a mini quiz brief, mention them only when the professor wrote their own.",
+        "level checkable by them. ProfPilot adds a line giving the definitions to the end of enhanced_prompt "
+        "itself, so don't write the definitions out in it.",
         "COVERAGE. Derive coverage topics from the course material overview and excerpts, "
         "weighted by what the professor asked for (e.g. 'focus on lectures 3–5'). Name the "
         "source files. If there is no course material, say so in warnings and keep coverage "

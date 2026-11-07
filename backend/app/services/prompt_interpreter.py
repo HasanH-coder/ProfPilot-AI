@@ -22,7 +22,7 @@ from app.core.errors import ConflictError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain.distribution import bloom_conflicts
-from app.domain.setup import MINI_QUIZ_MINUTES, MINI_QUIZ_QUESTIONS
+from app.domain.setup import MINI_QUIZ_MINUTES, MINI_QUIZ_QUESTIONS, with_difficulty_meaning
 from app.schemas.ai import BloomSpec, DifficultySpec, ExamSpec, FormatSpec, InterpretationOutput
 from app.services.assessment_context import (
     AssessmentContextService,
@@ -213,7 +213,7 @@ class PromptInterpreterService:
         await self.db.update(
             "exam_projects",
             {
-                "enhanced_prompt": output.enhanced_prompt.strip(),
+                "enhanced_prompt": with_difficulty_meaning(output.enhanced_prompt, record.setup),
                 "exam_spec": envelope,
                 "spec_status": "stale" if changed else "draft",
                 "spec_generated_at": envelope["generated_at"],
