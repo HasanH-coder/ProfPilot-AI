@@ -8,7 +8,14 @@ import asyncio
 import re
 from types import SimpleNamespace
 
-from app.ai.prompts import DataFramer, generator_instructions, planner_instructions, reviewer_instructions
+from app.ai.prompts import (
+    DataFramer,
+    generator_instructions,
+    interpreter_instructions,
+    planner_instructions,
+    reviewer_instructions,
+    variant_instructions,
+)
 from app.schemas.ai import ChoiceOut, QuestionFix, ReviewIssue, ReviewOutput
 from app.services.exam_review import _pairing_notes
 from app.services.exam_store import answer_leaks, canonical_maths, question_problems
@@ -387,4 +394,16 @@ def test_planner_writer_and_reviewer_rules():
     for text in (planner, writer, reviewer):
         assert "never add content from your own knowledge" in text
     assert "CLEAR WORDING" in writer and "category 'clarity'" in reviewer
+
+
+def test_choices_negatives_time_and_warnings():
+    framer = DataFramer()
+    interpreter, planner, writer, variants = (
+        f(framer) for f in (interpreter_instructions, planner_instructions, generator_instructions, variant_instructions)
+    )
+    for text in (writer, variants):  # choices get reordered across versions
+        assert "never refer to another choice by letter or position" in text and "(NOT, EXCEPT, NEVER)" in text
+    for text in (interpreter, planner):
+        assert "85-95% of the duration" in text and "a concrete fix the professor can make" in text
+    assert "Standard prerequisites of the course" in writer and "what a question tests always comes from the lectures" in writer
     assert {"answer_leakage", "marks"} <= set(ReviewIssue.model_fields["category"].annotation.__args__)
