@@ -47,6 +47,7 @@ const DRAFT: AssessmentDraft = {
   easyPercentage: null,
   mediumPercentage: null,
   hardPercentage: null,
+  difficultyDefinitions: null,
   learningFocus: "automatic",
   bloomDistribution: null,
   additionalNotes: "",

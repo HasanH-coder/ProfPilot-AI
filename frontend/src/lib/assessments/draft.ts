@@ -21,6 +21,30 @@ export const DEFAULT_DIFFICULTY_DISTRIBUTION: Record<Difficulty, number> = {
   hard: 30,
 };
 
+/** What easy, medium and hard mean, as text. */
+export type DifficultyDefinitions = Record<Difficulty, string>;
+
+export const DIFFICULTY_DEFINITION_LIMIT = 400;
+
+/**
+ * What easy, medium and hard mean unless the professor writes their own. Difficulty is the thinking a
+ * question demands, never longer wording. The shares of prepared students expected to answer correctly
+ * follow the usual item-difficulty bands; they state an intent, as the real figure is only known after
+ * students sit the exam. Mirrored in backend/app/domain/setup.py.
+ */
+export const DEFAULT_DIFFICULTY_DEFINITIONS: DifficultyDefinitions = {
+  easy:
+    "One idea taught directly in the course, cued plainly: recall or a one- or two-step application. " +
+    "About 70% or more of prepared students should answer it correctly.",
+  medium:
+    "A taught idea applied to a familiar situation in two to four steps, with some interpretation. " +
+    "About 30% to 70% of prepared students should answer it correctly.",
+  hard:
+    "Multi-step reasoning, ideas combined across topics, or a new situation, with subtle distinctions " +
+    "and less direct cues, yet fair and answerable from the course material. About 30% or fewer of " +
+    "prepared students should answer it correctly.",
+};
+
 /** Bloom's taxonomy: the thinking a question asks for. Independent of difficulty. */
 export const BLOOM_LEVELS = ["remember", "understand", "apply", "analyze", "evaluate", "create"] as const;
 export type BloomLevel = (typeof BLOOM_LEVELS)[number];
@@ -110,6 +134,8 @@ export type AssessmentDraft = {
   easyPercentage: number | null;
   mediumPercentage: number | null;
   hardPercentage: number | null;
+  /** The professor's own meaning of easy, medium and hard; null uses the defaults. */
+  difficultyDefinitions: DifficultyDefinitions | null;
   learningFocus: LearningFocus;
   /** Only for a custom focus (NaN for a box that isn't a number); null otherwise. */
   bloomDistribution: BloomDistribution | null;
@@ -125,6 +151,7 @@ export type AssessmentDraftErrors = Partial<
     | "distribution"
     | "numberOfVersions"
     | "difficultyDistribution"
+    | "difficultyDefinitions"
     | "bloomDistribution"
     | "additionalNotes"
     | "professorPrompt",
@@ -164,6 +191,9 @@ export function validateAssessmentDraft(draft: AssessmentDraft): AssessmentDraft
   const difficultyError = checkDifficultyDistribution(draft);
   if (difficultyError) errors.difficultyDistribution = difficultyError;
 
+  const definitionsError = checkDifficultyDefinitions(draft.difficultyDefinitions ?? null);
+  if (definitionsError) errors.difficultyDefinitions = definitionsError;
+
   const bloomError = checkBloomDistribution(draft.learningFocus, draft.bloomDistribution);
   if (bloomError) errors.bloomDistribution = bloomError;
 
@@ -195,6 +225,34 @@ export function checkDifficultyDistribution(draft: DifficultyPercentages): strin
   }
   if (sum(percentages) !== 100) return "Difficulty percentages must total 100%.";
   return undefined;
+}
+
+/**
+ * What's wrong with the professor's own difficulty definitions, if anything: all three, each some text,
+ * none too long. Null (the defaults) is always valid. The backend and the database enforce the same rule.
+ */
+export function checkDifficultyDefinitions(definitions: Record<string, string> | null): string | undefined {
+  if (definitions === null) return undefined;
+  const texts = DIFFICULTIES.map((difficulty) => definitions[difficulty]);
+  if (!texts.every((text) => typeof text === "string" && text.trim().length > 0)) {
+    return "Write a definition for each of easy, medium and hard.";
+  }
+  if (texts.some((text) => text.trim().length > DIFFICULTY_DEFINITION_LIMIT)) {
+    return `Use ${DIFFICULTY_DEFINITION_LIMIT} characters or fewer for each definition.`;
+  }
+  return undefined;
+}
+
+/**
+ * What to save for the definitions in the boxes: null when each box still holds the default text (or is
+ * empty, which means "use the defaults"), otherwise the three texts as typed.
+ */
+export function savedDifficultyDefinitions(boxes: DifficultyDefinitions): DifficultyDefinitions | null {
+  const unchanged = DIFFICULTIES.every(
+    (difficulty) =>
+      boxes[difficulty].trim() === DEFAULT_DIFFICULTY_DEFINITIONS[difficulty] || boxes[difficulty].trim() === "",
+  );
+  return unchanged ? null : { ...boxes };
 }
 
 /**
@@ -287,6 +345,11 @@ export function isAssessmentDraft(input: unknown): input is AssessmentDraft {
     isNumberOrNull(value.easyPercentage) &&
     isNumberOrNull(value.mediumPercentage) &&
     isNumberOrNull(value.hardPercentage) &&
+    // Absent from a page that was opened before this setting existed: saving it leaves the column alone.
+    (value.difficultyDefinitions === undefined ||
+      value.difficultyDefinitions === null ||
+      (typeof value.difficultyDefinitions === "object" &&
+        Object.values(value.difficultyDefinitions as object).every((text) => typeof text === "string"))) &&
     typeof value.learningFocus === "string" &&
     (value.bloomDistribution === null ||
       (typeof value.bloomDistribution === "object" &&

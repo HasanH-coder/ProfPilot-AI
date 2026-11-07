@@ -115,6 +115,7 @@ test("choosing a course lists the material saved in Sources, with no assessment 
     easyPercentage: null,
     mediumPercentage: null,
     hardPercentage: null,
+    difficultyDefinitions: null,
     learningFocus: "automatic" as const,
     bloomDistribution: null,
     additionalNotes: "",

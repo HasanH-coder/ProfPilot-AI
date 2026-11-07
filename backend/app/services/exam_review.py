@@ -26,6 +26,7 @@ from app.ai.prompts import DataFramer, reviewer_instructions
 from app.db.supabase import Database
 from app.domain import distribution
 from app.schemas.ai import QuestionFix, ReviewIssue, ReviewOutput
+from app.services.assessment_context import render_difficulty_definitions
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
 from app.services.exam_generation import GenerationContext, load_generation_context
 from app.services.exam_store import (
@@ -277,6 +278,7 @@ class ExamReviewService:
                 for part in [
                     "APPROVED EXAM SPEC\n" + json.dumps(ctx.spec.model_dump(), indent=1),
                     "APPROVED BRIEF\n" + ctx.enhanced_prompt,
+                    render_difficulty_definitions(ctx.record.setup),
                     "THE EXAM TO REVIEW (with answer keys)\n" + "\n\n".join(versions_text),
                     render_question_sources(cited, slides, framer),
                     render_all_slides(slides, framer, max_chars=_REVIEW_SLIDE_CHARS) if ctx.mini_quiz else "",

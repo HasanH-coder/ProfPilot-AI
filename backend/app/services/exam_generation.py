@@ -52,6 +52,7 @@ from app.services.assessment_context import (
     AssessmentRecord,
     DocumentRecord,
     PreferenceProfile,
+    render_difficulty_definitions,
     render_material_overview,
     render_preferences,
     render_style_profile,
@@ -173,6 +174,7 @@ class GenerationContext:
         return [
             "APPROVED EXAM SPEC (approved by the professor; binding)\n" + json.dumps(self.spec.model_dump(), indent=1),
             "APPROVED BRIEF (approved by the professor)\n" + self.enhanced_prompt,
+            render_difficulty_definitions(self.record.setup),
             render_preferences(self.preferences),
             render_style_profile(self.style, framer),
             (

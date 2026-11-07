@@ -21,7 +21,8 @@ BUCKET = "assessment-files"
 ASSESSMENT_COLUMNS = (
     "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, "
     "subjective_percentage, number_of_versions, easy_percentage, medium_percentage, "
-    "hard_percentage, learning_focus, bloom_distribution, additional_notes, professor_prompt, enhanced_prompt, exam_spec, "
+    "hard_percentage, difficulty_definitions, learning_focus, bloom_distribution, additional_notes, professor_prompt, "
+    "enhanced_prompt, exam_spec, "
     "spec_status, spec_generated_at, spec_approved_at, generation_mode, "
     "course:courses(id, code, name)"
 )
@@ -355,10 +356,28 @@ def render_settings(record: AssessmentRecord) -> str:
         f"- Duration: {setup.duration_text or missing}",
         f"- Question format (share of marks): {setup.format_text or missing}",
         f"- Difficulty (share of marks): {setup.difficulty_text or missing}",
+        "- What easy, medium and hard mean "
+        + (
+            "(the professor's own definitions; binding, they replace any other description of the levels):"
+            if setup.custom_difficulty_definitions
+            else "(ProfPilot's defaults, since the professor wrote none):"
+        ),
+        setup.difficulty_definitions_text,
         f"- Learning focus (Bloom's levels, share of marks): {setup.learning_focus_text}",
         f"- Number of versions: {setup.number_of_versions}",
     ]
     return "\n".join(lines)
+
+
+def render_difficulty_definitions(setup: AssessmentSetup) -> str:
+    """The professor's own meaning of easy, medium and hard, for writing and reviewing questions.
+    Empty when they use the defaults, which the difficulty guidance already describes."""
+    if not setup.custom_difficulty_definitions:
+        return ""
+    return (
+        "THE PROFESSOR'S DIFFICULTY DEFINITIONS (binding: they replace every other description of easy, medium "
+        "and hard, including any guidance above)\n" + setup.difficulty_definitions_text
+    )
 
 
 def render_professor_instructions(record: AssessmentRecord) -> str:

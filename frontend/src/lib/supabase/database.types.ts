@@ -427,6 +427,7 @@ export type Database = {
           created_at: string;
           difficulty: string | null;
           duration_minutes: number | null;
+          difficulty_definitions: Json | null;
           easy_percentage: number | null;
           enhanced_prompt: string | null;
           exam_name: string | null;
@@ -454,6 +455,7 @@ export type Database = {
           created_at?: string;
           difficulty?: string | null;
           duration_minutes?: number | null;
+          difficulty_definitions?: Json | null;
           easy_percentage?: number | null;
           enhanced_prompt?: string | null;
           exam_name?: string | null;
@@ -481,6 +483,7 @@ export type Database = {
           created_at?: string;
           difficulty?: string | null;
           duration_minutes?: number | null;
+          difficulty_definitions?: Json | null;
           easy_percentage?: number | null;
           enhanced_prompt?: string | null;
           exam_name?: string | null;

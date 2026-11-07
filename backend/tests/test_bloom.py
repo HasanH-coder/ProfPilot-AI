@@ -117,7 +117,9 @@ def test_new_and_historical_assessments_default_to_automatic():
     setup = AssessmentSetup.from_row(old_row)
     assert setup.learning_focus == "automatic" and setup.bloom_distribution is None and setup.errors() == {}
     # An unchanged old assessment keeps its fingerprint, so its approved plan stays valid.
-    legacy = {k: v for k, v in setup.to_row().items() if k not in ("learning_focus", "bloom_distribution")}
+    legacy = {
+        k: v for k, v in setup.to_row().items() if k not in ("learning_focus", "bloom_distribution", "difficulty_definitions")
+    }
     expected = hashlib.sha256(json.dumps(legacy, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     assert setup.fingerprint() == expected
     # Choosing a focus changes it.

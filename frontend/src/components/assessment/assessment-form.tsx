@@ -27,6 +27,7 @@ import { AssessmentSummary } from "@/components/assessment/assessment-summary";
 import {
   DIFFICULTY_NOT_SPECIFIED,
   DifficultyDistribution,
+  difficultyDefinitionsDraft,
   difficultyDistributionValue,
   difficultyPercentages,
   type DifficultyDistributionValue,
@@ -129,6 +130,7 @@ function toDraft(values: FormValues): AssessmentDraft {
       : null,
     numberOfVersions: versionCount(values.versions),
     ...difficultyPercentages(values.difficulty),
+    difficultyDefinitions: difficultyDefinitionsDraft(values.difficulty),
     ...learningFocusDraft(values.learningFocus),
     additionalNotes: values.additionalNotes,
     professorPrompt: values.professorPrompt,
@@ -166,6 +168,7 @@ const FIELD_GROUPS: Record<string, string> = {
   easyPercentage: "difficulty",
   mediumPercentage: "difficulty",
   hardPercentage: "difficulty",
+  difficultyDefinitions: "difficulty",
   learningFocus: "learningFocus",
   bloomDistribution: "learningFocus",
   additionalNotes: "notes",
@@ -195,6 +198,7 @@ const ERROR_SECTIONS: Record<keyof AssessmentDraftErrors, SectionId> = {
   distribution: "examDesign",
   numberOfVersions: "examDesign",
   difficultyDistribution: "examDesign",
+  difficultyDefinitions: "examDesign",
   bloomDistribution: "examDesign",
   additionalNotes: "notes",
   professorPrompt: "prompt",
@@ -786,6 +790,7 @@ export function AssessmentForm({ courses, sources = [], saved }: AssessmentFormP
               value={values.difficulty}
               onChange={(difficulty) => update({ difficulty })}
               error={errors.difficultyDistribution}
+              definitionsError={errors.difficultyDefinitions}
             />
           </div>
 

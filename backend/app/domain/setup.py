@@ -26,9 +26,32 @@ MINI_QUIZ_QUESTIONS = 5
 
 SETUP_COLUMNS = (
     "course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, "
-    "number_of_versions, easy_percentage, medium_percentage, hard_percentage, "
+    "number_of_versions, easy_percentage, medium_percentage, hard_percentage, difficulty_definitions, "
     "learning_focus, bloom_distribution, additional_notes, professor_prompt"
 )
+
+DIFFICULTIES = ("easy", "medium", "hard")
+DIFFICULTY_DEFINITION_LIMIT = 400
+# What easy, medium and hard mean unless the professor writes their own. Difficulty is the thinking a
+# question demands, never longer wording. The shares of prepared students expected to answer correctly
+# follow the usual item-difficulty bands (about 70% or more easy, 30-70% medium, under 30% hard); they
+# state an intent, because the real figure is only known after students sit the exam.
+# Mirrored in frontend/src/lib/assessments/draft.ts.
+DEFAULT_DIFFICULTY_DEFINITIONS: dict[str, str] = {
+    "easy": (
+        "One idea taught directly in the course, cued plainly: recall or a one- or two-step application. "
+        "About 70% or more of prepared students should answer it correctly."
+    ),
+    "medium": (
+        "A taught idea applied to a familiar situation in two to four steps, with some interpretation. "
+        "About 30% to 70% of prepared students should answer it correctly."
+    ),
+    "hard": (
+        "Multi-step reasoning, ideas combined across topics, or a new situation, with subtle distinctions "
+        "and less direct cues, yet fair and answerable from the course material. About 30% or fewer of "
+        "prepared students should answer it correctly."
+    ),
+}
 
 LEARNING_FOCUSES = ("automatic", "balanced", "practical", "critical", "custom")
 LEARNING_FOCUS_LABELS = {
@@ -62,6 +85,9 @@ class AssessmentSetup(ApiModel):
     easy_percentage: int | None = None
     medium_percentage: int | None = None
     hard_percentage: int | None = None
+    # The professor's own meaning of easy, medium and hard ({"easy": …, "medium": …, "hard": …}); null means
+    # DEFAULT_DIFFICULTY_DEFINITIONS.
+    difficulty_definitions: dict[str, str] | None = None
     # One of LEARNING_FOCUSES. Only "custom" has its own percentages (by Bloom's level).
     learning_focus: str = "automatic"
     bloom_distribution: dict[str, int] | None = None
@@ -80,6 +106,7 @@ class AssessmentSetup(ApiModel):
             easy_percentage=row.get("easy_percentage"),
             medium_percentage=row.get("medium_percentage"),
             hard_percentage=row.get("hard_percentage"),
+            difficulty_definitions=row.get("difficulty_definitions"),
             learning_focus=row.get("learning_focus") or "automatic",
             bloom_distribution=row.get("bloom_distribution"),
             additional_notes=row.get("additional_notes") or "",
@@ -98,6 +125,7 @@ class AssessmentSetup(ApiModel):
             "easy_percentage": self.easy_percentage,
             "medium_percentage": self.medium_percentage,
             "hard_percentage": self.hard_percentage,
+            "difficulty_definitions": self.difficulty_definitions,
             "learning_focus": self.learning_focus,
             "bloom_distribution": self.bloom_distribution,
             "additional_notes": self.additional_notes if self.additional_notes.strip() else None,
@@ -120,6 +148,9 @@ class AssessmentSetup(ApiModel):
         difficulty = check_difficulty_distribution(self.easy_percentage, self.medium_percentage, self.hard_percentage)
         if difficulty:
             errors["difficultyDistribution"] = difficulty
+        definitions = check_difficulty_definitions(self.difficulty_definitions)
+        if definitions:
+            errors["difficultyDefinitions"] = definitions
         bloom = check_bloom_distribution(self.learning_focus, self.bloom_distribution)
         if bloom:
             errors["bloomDistribution"] = bloom
@@ -136,6 +167,9 @@ class AssessmentSetup(ApiModel):
         # the setting existed keep matching their unchanged assessments.
         if row["learning_focus"] == "automatic" and row["bloom_distribution"] is None:
             del row["learning_focus"], row["bloom_distribution"]
+        # Likewise the default definitions, which older interpretations were made under.
+        if row["difficulty_definitions"] is None:
+            del row["difficulty_definitions"]
         payload = json.dumps(row, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -164,6 +198,20 @@ class AssessmentSetup(ApiModel):
         return f"{self.easy_percentage}% easy / {self.medium_percentage}% medium / {self.hard_percentage}% hard"
 
     @property
+    def custom_difficulty_definitions(self) -> dict[str, str] | None:
+        """The professor's own definitions, trimmed; None when they use ProfPilot's defaults."""
+        if not self.difficulty_definitions:
+            return None
+        return {level: self.difficulty_definitions[level].strip() for level in DIFFICULTIES}
+
+    @property
+    def difficulty_definitions_text(self) -> str:
+        """What easy, medium and hard mean here, one line each, for prompts and the brief."""
+        custom = self.custom_difficulty_definitions
+        definitions = custom or DEFAULT_DIFFICULTY_DEFINITIONS
+        return "\n".join(f"  {level.capitalize()}: {definitions[level]}" for level in DIFFICULTIES)
+
+    @property
     def learning_focus_text(self) -> str:
         label = LEARNING_FOCUS_LABELS.get(self.learning_focus, self.learning_focus)
         shares = self.resolved_bloom()
@@ -189,6 +237,20 @@ def check_bloom_distribution(focus: str, distribution: dict[str, int] | None) ->
         return "Enter a whole number from 0 to 100 for each level."
     if sum(values) != 100:
         return "Bloom's percentages must total 100%."
+    return None
+
+
+def check_difficulty_definitions(definitions: dict[str, str] | None) -> str | None:
+    """What's wrong with the professor's own definitions, if anything: all three, each text, not too long."""
+    if definitions is None:
+        return None
+    if set(definitions) != set(DIFFICULTIES):
+        return "Write a definition for each of easy, medium and hard."
+    for text in definitions.values():
+        if not isinstance(text, str) or not text.strip():
+            return "Write a definition for each of easy, medium and hard."
+        if len(text.strip()) > DIFFICULTY_DEFINITION_LIMIT:
+            return f"Use {DIFFICULTY_DEFINITION_LIMIT} characters or fewer for each definition."
     return None
 
 

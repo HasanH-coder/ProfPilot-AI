@@ -26,6 +26,7 @@ const SAVED_DRAFT: AssessmentDraft = {
   easyPercentage: null,
   mediumPercentage: null,
   hardPercentage: null,
+  difficultyDefinitions: null,
   learningFocus: "custom",
   bloomDistribution: { remember: 20, understand: 20, apply: 20, analyze: 20, evaluate: 10, create: 10 },
   additionalNotes: "",

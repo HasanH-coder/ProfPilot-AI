@@ -26,7 +26,7 @@ from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
 from app.schemas.ai import COGNITIVE_LEVELS, ReviewOutput
-from app.services.assessment_context import AssessmentContextService
+from app.services.assessment_context import AssessmentContextService, render_difficulty_definitions
 from app.services.exam_generation import ExamGenerationService, load_generation_context, suggest_next
 from app.services.exam_store import ExamStore, FullExam, render_question
 from app.services.jobs import RunContext, job_runner
@@ -304,6 +304,7 @@ class ExamBuilderService:
             input="\n\n".join(
                 [
                     "APPROVED EXAM SPEC\n" + json.dumps(ctx.spec.model_dump(), indent=1),
+                    render_difficulty_definitions(ctx.record.setup),
                     "THE QUESTION TO REVIEW (with its answer key)\n"
                     + framer.block("question", f"question {number}", render_question(row, number)),
                     "Review only this question. Don't propose fixes; describe problems.",

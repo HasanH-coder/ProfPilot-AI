@@ -7,6 +7,7 @@ import {
   specBloomDistribution,
   type AssessmentDraft,
   type BloomDistribution,
+  type DifficultyDefinitions,
   type LearningFocus,
 } from "@/lib/assessments/draft";
 import type { Course } from "@/lib/courses/queries";
@@ -86,7 +87,7 @@ export const getAssessment = cache(async (id: string): Promise<Assessment | null
   const { data, error } = await supabase
     .from("exam_projects")
     .select(
-      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, easy_percentage, medium_percentage, hard_percentage, learning_focus, bloom_distribution, additional_notes, professor_prompt, spec_bloom:exam_spec->spec->bloom, course:courses(id, code, name), documents!documents_exam_project_id_fkey(id, category, original_name, size_bytes)",
+      "id, status, updated_at, course_id, exam_name, duration_minutes, mcq_percentage, subjective_percentage, number_of_versions, easy_percentage, medium_percentage, hard_percentage, difficulty_definitions, learning_focus, bloom_distribution, additional_notes, professor_prompt, spec_bloom:exam_spec->spec->bloom, course:courses(id, code, name), documents!documents_exam_project_id_fkey(id, category, original_name, size_bytes)",
     )
     .eq("id", id)
     .order("created_at", { referencedTable: "documents" })
@@ -117,6 +118,8 @@ export const getAssessment = cache(async (id: string): Promise<Assessment | null
       easyPercentage: data.easy_percentage,
       mediumPercentage: data.medium_percentage,
       hardPercentage: data.hard_percentage,
+      // The database only allows all three texts, or null for the defaults (a CHECK constraint).
+      difficultyDefinitions: (data.difficulty_definitions ?? null) as DifficultyDefinitions | null,
       learningFocus,
       bloomDistribution: (data.bloom_distribution ?? null) as BloomDistribution | null,
       additionalNotes: data.additional_notes ?? "",

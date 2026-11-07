@@ -100,6 +100,12 @@ export async function saveAssessmentDraft(
       easy_percentage: draft.easyPercentage,
       medium_percentage: draft.mediumPercentage,
       hard_percentage: draft.hardPercentage,
+      // Trimmed texts, or null for ProfPilot's defaults.
+      difficulty_definitions: draft.difficultyDefinitions && {
+        easy: draft.difficultyDefinitions.easy.trim(),
+        medium: draft.difficultyDefinitions.medium.trim(),
+        hard: draft.difficultyDefinitions.hard.trim(),
+      },
       learning_focus: draft.learningFocus,
       bloom_distribution: draft.bloomDistribution,
       additional_notes: textOrNull(draft.additionalNotes),
