@@ -6,7 +6,11 @@ FROM node:22-slim
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# Retry downloads, so a dropped connection doesn't fail the whole build.
+RUN npm config set fetch-retries 6 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-timeout 300000 \
+    && npm ci
 
 COPY . .
 
