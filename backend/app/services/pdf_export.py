@@ -40,7 +40,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from app.services.exam_store import FullExam
+from app.services.exam_store import FullExam, has_answer_key
 from app.services.pdf_math import Equation, inline_equation, is_equation
 
 RL_Codecs.register()
@@ -593,8 +593,14 @@ class PdfExportService:
                 if part.get("rubric"):
                     block.append(_rubric(part["rubric"], indent=True))
 
+        if answer_key and not has_answer_key(q):
+            block.append(Spacer(1, 4))
+            block.append(Paragraph("Answer key not generated yet.", KEY_LABEL))
+            return block
         if answer_key:
             block.append(Spacer(1, 4))
+            if q.get("needs_solution_review"):
+                block.append(Paragraph("This key was written before the question last changed: check it.", KEY_LABEL))
             if q["type"] == "mcq":
                 block.append(Paragraph(f"Correct answer: {escape(str(q.get('correct_choice') or '—'))}", KEY_LABEL))
             if q.get("answer") and not q.get("subparts"):

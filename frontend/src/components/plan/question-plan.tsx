@@ -341,7 +341,7 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
           <AlertTitle>All {total} questions are generated</AlertTitle>
           <AlertDescription>
             <span>
-              The other versions and the quality check are finishing in the background.{" "}
+              Any other versions are finishing in the background. Answer keys are written only when you ask.{" "}
               <Link href={`${base}/exam`} className="font-medium underline underline-offset-4">
                 Open the exam
               </Link>{" "}
@@ -410,12 +410,12 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
             {!complete
               ? "Generate any planned question above now. Generate full exam is available once every question is planned."
               : remaining === 0
-                ? "Every question is generated. Finish the exam to create the other versions and run the quality check."
+                ? "Every question is generated. Finish the exam to create the other versions. Answer keys are written only when you ask."
                 : `Generate questions one at a time above, or press Generate full exam to generate the ${remaining} remaining ${
                     remaining === 1 ? "question" : "questions"
                   }${written > 0 ? `, keeping the ${written} you already generated` : ""}${
                     outdated.length > 0 ? ` (it also regenerates ${listNumbers(outdated)}, whose plan you changed)` : ""
-                  }. The exam page opens and shows each question, in plan order, as soon as it is ready. The other versions and the quality check finish in the background while you read.`}
+                  }. The exam page opens and shows each question, in plan order, as soon as it is ready. Only the questions are written: generate their answer keys afterwards, one at a time or all at once next to the download.`}
           </p>
         </div>
         {finishing && (
@@ -965,7 +965,7 @@ function PlannedQuestionCard({
                   autoFocus
                   className="min-h-28"
                   maxLength={4000}
-                  placeholder="Write the question. ProfPilot keeps your wording and adds what it needs, such as choices and the answer key."
+                  placeholder="Write the question. ProfPilot keeps your wording and adds what it needs, such as choices."
                   value={state.professorQuestion}
                   onChange={(event) => set("professorQuestion", event.target.value)}
                 />
@@ -999,7 +999,7 @@ function PlannedQuestionCard({
             className="flex items-center gap-2 rounded-xl border border-dashed bg-card p-4 text-sm text-muted-foreground sm:p-5"
           >
             <Spinner />
-            Generating question {question.number} and its answer key…
+            Generating question {question.number}…
           </div>
         )
       )}

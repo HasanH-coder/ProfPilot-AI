@@ -186,6 +186,10 @@ export type Question = {
   estimatedMinutes: number | null;
   status: "draft" | "approved";
   needsSolutionReview: boolean;
+  /** Answer keys are written on request: whether this question has one yet… */
+  hasAnswerKey?: boolean;
+  /** …and whether it was written before the question last changed. */
+  answerKeyOutdated?: boolean;
   revisionCount: number;
   updatedAt: string;
 };
@@ -288,6 +292,8 @@ export type Readiness = {
   canExport: boolean;
   requiresConfirmation: boolean;
   checks: ReadinessCheck[];
+  /** Which questions have no answer key yet, and which keys are out of date (e.g. "Q3", or "B3" with versions). */
+  answerKeys?: { total: number; missing: string[]; outdated: string[] };
   versions: { label: string; summary: DistributionSummary; warnings: DistributionWarning[] }[];
   durationMinutes: number | null;
 };

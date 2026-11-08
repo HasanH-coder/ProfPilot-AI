@@ -16,11 +16,11 @@ import {
   Trash2,
   Unlock,
 } from "lucide-react";
-import { memo, useId, useState, type FormEvent } from "react";
+import { memo, useId, useState, type FormEvent, type ReactNode } from "react";
 
 import { BloomSwatch } from "@/components/assessment/bloom-chart";
 import { FigurePreview } from "@/components/exam/figure-preview";
-import { DIFFICULTY_LABELS, marks, QUICK_ACTIONS, TYPE_LABELS, type QuickAction } from "@/components/exam/labels";
+import { DIFFICULTY_LABELS, hasAnswerKey, marks, QUICK_ACTIONS, TYPE_LABELS, type QuickAction } from "@/components/exam/labels";
 import { QuestionEditDialog } from "@/components/exam/question-edit-dialog";
 import { InlineQuestionText, QuestionText } from "@/components/exam/question-text";
 import { RevisionHistoryDialog } from "@/components/exam/revision-history-dialog";
@@ -100,6 +100,16 @@ export const QuestionCard = memo(function QuestionCard({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const locked = question.status === "approved";
   const base = `/api/questions/${question.id}`;
+  // Answer keys are written on request, from the question as saved; one written before the question
+  // last changed is marked out of date until it is written again (or fixed by hand).
+  const keyed = hasAnswerKey(question);
+  const outdated = keyed && (question.answerKeyOutdated ?? question.needsSolutionReview);
+  // An approved question still gets a key it lacks, or one that is out of date.
+  const canWriteKey = busy === null && (!locked || !keyed || outdated);
+  const writeKey = () =>
+    void run(keyed ? "Writing the answer key again…" : "Writing the answer key…", () =>
+      apiRequest<QuestionResult>(`${base}/solution`, { method: "POST" }),
+    );
 
   async function run(label: string, action: () => Promise<QuestionResult | void>) {
     setBusy(label);
@@ -166,15 +176,26 @@ export const QuestionCard = memo(function QuestionCard({
               Approved
             </Badge>
           )}
-          {question.needsSolutionReview && (
+          {outdated && (
             <Badge variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400">
               <AlertTriangle />
-              Check answer key
+              Answer key out of date
             </Badge>
           )}
         </div>
 
         <div className={cn("flex shrink-0 items-center gap-1", readOnly && "hidden")}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy !== null || locked}
+            title={locked ? "Unlock the question to edit it." : "Change the question or any choice by typing."}
+            onClick={() => setEditOpen(true)}
+          >
+            <Pencil />
+            Edit
+          </Button>
           <Button
             type="button"
             variant="outline"
@@ -231,20 +252,9 @@ export const QuestionCard = memo(function QuestionCard({
                 ))}
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuItem disabled={locked} onClick={() => setEditOpen(true)}>
-                <Pencil />
-                Edit manually
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={locked}
-                onClick={() =>
-                  void run("Regenerating the answer key…", () =>
-                    apiRequest<QuestionResult>(`${base}/solution`, { method: "POST" }),
-                  )
-                }
-              >
+              <DropdownMenuItem disabled={!canWriteKey} onClick={writeKey}>
                 <KeyRound />
-                Regenerate answer key
+                {keyed ? "Write the answer key again" : "Generate answer key"}
               </DropdownMenuItem>
               {multiVersion && (
                 <DropdownMenuItem
@@ -291,7 +301,7 @@ export const QuestionCard = memo(function QuestionCard({
       {question.choices && (
         <ol className="flex flex-col gap-1.5" aria-label="Choices">
           {question.choices.map((choice) => {
-            const correct = showKey && choice.id === question.correctChoice;
+            const correct = showKey && keyed && choice.id === question.correctChoice;
             return (
               <li
                 key={choice.id}
@@ -337,7 +347,34 @@ export const QuestionCard = memo(function QuestionCard({
         </ol>
       )}
 
-      {showKey && <AnswerKey question={question} />}
+      {showKey &&
+        (keyed ? (
+          <AnswerKey
+            question={question}
+            outdated={outdated}
+            action={
+              outdated && !readOnly ? (
+                <Button type="button" size="sm" variant="outline" disabled={!canWriteKey} onClick={writeKey}>
+                  <KeyRound />
+                  Write the key again
+                </Button>
+              ) : null
+            }
+          />
+        ) : (
+          !readOnly && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed p-3 text-sm">
+              <p className="flex items-center gap-1.5 text-muted-foreground">
+                <KeyRound className="size-3.5" />
+                No answer key yet. It is written from the question as you saved it.
+              </p>
+              <Button type="button" size="sm" disabled={!canWriteKey} onClick={writeKey}>
+                <KeyRound />
+                Generate answer key
+              </Button>
+            </div>
+          )
+        ))}
 
       {asking && !locked && (
         <form id={askId} onSubmit={handleAsk} className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
@@ -362,7 +399,8 @@ export const QuestionCard = memo(function QuestionCard({
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Only this question changes. Its answer key and rubric are rewritten to match.
+            Only this question changes.{" "}
+            {keyed ? "Its answer key is then marked out of date, until you write it again." : "Its answer key is written when you ask."}
           </p>
         </form>
       )}
@@ -432,13 +470,22 @@ export const QuestionCard = memo(function QuestionCard({
   );
 });
 
-function AnswerKey({ question }: { question: Question }) {
+function AnswerKey({ question, outdated, action }: { question: Question; outdated: boolean; action: ReactNode }) {
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 text-sm">
+    <div className={cn("flex flex-col gap-3 rounded-lg border border-dashed p-3 text-sm", outdated && "border-amber-500/60")}>
       <p className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
         <KeyRound className="size-3.5" />
         Answer key
       </p>
+      {outdated && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-amber-700 dark:text-amber-400">
+          <p className="flex items-center gap-1.5">
+            <AlertTriangle className="size-3.5 shrink-0" />
+            Written before the question last changed: check it, or write it again.
+          </p>
+          {action}
+        </div>
+      )}
       {question.type === "mcq" && (
         <p>
           <span className="font-medium">Correct answer:</span> {question.correctChoice}

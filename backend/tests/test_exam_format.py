@@ -150,6 +150,15 @@ def test_the_writer_and_the_quality_check_see_each_case(api, supabase, db_a, ai)
 
     writing = ai.calls_for("generate_questions")[0]["input"]
     assert "THE SECTIONS" in writing and "5,000 transactions" in writing
+    # The answer keys, written on request, are written on the case too; so is the quality check.
+    exam = api.get(f"/api/assessments/{assessment['id']}/exam", headers=auth()).json()
+    from tests.test_revisions import write_all_keys
+
+    write_all_keys(api, exam["id"])
+    keys = ai.calls_for("write_answer_keys")[0]["input"]
+    assert "builds on this case, which students read first: Case Study 1" in keys and "5,000 transactions" in keys
+    started = api.post(f"/api/exams/{exam['id']}/review", headers=auth())
+    assert wait_for_run(api, started.json()["run"]["id"])["status"] == "succeeded"
     review = ai.calls_for("review_exam")[-1]["input"]
     assert "SECTION: Case Study 1: Credit Card Fraud Detection" in review and "5,000 transactions" in review
 

@@ -313,7 +313,7 @@ FORMATTING = (
 
 
 def preamble(framer: DataFramer, *extra: str) -> str:
-    return "\n\n".join([ROLE, AUTHORITY, framer.rules(), *extra])
+    return "\n\n".join([ROLE, AUTHORITY, framer.rules(), *(part for part in extra if part)])
 
 
 # -----------------------------------------------------------------------------
@@ -678,12 +678,34 @@ def choice_ids(count: int) -> str:
     return ", ".join("ABCDEF"[:count])
 
 
-def generator_instructions(framer: DataFramer, *, choices: int = 4) -> str:
+# Questions written without their answer keys: the professor reviews and edits them first, and asks for
+# the keys afterwards (see answer_key_instructions).
+QUESTIONS_ONLY = (
+    "QUESTIONS ONLY. Write each question as students read it: its text, its choices or its parts, and "
+    "nothing of the answer key (no correct choice, answer, solution, rubric or explanation). The professor "
+    "reviews and edits the questions first; the key is written later, from their final wording. Still "
+    "work out each question's answer in full in your reasoning before you settle its wording: a multiple-"
+    "choice question has exactly one correct choice and every other choice is plausible but clearly wrong "
+    "to a student who knows the idea, and every other question has one defensible answer a marker can "
+    "check, with everything needed to reach it."
+)
+
+
+def generator_instructions(framer: DataFramer, *, choices: int = 4, keys: bool = True) -> str:
+    """The question writer. `keys`: write each question's answer key with it (Build with AI), or the
+    questions only (the plan: the keys are written later, on request)."""
     return preamble(
         framer,
-        "TASK. Write the planned questions, each with a complete, correct answer key. Follow "
-        "the plan exactly for each question's number, type, difficulty, Bloom's level "
-        "(cognitive_level) and points, and follow the ExamSpec and enhanced prompt.",
+        (
+            "TASK. Write the planned questions, each with a complete, correct answer key. Follow "
+            "the plan exactly for each question's number, type, difficulty, Bloom's level "
+            "(cognitive_level) and points, and follow the ExamSpec and enhanced prompt."
+            if keys
+            else "TASK. Write the planned questions, without their answer keys (see QUESTIONS ONLY). Follow "
+            "the plan exactly for each question's number, type, difficulty, Bloom's level "
+            "(cognitive_level) and points, and follow the ExamSpec and enhanced prompt."
+        ),
+        "" if keys else QUESTIONS_ONLY,
         "SECTIONS AND CASES. Each planned question shows its section in brackets, and THE SECTIONS shows what "
         "students read under each section heading, just before its questions. When that text is a case (a "
         "scenario with its data), write the question on the case: use its facts and data exactly as given, "
@@ -714,7 +736,8 @@ def generator_instructions(framer: DataFramer, *, choices: int = 4) -> str:
         "it needs already worked out and ask what it means, which applies, or why. "
         "Never list in the stem the points a full answer must contain "
         "(that turns understanding into a checklist): ask the question, and put those points in the "
-        "rubric. Work the solution out in full before you settle the answer key.",
+        "rubric. Work the solution out in full before you settle the answer key (or, without a key, before "
+        "you settle the question's wording and choices).",
         "QUALITY. Put the whole problem in the stem; avoid negative stems ('which is NOT') unless "
         "essential; use realistic, specific scenarios and clean numbers with units; no trivial or "
         "artificially complicated questions, and no repeated stem patterns across the exam. Don't "
@@ -735,23 +758,34 @@ def generator_instructions(framer: DataFramer, *, choices: int = 4) -> str:
         "criterion rewards a distinct, non-trivial step, never restating given values. Choose values that "
         "make each step real work; an edge case (a boundary value, a zero, an empty input) is fine when it "
         "tests an important idea, and it earns only the marks of the reasoning it needs.",
-        f"MULTIPLE CHOICE: exactly {choices} choices with ids {choice_ids(choices)}; exactly one is correct "
-        "(correct_choice). Distractors must be plausible, parallel in length and form to the correct "
+        f"MULTIPLE CHOICE: exactly {choices} choices with ids {choice_ids(choices)}; exactly one is correct"
+        + (" (correct_choice)" if keys else "")
+        + ". Distractors must be plausible, parallel in length and form to the correct "
         "choice, and reflect real misconceptions or likely slips: each is what a student with a "
         "specific misunderstanding of the same idea would choose, of the same kind as the answer (if "
         "the answer is a definition of a boundary, every choice describes a boundary-like idea), never "
         "a different kind of thing that is obviously wrong; avoid 'all of the above', and use 'none of the "
         "above' only when the professor's previous exams use it and it is a fair choice; vary the position "
         "of the correct answer across questions. A choice is text, a value or a formula: never a table "
-        "(put a table students compare in the stem). 'answer' states "
-        "the correct choice and why; 'explanation' says why each distractor is wrong. choices and "
-        "correct_choice are null for every other type, and MCQs have no subparts.",
-        "SUBJECTIVE: give a model answer in 'answer', a worked solution a marker can follow in "
-        "'solution', and a marking rubric whose points add up exactly to the question's points, "
-        "with criteria a marker can check and that reward the planned thinking (e.g. the "
-        "justification in an evaluate question). If you use subparts (labels a, b, c…), their "
-        "points must add up to the question's points and each subpart has its own answer and "
-        "rubric; the question-level rubric may then be null or summarise the subparts. With subparts, "
+        "(put a table students compare in the stem). "
+        + (
+            "'answer' states the correct choice and why; 'explanation' says why each distractor is wrong. "
+            "choices and correct_choice are null for every other type, and MCQs have no subparts."
+            if keys
+            else "choices are null for every other type, and MCQs have no subparts."
+        ),
+        (
+            "SUBJECTIVE: give a model answer in 'answer', a worked solution a marker can follow in "
+            "'solution', and a marking rubric whose points add up exactly to the question's points, "
+            "with criteria a marker can check and that reward the planned thinking (e.g. the "
+            "justification in an evaluate question). If you use subparts (labels a, b, c…), their "
+            "points must add up to the question's points and each subpart has its own answer and "
+            "rubric; the question-level rubric may then be null or summarise the subparts. "
+            if keys
+            else "SUBJECTIVE: ask for exactly what earns the marks, so a marker can later check an answer against "
+            "a rubric. If you use subparts (labels a, b, c…), their points must add up to the question's points. "
+        )
+        + "With subparts, "
         "'prompt' holds only what they share (the scenario, data, definitions); each task appears once, "
         "in its own subpart's prompt, never also in 'prompt' (both are shown to students). Subparts may "
         "build from lower to higher levels; cognitive_level is the highest level the question needs.",
@@ -759,7 +793,7 @@ def generator_instructions(framer: DataFramer, *, choices: int = 4) -> str:
         "material within its estimated time. Reference the excerpts you used by their ids in "
         "source_excerpt_ids (e.g. 'S3'), using only ids of the excerpts given in this request: ids "
         "mentioned in the brief or the plan belong to other requests. Never write excerpt ids, topic "
-        "ids or 'Source:' lines in the prompt, answer, solution or explanation: ProfPilot attaches the "
+        "ids or 'Source:' lines in the question's text (or its key): ProfPilot attaches the "
         "sources with their pages itself. Don't write marks into the prompt or subpart prompts ('(2 "
         "marks)'): ProfPilot shows them. concepts are short concept names ('Sigmoid function'), never "
         "sources or ids. Do not mention excerpts, files or ProfPilot in the "
@@ -793,7 +827,9 @@ def variant_instructions(framer: DataFramer) -> str:
         "rewritten MCQ choices. Not a trivial renaming: a student who memorised one version's "
         "answer must still have to do the same thinking on the other. A student who saw one "
         "version must not gain an advantage on the other, and neither version may be harder. "
-        "Recompute every answer, solution and rubric for the new details. Set source_number to the "
+        "Write the question only, without its answer key (the professor asks for the keys later): work its "
+        "answer out for the new details in your reasoning, so it has exactly one correct choice or one "
+        "defensible answer. Set source_number to the "
         "number of the question you are varying, and describe the variation briefly. Keep the same number "
         "of choices. A question shown under a case (a section's scenario, printed once for every version) "
         "keeps using that case exactly as written: vary what the question itself adds, its wording and its "
@@ -890,10 +926,10 @@ def reviser_instructions(framer: DataFramer) -> str:
         "TASK. Revise ONE exam question as the professor asks, and nothing else. Keep "
         "everything the instruction doesn't ask to change (topic, type, points, difficulty, "
         "Bloom's level, subparts, the number of choices, and the case it builds on) unless the instruction "
-        "requires changing it. Then make the answer "
-        "key match the revised question exactly: correct_choice must be one of the choices, the "
-        "answer and solution must solve the new question, and rubric points must add up to the "
-        "question's points (subpart points too). Set cognitive_level to the level the revised "
+        "requires changing it. Write the revised question only (its text, choices or parts), without an "
+        "answer key: the professor asks for the key separately, from the saved question. Work its answer out "
+        "in your reasoning, so it still has exactly one correct choice or one defensible answer, and subpart "
+        "points add up to the question's points. Set cognitive_level to the level the revised "
         "question genuinely assesses. Summarise what changed in change_summary.",
         "If the instruction asks for something impossible or unsafe for an exam, make the "
         "closest reasonable change and explain it in change_summary.",
@@ -910,18 +946,24 @@ def reviser_instructions(framer: DataFramer) -> str:
     )
 
 
-def solution_instructions(framer: DataFramer) -> str:
+def answer_key_instructions(framer: DataFramer) -> str:
     return preamble(
         framer,
-        "TASK. The professor edited this question. Write a fresh, correct answer key for the "
-        "question exactly as it now reads: for MCQ, the correct choice id (one of the listed "
-        "choices) with the answer and an explanation of the distractors; for other types, a "
-        "model answer, a worked solution, and a rubric whose points add up exactly to the "
-        "question's points. If it has subparts, give one answer per subpart in order. If the "
-        "question is ambiguous or not answerable as written, still give the best key and "
-        "explain the problem in notes.",
+        "TASK. Write the answer key of each question given, for the question exactly as it now reads (the "
+        "professor's saved wording, choices and parts). Solve each question yourself, from the course "
+        "material, its slides and the case it builds on (shown with it), before you write its key. Give each "
+        "key the question's number. For multiple choice: correct_choice is the id of the one correct choice "
+        "(one of the listed ids), 'answer' states it and why in a sentence or two, 'explanation' says briefly "
+        "why each other choice is wrong, and rubric and subparts are null. For every other type: 'answer' is "
+        "a model answer, 'solution' a worked solution a marker can follow, and 'rubric' a marking rubric whose "
+        "points add up exactly to the question's points, with criteria a marker can check; correct_choice is "
+        "null. A question with parts gets one entry in subparts per part, in order, with the part's label, its "
+        "answer and its own rubric adding up to the part's points (the question's rubric may then be null). "
+        "If a question can't be keyed as written (two defensible choices, no correct choice, missing "
+        "information), still give the best key and say exactly what is wrong in notes; otherwise notes is null.",
         FORMULA_FIDELITY,
         GROUNDING,
+        PROFESSOR_RULES,
         CLEAR_WORDING,
         FORMATTING,
     )

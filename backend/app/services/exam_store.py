@@ -17,7 +17,7 @@ from typing import Any
 from app.core.errors import ConflictError, InvalidInputError, NotFoundError
 from app.db.supabase import Database
 from app.domain import distribution
-from app.schemas.ai import ExamSpec, QuestionContent
+from app.schemas.ai import ExamSpec, QuestionContent, QuestionDraft, SubpartOut
 from app.schemas.common import parse_id
 from app.services.document_parsers import EXTRACTION_GLYPHS
 
@@ -88,6 +88,41 @@ class FullExam:
 # =============================================================================
 
 
+def draft_to_content(draft: QuestionDraft) -> QuestionContent:
+    """A question written without its answer key, as stored: every key field empty until the key is
+    written (on request, from the saved wording)."""
+    return normalize_content(
+        QuestionContent(
+            type=draft.type,
+            difficulty=draft.difficulty,
+            cognitive_level=draft.cognitive_level,
+            points=draft.points,
+            prompt=draft.prompt,
+            choices=draft.choices,
+            correct_choice=None,
+            subparts=[
+                SubpartOut(label=part.label, prompt=part.prompt, points=part.points, answer="", rubric=[])
+                for part in draft.subparts or []
+            ]
+            or None,
+            answer="",
+            solution="",
+            rubric=None,
+            explanation=None,
+            concepts=draft.concepts,
+            learning_objectives=draft.learning_objectives,
+            source_excerpt_ids=draft.source_excerpt_ids,
+            estimated_minutes=draft.estimated_minutes,
+            figure_document_id=draft.figure_document_id,
+        )
+    )
+
+
+def has_answer_key(row: dict[str, Any]) -> bool:
+    """Whether a stored question has an answer key (one may be out of date: needs_solution_review)."""
+    return bool(row.get("correct_choice") or (row.get("answer") or "").strip() or (row.get("solution") or "").strip())
+
+
 def normalize_content(content: QuestionContent) -> QuestionContent:
     """Tidies harmless formatting differences before validation."""
     content = content.model_copy(deep=True)
@@ -129,12 +164,16 @@ def student_texts(content: QuestionContent) -> list[str]:
 _CHOICE_WORDS = 40
 
 
-def question_problems(content: QuestionContent, *, label: str = "The question", manual: bool = False) -> list[str]:
+def question_problems(
+    content: QuestionContent, *, label: str = "The question", manual: bool = False, key: bool = True
+) -> list[str]:
     """Business rules a question must satisfy before it is saved.
 
     AI-written questions must be complete (4 choices, a full answer key and
     rubric). A professor's manual edit only has to be structurally valid: an
-    incomplete answer key is flagged for review instead of rejected.
+    incomplete answer key is flagged for review instead of rejected. `key`: whether
+    the question must have its answer key (False for a question written without one;
+    a key it has must still fit it).
     """
     problems: list[str] = []
     if not content.prompt:
@@ -160,7 +199,7 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             f"{label} writes marks into its text (e.g. '(2 marks)'). ProfPilot shows the marks of each question "
             "and part itself: remove them from the prompt and subpart prompts."
         )
-    if not content.answer and not manual:
+    if not content.answer and not manual and key:
         problems.append(f"{label} has no answer.")
     if content.type == "mcq":
         choices = content.choices or []
@@ -173,7 +212,10 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
         texts = [re.sub(r"\s+", " ", choice.text.strip().lower()) for choice in choices]
         if any(not text for text in texts) or len(set(texts)) != len(texts):
             problems.append(f"{label} has empty or repeated choices.")
-        if content.correct_choice not in ids:
+        if content.correct_choice is None:
+            if key and not manual:
+                problems.append(f"{label}'s correct_choice must be one of its choice ids ({', '.join(ids)}).")
+        elif content.correct_choice not in ids:
             problems.append(f"{label}'s correct_choice must be one of its choice ids ({', '.join(ids)}).")
         long_choices = [choice.id for choice in choices if len(choice.text.split()) > _CHOICE_WORDS]
         if long_choices and not manual:
@@ -186,7 +228,7 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
     else:
         if content.choices or content.correct_choice:
             problems.append(f"{label} is not multiple choice, so it must not have choices.")
-        if not content.solution and not manual:
+        if not content.solution and not manual and key:
             problems.append(f"{label} needs a worked solution or model answer.")
         if content.subparts:
             labels = [part.label.strip().lower() for part in content.subparts]
@@ -203,11 +245,11 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
                     "belongs once, in its subpart."
                 )
             for part in content.subparts:
-                if not part.prompt.strip() or (not part.answer.strip() and not manual):
+                if not part.prompt.strip() or (not part.answer.strip() and not manual and key):
                     problems.append(f"{label} part ({part.label}) needs a prompt and an answer.")
                 if not manual and part.rubric and abs(sum(item.points for item in part.rubric) - part.points) > _POINTS_TOLERANCE:
                     problems.append(f"{label} part ({part.label})'s rubric must add up to {part.points:g} points.")
-        elif not content.rubric and not manual:
+        elif not content.rubric and not manual and key:
             problems.append(f"{label} needs a marking rubric.")
         if content.rubric and not content.subparts and not manual:
             total = sum(item.points for item in content.rubric)
@@ -532,7 +574,7 @@ def content_to_row(
         "choices": [choice.model_dump() for choice in content.choices] if content.choices else None,
         "correct_choice": content.correct_choice if content.type == "mcq" else None,
         "subparts": [part.model_dump() for part in content.subparts] if content.subparts else None,
-        "answer": content.answer,
+        "answer": content.answer or None,
         "solution": content.solution or None,
         "rubric": [item.model_dump() for item in content.rubric] if content.rubric else None,
         "explanation": content.explanation or None,
@@ -577,14 +619,15 @@ def render_question(row: dict[str, Any], number: int, *, include_key: bool = Tru
         lines.append(f"  {choice['id']}. {choice['text']}")
     for part in row.get("subparts") or []:
         lines.append(f"  ({part['label']}) [{float(part['points']):g} pts] {part['prompt']}")
-        if include_key:
+        if include_key and part.get("answer"):
             lines.append(f"     Answer: {part.get('answer', '')}")
+        if include_key:
             if part.get("rubric"):
                 lines.append(f"     Rubric: {_rubric_text(part['rubric'])}")
     if include_key:
         if row.get("correct_choice"):
             lines.append(f"Correct choice: {row['correct_choice']}")
-        lines.append(f"Answer: {row.get('answer') or ''}")
+        lines.append(f"Answer: {row.get('answer') or '(no answer key yet)'}")
         if row.get("solution"):
             lines.append(f"Solution: {row['solution']}")
         if row.get("rubric"):
@@ -637,6 +680,9 @@ def serialize_question(row: dict[str, Any], number: int, revision_count: int = 0
         "estimatedMinutes": float(row["estimated_minutes"]) if row.get("estimated_minutes") is not None else None,
         "status": row["status"],
         "needsSolutionReview": row["needs_solution_review"],
+        # Answer keys are written on request: none yet, or one written before the question last changed.
+        "hasAnswerKey": has_answer_key(row),
+        "answerKeyOutdated": has_answer_key(row) and bool(row["needs_solution_review"]),
         "revisionCount": revision_count,
         "updatedAt": row["updated_at"],
     }
@@ -902,6 +948,12 @@ class ExamStore:
             await self._forget_revision(revision)
             return None
         return rows[0]
+
+    async def update_if_unchanged(self, question: dict[str, Any], values: dict[str, Any]) -> dict[str, Any] | None:
+        """Applies a change only if the question is still as it was read (else None: an edit made meanwhile wins)."""
+        filters = self._owned(("id", "eq", question["id"]), ("updated_at", "eq", question["updated_at"]))
+        rows = await self.db.update("exam_questions", values, filters=filters, columns=QUESTION_COLUMNS)
+        return rows[0] if rows else None
 
     async def _read_after_failure(self, question_id: str) -> dict[str, Any] | None:
         try:

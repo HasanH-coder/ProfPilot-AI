@@ -41,15 +41,17 @@ from app.domain.setup import BLOOM_PRESETS
 from app.schemas.ai import (
     COGNITIVE_LEVELS,
     QUESTION_TYPES,
+    DraftBatch,
     ExamPlan,
     ExamSpec,
-    GeneratedQuestion,
     PlannedQuestion,
     PlannedSection,
     QuestionBatch,
     QuestionContent,
+    QuestionDraft,
     StyleProfile,
     VariantBatch,
+    VariantDraftBatch,
 )
 from app.schemas.common import parse_id
 from app.services.assessment_context import (
@@ -66,6 +68,7 @@ from app.services.exam_store import (
     ExamStore,
     FullExam,
     content_to_row,
+    draft_to_content,
     leak_messages,
     normalize_content,
     question_problems,
@@ -879,6 +882,11 @@ def render_sections(sections: list[tuple[str, str | None]], framer: DataFramer) 
     )
 
 
+def as_content(question: QuestionContent | QuestionDraft) -> QuestionContent:
+    """A written question as stored: with its answer key, or (written without one) with empty key fields."""
+    return normalize_content(question) if isinstance(question, QuestionContent) else draft_to_content(question)
+
+
 def choice_count_problems(content: QuestionContent, label: str, expected: int) -> list[str]:
     """An MCQ with another number of choices than the exam uses (the professor's number, else 4)."""
     if content.type != "mcq" or len(content.choices or []) == expected:
@@ -887,13 +895,16 @@ def choice_count_problems(content: QuestionContent, label: str, expected: int) -
 
 
 def batch_problems(
-    batch: QuestionBatch,
+    batch: QuestionBatch | DraftBatch,
     planned: list[PlannedQuestion],
     others: list[str],
     *,
     choices: int = 4,
     style: StyleNumbers | None = None,
 ) -> list[str]:
+    """Problems with a batch of written questions: with their answer keys (QuestionBatch), or without them
+    (DraftBatch, the keys being written later)."""
+    keyed = isinstance(batch, QuestionBatch)
     problems: list[str] = []
     by_number = {q.number: q for q in batch.questions}
     if sorted(by_number) != sorted(p.number for p in planned) or len(batch.questions) != len(planned):
@@ -903,7 +914,7 @@ def batch_problems(
         if question is None:
             continue
         label = f"Question {slot.number}"
-        content = normalize_content(question)
+        content = as_content(question)
         if content.type != slot.type or content.difficulty != slot.difficulty:
             problems.append(f"{label} must be type {slot.type} and difficulty {slot.difficulty}, as planned.")
         if content.cognitive_level != slot.cognitive_level:
@@ -912,7 +923,7 @@ def batch_problems(
             problems.append(f"{label} must be worth {slot.points:g} points, as planned.")
         if (content.figure_document_id or None) != (slot.figure_document_id or None):
             problems.append(f"{label} must use figure_document_id {slot.figure_document_id!r}, as planned.")
-        problems.extend(question_problems(content, label=label))
+        problems.extend(question_problems(content, label=label, key=keyed))
         problems.extend(choice_count_problems(content, label, choices))
         # The professor's own question keeps their wording, however long.
         if not slot.professor_question:
@@ -924,7 +935,7 @@ def batch_problems(
     return problems
 
 
-def variant_problems(batch: VariantBatch, sources: dict[int, dict[str, Any]]) -> list[str]:
+def variant_problems(batch: VariantBatch | VariantDraftBatch, sources: dict[int, dict[str, Any]]) -> list[str]:
     problems: list[str] = []
     numbers = [variant.source_number for variant in batch.variants]
     if sorted(numbers) != sorted(sources):
@@ -934,7 +945,7 @@ def variant_problems(batch: VariantBatch, sources: dict[int, dict[str, Any]]) ->
         if source is None:
             continue
         label = f"The variant of question {variant.source_number}"
-        content = normalize_content(variant.question)
+        content = as_content(variant.question)
         if content.type != source["type"] or content.difficulty != source["difficulty"]:
             problems.append(f"{label} must keep type {source['type']} and difficulty {source['difficulty']}.")
         if source.get("cognitive_level") and content.cognitive_level != source["cognitive_level"]:
@@ -943,7 +954,7 @@ def variant_problems(batch: VariantBatch, sources: dict[int, dict[str, Any]]) ->
             problems.append(f"{label} must keep {float(source['points']):g} points.")
         if similar(content.prompt, source["prompt"]) > 0.95:
             problems.append(f"{label} is identical to the original; change its values, scenario or wording.")
-        problems.extend(question_problems(content, label=label))
+        problems.extend(question_problems(content, label=label, key=isinstance(batch, VariantBatch)))
         if source["type"] == "mcq" and source.get("choices"):
             problems.extend(choice_count_problems(content, label, len(source["choices"])))
     return problems
@@ -993,18 +1004,19 @@ class ExamGenerationService:
         missing = [q for q in plan.questions if q.number not in existing]
         await self.write_slots(ctx, exam_id, plan, missing, run=run)
 
-        # The professor reads the exam as soon as its questions are written. The other versions and the
-        # quality check (once, after every question is written) follow in the background, as in Build
-        # with AI; the review keeps a professor's edits and approvals made meanwhile.
+        # The professor reads the exam as soon as its questions are written. The other versions follow in the
+        # background, also without answer keys: every key is written only when the professor asks (one
+        # question's, or all of them, from the saved questions), so no quality check runs here either.
         await run.stage("finalizing")
-        await self.store.update_exam(exam_id, {"status": "ready", "error_message": None, "review_status": "running"})
+        await self.store.update_exam(exam_id, {"status": "ready", "error_message": None})
         from app.services.exam_builder import start_finish_job  # avoids an import cycle
 
         try:
-            await start_finish_job(self.db, self.ai, full.exam)
+            if len(full.versions) > 1:
+                await start_finish_job(self.db, self.ai, full.exam, review=False)
         except ConflictError:
-            # Already creating the versions and checking this exam.
-            logger.info("Versions and quality check already running for exam %s", exam_id)
+            # Already creating the versions of this exam.
+            logger.info("Versions already being created for exam %s", exam_id)
 
     async def write_slots(
         self,
@@ -1029,7 +1041,7 @@ class ExamGenerationService:
             questions, excerpts = await self._write_batch(ctx, plan, batch, written)
             refs = excerpt_ref_map(excerpts)
             for slot in batch:
-                content = normalize_content(next(q for q in questions if q.number == slot.number))
+                content = next(content for number, content in questions if number == slot.number)
                 section = sections[slot.section_index] if slot.section_index < len(sections) else sections[-1]
                 row = await self.store.insert_question(
                     exam_id,
@@ -1057,7 +1069,8 @@ class ExamGenerationService:
 
     async def _write_batch(
         self, ctx: GenerationContext, plan: ExamPlan, batch: list[PlannedQuestion], written: list[str]
-    ) -> tuple[list[GeneratedQuestion], list[Excerpt]]:
+    ) -> tuple[list[tuple[int, QuestionContent]], list[Excerpt]]:
+        """Writes planned questions without their answer keys: (number, question as stored) pairs."""
         framer = DataFramer()
         retrieval = DocumentRetrievalService(self.db, self.ai, self.usage)
         refs = [ref for slot in batch for ref in slot.knowledge_refs]
@@ -1112,21 +1125,21 @@ class ExamGenerationService:
         ]
         batch_result = await self.ai.parse_with_files(
             purpose="generate_questions",
-            instructions=generator_instructions(framer, choices=ctx.mcq_choices),
+            instructions=generator_instructions(framer, choices=ctx.mcq_choices, keys=False),
             text="\n\n".join(part for part in sections if part),
             files=image_parts(images, slides),
-            schema=QuestionBatch,
+            schema=DraftBatch,
             effort=batch_effort(batch),
             max_output_tokens=48_000,
             validate=lambda result: (
                 batch_problems(result, batch, others, choices=ctx.mcq_choices, style=ctx.style_numbers)
-                + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)
+                + ctx.formula_problems((f"Question {q.number}", as_content(q)) for q in result.questions)
                 + excerpt_id_problems(((f"Question {q.number}", q) for q in result.questions), excerpts)
-                + leak_messages([normalize_content(q) for q in result.questions], [q.number for q in result.questions])
+                + leak_messages([as_content(q) for q in result.questions], [q.number for q in result.questions])
             ),
             usage=self.usage,
         )
-        return batch_result.questions, excerpts
+        return [(q.number, as_content(q)) for q in batch_result.questions], excerpts
 
     async def create_missing_variants(self, ctx: GenerationContext, exam_id: str) -> None:
         """Gives every other version an equivalent of each question it is missing."""
@@ -1173,7 +1186,8 @@ class ExamGenerationService:
         ordered_sections = sorted(full.sections, key=lambda section: section["position"])
         titles = {section["id"]: section["title"] for section in ordered_sections}
         listing = "\n\n".join(
-            (f"[{titles[q['section_id']]}]\n" if q.get("section_id") in titles else "") + render_question(q, number)
+            (f"[{titles[q['section_id']]}]\n" if q.get("section_id") in titles else "")
+            + render_question(q, number, include_key=False)
             for number, q in sources.items()
         )
         result = await self.ai.parse(
@@ -1188,18 +1202,18 @@ class ExamGenerationService:
                     + framer.block("questions", f"version {source_label}", listing),
                 ]
             ),
-            schema=VariantBatch,
+            schema=VariantDraftBatch,
             effort="medium",
             max_output_tokens=40_000,
             validate=lambda batch: (
                 variant_problems(batch, sources)
                 + ctx.formula_problems(
-                    (f"The variant of question {v.source_number}", normalize_content(v.question)) for v in batch.variants
+                    (f"The variant of question {v.source_number}", as_content(v.question)) for v in batch.variants
                 )
             ),
             usage=self.usage,
         )
-        return [(sources[v.source_number], normalize_content(v.question)) for v in result.variants]
+        return [(sources[v.source_number], as_content(v.question)) for v in result.variants]
 
     async def _fail(self, exam_id: str, message: str) -> None:
         try:

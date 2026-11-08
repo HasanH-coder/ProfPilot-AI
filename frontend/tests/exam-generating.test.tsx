@@ -32,7 +32,7 @@ test("while the exam is written, each question appears in order as soon as it is
   await expect.element(screen.getByText("Generating the exam: 2 of 3 questions ready")).toBeVisible();
   // Numbered by the plan, not by arrival: question 3 is "Question 3" even before question 2 exists.
   await expect.element(screen.getByRole("heading", { name: "Question 3" })).toBeVisible();
-  await expect.element(screen.getByText("Generating question 2 and its answer key…")).toBeVisible();
+  await expect.element(screen.getByText("Generating question 2…")).toBeVisible();
   // Reading only: nothing can be changed until the whole exam is written.
   expect(screen.getByRole("button", { name: "Approve" }).query()).toBeNull();
 
@@ -66,7 +66,7 @@ test("while the exam is written, each case is shown with its questions, before t
   await expect.element(caseSection.getByText(caseText)).toBeVisible();
   await expect.element(caseSection.getByRole("heading", { name: "Question 1" })).toBeVisible();
   // Question 2 isn't written yet, and is already under its case.
-  await expect.element(caseSection.getByText("Generating question 2 and its answer key…")).toBeVisible();
+  await expect.element(caseSection.getByText("Generating question 2…")).toBeVisible();
   const second = screen.getByRole("region", { name: "Short questions" });
-  await expect.element(second.getByText("Generating question 3 and its answer key…")).toBeVisible();
+  await expect.element(second.getByText("Generating question 3…")).toBeVisible();
 });

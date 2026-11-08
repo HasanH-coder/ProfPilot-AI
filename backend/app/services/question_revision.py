@@ -1,4 +1,8 @@
-"""Changing one question at a time, by hand or with AI, with its answer key kept in sync.
+"""Changing one question at a time, by hand or with AI.
+
+Answer keys are written only when the professor asks (see answer_keys.py). A change to a question that has
+a key keeps that key, marked out of date (needs_solution_review), until it is written again or the
+professor fixes it by hand; a question without a key simply stays without one.
 
 Every change records the question as it was before (question_revisions), so
 the professor can see what changed and restore an earlier version. Approved
@@ -10,16 +14,17 @@ import re
 from typing import Any
 
 from app.ai.openai_service import Effort, OpenAIService, Usage
-from app.ai.prompts import DataFramer, reviser_instructions, solution_instructions
+from app.ai.prompts import DataFramer, reviser_instructions
 from app.core.errors import ConflictError, InvalidInputError, NotFoundError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
-from app.schemas.ai import QuestionContent, RevisedQuestion, SolutionKey
+from app.schemas.ai import QuestionContent, RevisedDraft
 from app.schemas.common import ApiModel, parse_id
 from app.services.document_retrieval import DocumentRetrievalService, assign_refs, render_excerpts
 from app.services.exam_generation import (
     GenerationContext,
+    as_content,
     excerpt_id_problems,
     excerpt_ref_map,
     load_generation_context,
@@ -29,6 +34,7 @@ from app.services.exam_store import (
     SNAPSHOT_FIELDS,
     ExamStore,
     content_to_row,
+    has_answer_key,
     leak_messages,
     normalize_content,
     question_problems,
@@ -122,8 +128,8 @@ class QuestionRevisionService:
             return await self._revise(question_id, instruction=instruction, preset=preset)
 
     async def _revise(self, question_id: str, *, instruction: str | None, preset: str | None) -> dict[str, Any]:
-        """Revises one question and its answer key. Only that question's context is
-        loaded: no file is read again, no other question changes, no exam review runs."""
+        """Revises one question (without its answer key: a key it has is marked out of date). Only that
+        question's context is loaded: no file is read again, no other question changes, no exam review runs."""
         question = await self.store.get_question(question_id)
         exam = await self.store.require_editable(question)
         if question["status"] == "approved":
@@ -168,9 +174,9 @@ class QuestionRevisionService:
         # Quick actions that don't change what the question tests keep its Bloom's level.
         kept_level = question.get("cognitive_level") if preset in ("clearer", "shorter", "alternative", "replace") else None
 
-        def problems(result: RevisedQuestion) -> list[str]:
-            content = normalize_content(result.question)
-            found = question_problems(content)
+        def problems(result: RevisedDraft) -> list[str]:
+            content = as_content(result.question)
+            found = question_problems(content, key=False)
             if content.cognitive_level is None:
                 found.append("Set cognitive_level to the Bloom's level the revised question genuinely assesses.")
             elif kept_level and content.cognitive_level != kept_level:
@@ -187,6 +193,10 @@ class QuestionRevisionService:
                 found.append("Write a genuinely different question, not a reworded one.")
             if any(similar(content.prompt, other) > 0.85 for other in others):
                 found.append("The revised question duplicates another question in the exam.")
+            if question["type"] == "mcq" and content.type == "mcq" and keeps_type:
+                count = len(question.get("choices") or [])
+                if count and len(content.choices or []) != count:
+                    found.append(f"Keep the question's {count} choices.")
             found += ctx.formula_problems([("The revised question", content)])
             found += excerpt_id_problems([("The revised question", result.question)], excerpts)
             found += leak_messages(
@@ -225,17 +235,17 @@ class QuestionRevisionService:
                     render_excerpts(excerpts, framer),
                     notes,
                     "THE QUESTION TO REVISE (application data)\n"
-                    + framer.block("question", f"question {number}", render_question(question, number)),
+                    + framer.block("question", f"question {number}", render_question(question, number, include_key=False)),
                     "REQUESTED CHANGE\n" + request,
                 ]
             ),
-            schema=RevisedQuestion,
+            schema=RevisedDraft,
             effort=_revision_effort(question["type"], target_difficulty, instruction),
             max_output_tokens=20_000,
             validate=problems,
             usage=self.usage,
         )
-        content = normalize_content(result.question)
+        content = as_content(result.question)
         label = f"[{preset}] " if preset else ""
         await self.store.record_revision(
             question,
@@ -253,6 +263,7 @@ class QuestionRevisionService:
                     # Its planned pages and topics stay; only the excerpts it cites are new.
                     topic_refs=[ref for ref in question.get("source_refs") or [] if ref.get("topic") or ref.get("page")],
                 ),
+                **kept_key(question, content),
                 "status": "draft",
             },
         )
@@ -261,73 +272,13 @@ class QuestionRevisionService:
     # -- Answer key ----------------------------------------------------------------------
 
     async def regenerate_solution(self, question_id: str) -> dict[str, Any]:
-        question = await self.store.get_question(question_id)
-        exam = await self.store.require_editable(question)
-        if question["status"] == "approved":
-            raise ConflictError(LOCKED_MESSAGE, code="question_locked")
+        """Writes this question's answer key from the question as it is saved (see answer_keys.py)."""
+        from app.services.answer_keys import AnswerKeyService  # avoids an import cycle
+
+        result = await AnswerKeyService(self.db, self.ai, self.usage).write_one(question_id)
+        exam = await self.store.get_exam(result["question"]["exam_id"])
         ctx = await load_generation_context(self.db, exam["exam_project_id"], require_approved=False)
-        framer = DataFramer()
-        excerpts = assign_refs(
-            await DocumentRetrievalService(self.db, self.ai, self.usage).search(
-                ctx.record.id,
-                [question["prompt"][:800]],
-                document_names=ctx.document_names,
-                per_query=6,
-                max_excerpts=6,
-                max_chars=10_000,
-            )
-        )
-        choice_ids = [choice["id"] for choice in question.get("choices") or []]
-        subparts = question.get("subparts") or []
-        points = float(question["points"])
-
-        def problems(key: SolutionKey) -> list[str]:
-            found = []
-            if question["type"] == "mcq" and (key.correct_choice or "").upper() not in choice_ids:
-                found.append(f"correct_choice must be one of {', '.join(choice_ids)}.")
-            if subparts and len(key.subpart_answers or []) != len(subparts):
-                found.append(f"Give exactly {len(subparts)} subpart answers, in order.")
-            if question["type"] != "mcq" and not subparts:
-                if not key.rubric or abs(sum(item.points for item in key.rubric) - points) > 0.01:
-                    found.append(f"The rubric must add up to {points:g} points.")
-            if not key.answer.strip():
-                found.append("Give the answer.")
-            return found
-
-        number = 1
-        key = await self.ai.parse(
-            purpose="regenerate_solution",
-            instructions=solution_instructions(framer),
-            input="\n\n".join(
-                [
-                    render_excerpts(excerpts, framer),
-                    "THE QUESTION (as the professor edited it)\n"
-                    + framer.block("question", "question", render_question(question, number, include_key=False)),
-                ]
-            ),
-            schema=SolutionKey,
-            effort=question_effort(question["type"], question["difficulty"]),
-            max_output_tokens=16_000,
-            validate=problems,
-            usage=self.usage,
-        )
-        values: dict[str, Any] = {
-            "answer": key.answer.strip(),
-            "solution": key.solution.strip() or None,
-            "explanation": key.explanation,
-            "needs_solution_review": False,
-        }
-        if question["type"] == "mcq":
-            values["correct_choice"] = (key.correct_choice or "").upper()
-        else:
-            values["rubric"] = [item.model_dump() for item in key.rubric] if key.rubric else None
-        if subparts:
-            values["subparts"] = [
-                {**part, "answer": answer} for part, answer in zip(subparts, key.subpart_answers or [], strict=False)
-            ]
-        await self.store.record_revision(question, source="solution_regenerated", instruction="Answer key regenerated")
-        updated = await self.store.update_question(question["id"], values)
-        return {"question": updated, "notes": key.notes, **await self._version_warnings(updated, ctx)}
+        return {**result, **await self._version_warnings(result["question"], ctx)}
 
     # -- Manual edits ----------------------------------------------------------------------
 
@@ -391,7 +342,8 @@ class QuestionRevisionService:
         key_changed = any(name in sent and changes[name] != question.get(name) for name in _KEY_FIELDS)
         needs_review = question["needs_solution_review"]
         if content_changed and not key_changed:
-            needs_review = True
+            # A key written for the old wording is out of date; a question without a key has none to flag.
+            needs_review = has_answer_key(question)
         elif key_changed:
             needs_review = bool(question_problems(content))
 
@@ -536,6 +488,34 @@ class QuestionRevisionService:
 _DEMANDING = re.compile(
     r"\b(hard|harder|hardest|difficult|challeng\w*|complex|multi[- ]?step|proof|prove|derive|derivation)\b", re.I
 )
+
+
+def kept_key(question: dict[str, Any], content: QuestionContent) -> dict[str, Any]:
+    """The answer key a revised question keeps: the one it had, marked out of date (the professor writes it
+    again or fixes it), as far as it still fits (a correct choice that no longer exists is dropped). A
+    question without a key stays without one."""
+    if not has_answer_key(question):
+        return {"needs_solution_review": False}
+    choice_ids = [choice.id for choice in content.choices or []] if content.type == "mcq" else []
+    values: dict[str, Any] = {
+        "answer": question.get("answer"),
+        "solution": question.get("solution"),
+        "explanation": question.get("explanation"),
+        "rubric": question.get("rubric") if content.type != "mcq" else None,
+        "correct_choice": question.get("correct_choice") if question.get("correct_choice") in choice_ids else None,
+        "needs_solution_review": True,
+    }
+    if content.subparts:
+        old = {part["label"]: part for part in question.get("subparts") or []}
+        values["subparts"] = [
+            {
+                **part.model_dump(),
+                "answer": old.get(part.label, {}).get("answer", ""),
+                "rubric": old.get(part.label, {}).get("rubric", []),
+            }
+            for part in content.subparts
+        ]
+    return values
 
 
 def _revision_effort(question_type: str, target_difficulty: str, instruction: str) -> Effort:

@@ -1,11 +1,12 @@
 "use client";
 
-import { AlertTriangle, MessagesSquare, Play } from "lucide-react";
+import { AlertTriangle, KeyRound, MessagesSquare, Play } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useId, useState } from "react";
 
 import { JobProgress } from "@/components/ai/job-progress";
 import { DistributionPanel, FinalReviewPanel, QualityCheckPanel } from "@/components/exam/exam-panels";
+import { hasAnswerKey } from "@/components/exam/labels";
 import { QuestionCard } from "@/components/exam/question-card";
 import { QuestionText } from "@/components/exam/question-text";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -29,7 +30,10 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
   const [missing, setMissing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [generationRun, setGenerationRun] = useState<string | null>(null);
-  const [reviewRun, setReviewRun] = useState<string | null>(null);
+  const [reviewRun, setReviewRun] = useState<{ id: string; kind: string } | null>(null);
+  // Generate all answer keys, while it runs (keys appear under their questions as they are written).
+  const [keysRun, setKeysRun] = useState<string | null>(null);
+  const [keysDone, setKeysDone] = useState(false);
   const [versionId, setVersionId] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -50,16 +54,16 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
         setExam(next);
         setMissing(false);
         setLoadError(null);
-        if (next.status === "generating" || next.reviewStatus === "running") {
-          const status = await apiRequest<AiStatus>(`/api/assessments/${assessmentId}/ai-status`);
-          if (cancelled) return;
-          const generating = status.runs.find((run) => run.kind === "generation" && run.status === "running");
-          const reviewing = status.runs.find(
-            (run) => (run.kind === "review" || run.kind === "versioning") && run.status === "running",
-          );
-          if (generating) setGenerationRun(generating.id);
-          if (reviewing) setReviewRun(reviewing.id);
-        }
+        // Pick up jobs already running: the questions being written, the answer keys, the other versions or the check.
+        const status = await apiRequest<AiStatus>(`/api/assessments/${assessmentId}/ai-status`);
+        if (cancelled) return;
+        const running = status.runs.filter((run) => run.status === "running");
+        const writingKeys = running.find((run) => run.kind === "generation" && run.stage === "writing_answer_keys");
+        const generating = running.find((run) => run.kind === "generation" && run !== writingKeys);
+        const reviewing = running.find((run) => run.kind === "review" || run.kind === "versioning");
+        if (generating && next.status === "generating") setGenerationRun(generating.id);
+        if (writingKeys) setKeysRun(writingKeys.id);
+        if (reviewing) setReviewRun({ id: reviewing.id, kind: reviewing.kind });
       } catch (cause) {
         if (cancelled) return;
         if (cause instanceof ApiError && cause.status === 404) setMissing(true);
@@ -72,8 +76,8 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
     };
   }, [assessmentId, reloads]);
 
-  // While the exam is being written, each question appears as soon as it is saved.
-  const generating = exam?.status === "generating";
+  // While the exam (or its answer keys) is being written, each question (or key) appears as soon as it is saved.
+  const generating = exam?.status === "generating" || keysRun !== null;
   useEffect(() => {
     if (!generating) return;
     const timer = setInterval(() => {
@@ -88,8 +92,14 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
     setGenerationRun(null);
     load();
   });
+  useRun(keysRun, (finished) => {
+    setKeysRun(null);
+    if (finished.status === "failed") setActionError(finished.errorMessage);
+    else setKeysDone(true);
+    load();
+  });
   // Followed only for when it finishes.
-  useRun(reviewRun, (finished) => {
+  useRun(reviewRun?.id ?? null, (finished) => {
     setReviewRun(null);
     if (finished.status === "failed") setActionError(finished.errorMessage);
     load();
@@ -100,10 +110,19 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
     setActionError(null);
     try {
       const started = await apiRequest<StartedRun>(`/api/exams/${exam.id}/review`, { method: "POST", freshSession: true });
-      setReviewRun(started.run.id);
+      setReviewRun({ id: started.run.id, kind: "review" });
     } catch (cause) {
       setActionError(errorMessage(cause));
     }
+  }
+
+  /** Generate all answer keys: every missing or out-of-date key, from the questions as saved. */
+  async function startKeys() {
+    if (!exam) return;
+    setActionError(null);
+    setKeysDone(false);
+    const started = await apiRequest<StartedRun>(`/api/exams/${exam.id}/answer-keys`, { method: "POST", freshSession: true });
+    setKeysRun(started.run.id);
   }
 
   async function resume() {
@@ -173,7 +192,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
               Generating the exam: {written.size} of {planned} {planned === 1 ? "question" : "questions"} ready
             </AlertTitle>
             <AlertDescription>
-              Each question appears below, in plan order, as soon as it is ready, with its answer key. Start reading
+              Each question appears below, in plan order, as soon as it is ready. Start reading
               while the others are being generated; you can edit them once the whole exam is generated.
             </AlertDescription>
           </Alert>
@@ -215,7 +234,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
                             className="flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-muted-foreground sm:p-5"
                           >
                             <Spinner />
-                            Generating question {number} and its answer key…
+                            Generating question {number}…
                           </div>
                         )}
                       </li>
@@ -231,6 +250,13 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
   }
 
   const reviewing = Boolean(reviewRun) || exam.reviewStatus === "running";
+  const keyCounts = {
+    total: exam.questions.length,
+    ready: exam.questions.filter(
+      (question) => hasAnswerKey(question) && !(question.answerKeyOutdated ?? question.needsSolutionReview),
+    ).length,
+  };
+  const creatingVersions = reviewRun?.kind === "versioning";
   const version = exam.versions.find((item) => item.id === versionId) ?? exam.versions[0];
   const questions = exam.questions
     .filter((question) => question.versionId === version?.id)
@@ -276,7 +302,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
             <Link href={`${base}/question-plan`} className="font-medium underline underline-offset-4">
               Continue on the plan
             </Link>{" "}
-            to generate the remaining questions, create the other versions and run the quality check.
+            to generate the remaining questions and create the other versions.
           </AlertDescription>
         </Alert>
       )}
@@ -298,17 +324,41 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
           <AlertDescription>{actionError}</AlertDescription>
         </Alert>
       )}
-      {reviewing && (
+      {keysRun && (
         <Alert role="status">
           <Spinner />
           <AlertTitle>
-            {exam.versions.length > 1 && !exam.questions.some((question) => question.versionId !== exam.versions[0].id)
-              ? "Creating the other versions and running the quality check"
-              : "The quality check is running"}
+            Writing answer keys: {keyCounts.ready} of {keyCounts.total} ready
           </AlertTitle>
           <AlertDescription>
-            You can keep working. A question you approve now is locked, so the check will report its issues but
-            can&apos;t fix them; approve after the check to let it apply safe fixes.
+            Each key appears under its question as soon as it is written, from the question as you saved it. You can keep
+            reading.
+          </AlertDescription>
+        </Alert>
+      )}
+      {keysDone && !keysRun && (
+        <Alert>
+          <KeyRound />
+          <AlertTitle>
+            {keyCounts.ready === keyCounts.total
+              ? "All answer keys are ready"
+              : `Answer keys written: ${keyCounts.ready} of ${keyCounts.total} ready`}
+          </AlertTitle>
+          <AlertDescription>
+            {keyCounts.ready === keyCounts.total
+              ? "Download them from Final review & export: the answer key alone, or with the questions."
+              : "A question changed while its key was being written, so its key wasn't kept. Generate all answer keys again to write the rest."}
+          </AlertDescription>
+        </Alert>
+      )}
+      {reviewing && (
+        <Alert role="status">
+          <Spinner />
+          <AlertTitle>{creatingVersions ? "Creating the other versions" : "The quality check is running"}</AlertTitle>
+          <AlertDescription>
+            {creatingVersions
+              ? "You can keep reading and editing. The other versions appear when they are ready, without answer keys, like the first."
+              : "You can keep working. A question you approve now is locked, so the check will report its issues but can't fix them; approve after the check to let it apply safe fixes."}
           </AlertDescription>
         </Alert>
       )}
@@ -376,7 +426,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
             running={reviewing}
             onRun={runReview}
           />
-          <FinalReviewPanel exam={exam} onFinalized={() => void load()} />
+          <FinalReviewPanel exam={exam} onFinalized={() => void load()} keys={{ running: keysRun !== null, start: startKeys }} />
         </aside>
       </div>
     </div>

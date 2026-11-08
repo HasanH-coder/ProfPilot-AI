@@ -3,17 +3,20 @@
 Three levels:
 
 - blocked: export can't work yet (generation still running);
-- serious: export only after the professor confirms (an MCQ without a valid
-  answer, a question without an answer key, an incomplete generation, versions
-  that don't match);
+- serious: export only after the professor confirms (an incomplete generation,
+  versions that don't match);
 - warning / info: worth knowing, never blocking (unapproved questions, splits a
   little off target, the quality check not run).
+
+Answer keys are written only when the professor asks, so questions without one (or with one written before
+the question last changed) never hold back the questions: only downloading the answer key asks the
+professor to confirm (see answerKeys, and the export endpoint).
 """
 
 from typing import Any
 
 from app.domain import distribution
-from app.services.exam_store import FullExam
+from app.services.exam_store import FullExam, has_answer_key, integrity_leaks, leak_text, row_to_content
 
 
 def readiness(full: FullExam) -> dict[str, Any]:
@@ -43,29 +46,36 @@ def readiness(full: FullExam) -> dict[str, Any]:
     if not primary_questions:
         add("questions", "serious", "The exam has no questions.")
 
-    missing_keys: list[str] = []
-    for version in full.versions:
-        for number, row in enumerate(full.version_questions(version["id"]), start=1):
-            label = f"{version['label']}{number}" if len(full.versions) > 1 else f"Q{number}"
-            choices = [choice.get("id") for choice in row.get("choices") or []]
-            if row["type"] == "mcq":
-                if row.get("correct_choice") not in choices:
-                    missing_keys.append(label)
-            elif not (row.get("answer") or "").strip() and not (row.get("solution") or "").strip():
-                missing_keys.append(label)
-    if missing_keys:
-        add("answer_keys", "serious", "Some questions have no valid answer.", ", ".join(missing_keys[:20]))
-    elif primary_questions:
-        add("answer_keys", "ok", "Every question has an answer key.")
-
-    flagged = [q for q in full.questions if q["needs_solution_review"]]
-    if flagged:
+    keys = answer_key_status(full)
+    if keys["missing"]:
         add(
-            "solution_review",
-            "warning",
-            f"{len(flagged)} edited question(s) may need their answer key checked.",
-            "Use “Regenerate solution” or review the key by hand.",
+            "answer_keys",
+            "info",
+            f"{len(keys['missing'])} of {keys['total']} questions have no answer key yet.",
+            "Generate them when you're ready, before downloading the answer key: " + ", ".join(keys["missing"][:20]),
         )
+    if keys["outdated"]:
+        add(
+            "answer_keys_outdated",
+            "warning",
+            f"{len(keys['outdated'])} answer key(s) were written before their question changed.",
+            "Generate them again, or check them by hand: " + ", ".join(keys["outdated"][:20]),
+        )
+    if primary_questions and not keys["missing"] and not keys["outdated"]:
+        add("answer_keys", "ok", "Every question has an up-to-date answer key.")
+
+    # A question that gives away another's answer (checked in code, once the keys say what the answers are).
+    for version in full.versions:
+        rows = full.version_questions(version["id"])
+        for helped, revealing, kind, text in integrity_leaks([row_to_content(row) for row in rows]):
+            add(
+                f"leak_{version['label']}_{revealing + 1}_{helped + 1}",
+                "warning",
+                (f"Version {version['label']}: " if len(full.versions) > 1 else "")
+                + leak_text(kind, revealing + 1, helped + 1, text)
+                + ".",
+                f"Change question {revealing + 1} (e.g. name it, or use other values) or question {helped + 1}.",
+            )
 
     if len(full.versions) > 1 and primary:
         slots = {q["slot_id"] for q in primary_questions}
@@ -120,6 +130,27 @@ def readiness(full: FullExam) -> dict[str, Any]:
         "canExport": not blocked and bool(primary_questions),
         "requiresConfirmation": bool(serious),
         "checks": checks,
+        "answerKeys": keys,
         "versions": summaries,
         "durationMinutes": spec.duration_minutes if spec else None,
     }
+
+
+def answer_key_status(full: FullExam, versions: list[str] | None = None) -> dict[str, Any]:
+    """Which questions (in every version, or in these versions) have no valid answer key yet, and which
+    keys are out of date."""
+    missing: list[str] = []
+    outdated: list[str] = []
+    total = 0
+    for version in full.versions:
+        if versions is not None and version["label"] not in versions:
+            continue
+        for number, row in enumerate(full.version_questions(version["id"]), start=1):
+            total += 1
+            label = f"{version['label']}{number}" if len(full.versions) > 1 else f"Q{number}"
+            choices = [choice.get("id") for choice in row.get("choices") or []]
+            if not has_answer_key(row) or (row["type"] == "mcq" and row.get("correct_choice") not in choices):
+                missing.append(label)
+            elif row["needs_solution_review"]:
+                outdated.append(label)
+    return {"total": total, "missing": missing, "outdated": outdated}

@@ -31,6 +31,7 @@ from app.services.exam_generation import GenerationContext, load_generation_cont
 from app.services.exam_store import (
     ExamStore,
     FullExam,
+    has_answer_key,
     integrity_leaks,
     leak_messages,
     leak_text,
@@ -114,7 +115,8 @@ class ExamReviewService:
         for version in full.versions:
             questions = full.version_questions(version["id"])
             for number, row in enumerate(questions, start=1):
-                problems = question_problems(row_to_content(row), label=f"Question {number}")
+                # A question written without its key yet is checked as a question; its key comes on request.
+                problems = question_problems(row_to_content(row), label=f"Question {number}", key=has_answer_key(row))
                 for problem in problems:
                     severity = "critical" if row["type"] == "mcq" and "correct_choice" in problem else "warning"
                     issues.append(
@@ -128,12 +130,12 @@ class ExamReviewService:
                             source="check",
                         )
                     )
-                if row["needs_solution_review"]:
+                if row["needs_solution_review"] and has_answer_key(row):
                     issues.append(
                         _issue(
                             "warning",
                             "solution",
-                            "The question was edited; check that its answer key still fits.",
+                            "The question changed after its answer key was written; generate the key again or check it.",
                             row,
                             number,
                             version["label"],
@@ -282,6 +284,17 @@ class ExamReviewService:
                     render_question_sources(cited, slides, framer),
                     render_excerpts(excerpts, framer, title="RELEVANT COURSE MATERIAL"),
                     (
+                        "QUESTIONS WITHOUT AN ANSWER KEY (written on the professor's request, later): "
+                        + ", ".join(
+                            f"Q{number}"
+                            for number, row in enumerate(full.version_questions(full.primary_version["id"]), start=1)
+                            if not has_answer_key(row)
+                        )
+                        + ". Check their wording and choices only; propose no key fix for them."
+                        if any(not has_answer_key(row) for row in full.questions)
+                        else ""
+                    ),
+                    (
                         "FOUND BY CHECKS IN CODE (reported to the professor already; don't report them again. For "
                         "each, propose 'clarify_wording' on the revealing question only if a minimal rewording "
                         "removes the give-away without changing what it tests)\n" + "\n".join(f"- {item}" for item in found)
@@ -317,7 +330,11 @@ class ExamReviewService:
             if issue.question_number and 1 <= issue.question_number <= len(questions):
                 row = questions[issue.question_number - 1]
             applied = False
-            if row is not None and issue.fix is not None and row["status"] != "approved":
+            # A question without an answer key gets one only when the professor asks: no key fix writes one.
+            keyless = (
+                row is not None and not has_answer_key(row) and issue.fix is not None and issue.fix.kind != "clarify_wording"
+            )
+            if row is not None and issue.fix is not None and row["status"] != "approved" and not keyless:
                 try:
                     fixed = await self._apply_fix(row, issue.fix, issue.message, questions)
                     if fixed is not None:

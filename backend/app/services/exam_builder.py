@@ -438,8 +438,9 @@ class ExamBuilderService:
         ]
 
 
-async def start_finish_job(db: Database, ai: OpenAIService, exam: dict[str, Any]) -> dict[str, Any]:
-    """Creates the other versions and runs the quality check, as a background job."""
+async def start_finish_job(db: Database, ai: OpenAIService, exam: dict[str, Any], *, review: bool = True) -> dict[str, Any]:
+    """Creates the other versions and (with `review`) runs the quality check, as a background job. An exam
+    written from its plan has no answer keys yet, so it has nothing for the check to verify."""
 
     async def work(run: RunContext) -> None:
         usage = run.usage
@@ -449,10 +450,11 @@ async def start_finish_job(db: Database, ai: OpenAIService, exam: dict[str, Any]
         if len(full.versions) > 1:
             await run.stage("creating_versions")
             await ExamGenerationService(db, ai, usage).create_missing_variants(ctx, exam["id"])
-        await run.stage("reviewing")
-        from app.services.exam_review import ExamReviewService
+        if review:
+            await run.stage("reviewing")
+            from app.services.exam_review import ExamReviewService
 
-        await ExamReviewService(db, ai, usage).review(exam["id"], ctx=ctx)
+            await ExamReviewService(db, ai, usage).review(exam["id"], ctx=ctx)
         await store.update_exam(exam["id"], {"status": "ready", "error_message": None})
 
     return await job_runner.start(

@@ -33,16 +33,17 @@ from app.schemas.api import (
     VariantsOut,
 )
 from app.schemas.common import parse_id
+from app.services.answer_keys import AnswerKeyService, needs_key
 from app.services.assessment_context import AssessmentContextService
 from app.services.document_ingestion import BUCKET
 from app.services.exam_builder import ExamBuilderService
 from app.services.exam_review import ExamReviewService
 from app.services.exam_store import ExamStore, serialize_exam, serialize_question
-from app.services.jobs import RunContext, job_runner, public_run
+from app.services.jobs import RUN_COLUMNS, RunContext, is_stale, job_runner, public_run
 from app.services.pdf_export import ExportHeader, PdfExportService
 from app.services.personalization import PreferenceService
 from app.services.question_revision import QuestionEdit, QuestionRevisionService
-from app.services.readiness import readiness
+from app.services.readiness import answer_key_status, readiness
 
 router = APIRouter(prefix="/api", tags=["exams"])
 logger = logging.getLogger("profpilot.builder")
@@ -102,6 +103,35 @@ async def review_exam(exam_id: str, db: Database = Depends(get_db), ai: OpenAISe
     return StartedRunOut(run=RunOut.model_validate(public_run(run)))
 
 
+@router.post("/exams/{exam_id}/answer-keys", status_code=status.HTTP_202_ACCEPTED)
+async def write_answer_keys(exam_id: str, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)) -> StartedRunOut:
+    """Writes the answer key of every question (in every version) without an up-to-date one, from the
+    questions as they are saved. Keys that are up to date are kept."""
+    store = ExamStore(db)
+    full = await store.load(exam_id)
+    exam = full.exam
+    if exam["status"] == "generating":
+        raise ConflictError("Wait until the exam has finished generating.", code="exam_generating")
+    if not any(needs_key(row) for row in full.questions):
+        raise ConflictError("Every question already has an up-to-date answer key.", code="nothing_to_write")
+    running = await db.select(
+        "ai_runs",
+        columns=RUN_COLUMNS,
+        filters=[("exam_id", "eq", exam["id"]), ("status", "eq", "running"), ("kind", "in", ["review", "versioning"])],
+    )
+    if any(not is_stale(run) for run in running):
+        raise ConflictError("Wait until the other versions or the quality check are finished.", code="job_running")
+
+    async def work(run: RunContext) -> None:
+        await run.stage("writing_answer_keys")
+        await AnswerKeyService(db, ai, run.usage).write_missing(exam["id"], run)
+
+    run = await job_runner.start(
+        db, assessment_id=exam["exam_project_id"], kind="generation", work=work, exam_id=exam["id"], stage="writing_answer_keys"
+    )
+    return StartedRunOut(run=RunOut.model_validate(public_run(run)))
+
+
 @router.get("/exams/{exam_id}/readiness")
 async def exam_readiness(exam_id: str, db: Database = Depends(get_db)) -> ReadinessOut:
     return ReadinessOut.model_validate(readiness(await ExamStore(db).load(exam_id)))
@@ -145,11 +175,23 @@ async def export_exam(
     if report["requiresConfirmation"] and not confirm:
         serious = "; ".join(check["label"] for check in report["checks"] if check["status"] == "serious")
         raise ConflictError(f"Please confirm the export: {serious}", code="export_needs_confirmation")
-
     labels = [v["label"] for v in full.versions]
     versions = labels if version == "all" else [version]
     if any(label not in labels for label in versions):
         raise InvalidInputError("Choose one of this exam's versions.")
+    # The questions alone never wait for answer keys; the answer key asks first if some are missing or old.
+    keys = answer_key_status(full, versions)
+    if kind != "student" and (keys["missing"] or keys["outdated"]) and not confirm:
+        parts = []
+        if keys["missing"]:
+            parts.append(f"{', '.join(keys['missing'][:10])} have no answer key yet")
+        if keys["outdated"]:
+            parts.append(f"the keys of {', '.join(keys['outdated'][:10])} were written before their question changed")
+        raise ConflictError(
+            f"Please confirm the export: {'; '.join(parts)}. Generate them first, or download without them.",
+            code="export_needs_confirmation",
+        )
+
     kinds = ["student", "answer_key"] if kind == "both" else [kind]
 
     record = await AssessmentContextService(db).get_assessment(full.exam["exam_project_id"])

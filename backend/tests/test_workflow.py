@@ -85,8 +85,30 @@ def test_scenario_a_manual_configuration_to_full_exam(api, supabase, db_a, ai):
 
     exam = generate(api, assessment["id"])
 
+    # The questions come first, without answer keys (and so with nothing for the quality check yet).
+    assert exam["status"] == "ready" and exam["reviewStatus"] == "not_run"
+    assert not ai.calls_for("write_answer_keys") and not ai.calls_for("review_exam")
+    for question in exam["questions"]:
+        assert not question["hasAnswerKey"] and question["correctChoice"] is None and question["answer"] is None
+        assert question["rubric"] is None and question["solution"] is None
+    assert "QUESTIONS ONLY" in ai.calls_for("generate_questions")[0]["instructions"]
+    # The questions download without any key, and downloading the answer key asks first.
+    questions_only = api.get(f"/api/exams/{exam['id']}/export?kind=student&version=A", headers=auth())
+    assert questions_only.status_code == 200 and not ai.calls_for("write_answer_keys")
+    asked = api.get(f"/api/exams/{exam['id']}/export?kind=answer_key&version=A", headers=auth())
+    assert asked.status_code == 409 and "have no answer key yet" in asked.json()["error"]["message"]
+    readiness = api.get(f"/api/exams/{exam['id']}/readiness", headers=auth()).json()
+    assert not readiness["requiresConfirmation"] and len(readiness["answerKeys"]["missing"]) == 20
+
+    # Then every answer key, in both versions, on request.
+    started = api.post(f"/api/exams/{exam['id']}/answer-keys", headers=auth())
+    assert started.status_code == 202 and wait_for_run(api, started.json()["run"]["id"])["status"] == "succeeded"
+    exam = api.get(f"/api/assessments/{assessment['id']}/exam", headers=auth()).json()
+    assert all(question["hasAnswerKey"] and not question["answerKeyOutdated"] for question in exam["questions"])
+    again = api.post(f"/api/exams/{exam['id']}/answer-keys", headers=auth())
+    assert again.status_code == 409 and again.json()["error"]["code"] == "nothing_to_write"
+
     # Scenario E: structured questions with answer keys, following the spec by marks.
-    assert exam["status"] == "ready" and exam["reviewStatus"] == "passed"
     assert [v["label"] for v in exam["versions"]] == ["A", "B"]
     for version in exam["versions"]:
         summary = version["summary"]

@@ -143,31 +143,43 @@ def test_history_and_law_style_answers_are_checked_the_same_way():
 # -- Leaks are repaired during generation and reported (or fixed) by the quality check ----------
 
 
-def test_generation_sends_back_a_batch_whose_question_gives_away_another_answer(api, supabase, db_a, ai):
-    injected: list[int] = []
+def keyed_exam(api, supabase, db_a) -> dict:
+    """A one-version exam: its questions written, then all its answer keys (on request)."""
+    from tests.test_revisions import write_all_keys
 
-    def leaks_then_corrects(call):
-        good = well_behaved_batch(call)
-        bad = good.model_copy(deep=True)
-        mcqs = [q for q in bad.questions if q.type == "mcq"]
-        others = [q for q in bad.questions if q.type != "mcq" or (mcqs and q is not mcqs[0])]
-        if not (mcqs and others):
-            return good  # a batch without an MCQ and another question can't leak within itself
-        key = next(choice.text for choice in mcqs[0].choices if choice.id == mcqs[0].correct_choice)
-        others[0].prompt += f" Note: {key}."
-        injected.append(len(ai.calls) - 1)
-        return [bad, good]
-
-    ai.on("generate_questions", leaks_then_corrects)
     assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
     run(seed_document(supabase, db_a, assessment["id"]))
     interpret_and_approve(api, assessment["id"])
     exam = generate(api, assessment["id"])
-    assert injected, "the plan must put an MCQ and another question in one batch"
-    for index in injected:
-        call = ai.calls[index]
-        assert "gives away the answer to question" in " ".join(call["problems"][0]) and call["problems"][1] == []
-    assert answer_leaks_in(exam) == []  # what was saved is clean
+    return write_all_keys(api, exam["id"])
+
+
+def leak_checks(api, exam_id: str) -> list[dict]:
+    readiness = api.get(f"/api/exams/{exam_id}/readiness", headers=auth()).json()
+    return [check for check in readiness["checks"] if check["id"].startswith("leak_")]
+
+
+def test_a_question_that_gives_away_another_answer_is_reported_once_the_keys_say_what_it_is(api, supabase, db_a, ai):
+    """Questions are written without their keys, so a give-away can only be seen once the keys exist: the final
+    review then reports it, in code, without any AI call."""
+    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    interpret_and_approve(api, assessment["id"])
+    exam = generate(api, assessment["id"])
+    questions = sorted(exam["questions"], key=lambda q: q["number"])
+    key_question = next(q for q in questions if q["type"] == "mcq")
+    target = next(q for q in questions if q["id"] != key_question["id"] and q["type"] != "mcq")
+    # The fake key writer keys the second choice; another question prints it.
+    revealed = key_question["choices"][1]["text"]
+    api.patch(f"/api/questions/{target['id']}", json={"prompt": f"{target['prompt']} Note: {revealed}."}, headers=auth())
+    assert leak_checks(api, exam["id"]) == []  # no keys yet: nothing to give away
+
+    from tests.test_revisions import write_all_keys
+
+    write_all_keys(api, exam["id"])
+    leaks = leak_checks(api, exam["id"])
+    assert [check["status"] for check in leaks] == ["warning"]
+    assert f"Question {target['number']}'s text gives away the answer to question {key_question['number']}" in leaks[0]["label"]
 
 
 def answer_leaks_in(exam) -> list:
@@ -182,10 +194,7 @@ def answer_leaks_in(exam) -> list:
 
 
 def leaked_exam(api, supabase, db_a):
-    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
-    run(seed_document(supabase, db_a, assessment["id"]))
-    interpret_and_approve(api, assessment["id"])
-    exam = generate(api, assessment["id"])
+    exam = keyed_exam(api, supabase, db_a)
     questions = sorted(exam["questions"], key=lambda q: q["number"])
     key_question = next(q for q in questions if q["type"] == "mcq")
     key = next(c["text"] for c in key_question["choices"] if c["id"] == key_question["correctChoice"])
@@ -235,9 +244,9 @@ def test_a_minimal_rewording_from_the_reviewer_removes_the_leak_and_the_warning(
 _PLAN_ENTRY = re.compile(r"^(\d+)\. \[[^\]]*\] (\w+),", re.M)
 
 
-def test_a_leak_across_batches_is_caught_by_the_final_quality_check(api, supabase, db_a, ai):
-    """Batches are written independently, so a question may print an MCQ answer from another batch;
-    the batch check can't see it, and the final quality check must."""
+def test_a_leak_across_batches_is_caught_by_the_final_review(api, supabase, db_a, ai):
+    """Batches are written independently, so a question may print an MCQ answer from another batch; once the
+    keys are written, the final review (in code) reports it."""
     leaked: list[int] = []
 
     def leaks_across_batches(call):
@@ -248,20 +257,16 @@ def test_a_leak_across_batches_is_caught_by_the_final_quality_check(api, supabas
         target = next((q for q in result.questions if q.type != "mcq"), None)
         if not leaked and elsewhere and target:
             number = elsewhere[0]
-            target.prompt += f" Hint: Option {'ABCD'[number % 4]} for item {number}."  # that MCQ's key (tests.model)
+            target.prompt += f" Hint: Option B for item {number}."  # that MCQ's key (tests.model keys choice B)
             leaked.append(target.number)
         return result
 
     ai.on("generate_questions", leaks_across_batches)
-    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
-    run(seed_document(supabase, db_a, assessment["id"]))
-    interpret_and_approve(api, assessment["id"])
-    exam = generate(api, assessment["id"])
+    exam = keyed_exam(api, supabase, db_a)
     assert leaked, "the plan must spread MCQs and other questions over several batches"
-    # Saved (no batch could see it), then reported by the built-in quality check as a warning.
-    leaks = [issue for issue in exam["review"]["issues"] if issue["category"] == "answer_leakage"]
-    assert [(issue["questionNumber"], issue["severity"], issue["source"]) for issue in leaks] == [(leaked[0], "warning", "check")]
-    assert exam["reviewStatus"] == "needs_attention"
+    leaks = leak_checks(api, exam["id"])
+    assert [check["label"].split("'s text")[0] for check in leaks] == [f"Question {leaked[0]}"]
+    assert not ai.calls_for("review_exam")
 
 
 def reviewer_proposing(prompt_for, target_number: int):
@@ -281,10 +286,7 @@ def snapshot(exam) -> dict:
 
 
 def test_a_reviewer_fix_that_would_give_away_another_answer_is_not_applied(api, supabase, db_a, ai):
-    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
-    run(seed_document(supabase, db_a, assessment["id"]))
-    interpret_and_approve(api, assessment["id"])
-    exam = generate(api, assessment["id"])
+    exam = keyed_exam(api, supabase, db_a)
     questions = sorted(exam["questions"], key=lambda q: q["number"])
     key_question = next(q for q in questions if q["type"] == "mcq")
     key = next(c["text"] for c in key_question["choices"] if c["id"] == key_question["correctChoice"])
@@ -301,10 +303,7 @@ def test_a_reviewer_fix_that_would_give_away_another_answer_is_not_applied(api, 
 
 
 def test_a_reviewer_fix_that_adds_garbled_maths_or_internal_ids_is_not_applied(api, supabase, db_a, ai):
-    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
-    run(seed_document(supabase, db_a, assessment["id"]))
-    interpret_and_approve(api, assessment["id"])
-    exam = generate(api, assessment["id"])
+    exam = keyed_exam(api, supabase, db_a)
     target = sorted(exam["questions"], key=lambda q: q["number"])[1]
     before = snapshot(exam)
     for addition in (" Use 𝒇(𝒙) here.", " See topic L1.t3.", " (3 marks)"):

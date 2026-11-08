@@ -244,12 +244,21 @@ def test_one_question_is_written_from_its_plan_and_shown_under_it(api, supabase,
     make_plan(api, assessment_id)
     plan = write(api, assessment_id, 3)
     third = plan["questions"][2]
-    assert third["written"] is not None and third["written"]["number"] == 3 and third["written"]["answer"]
+    assert third["written"] is not None and third["written"]["number"] == 3
+    # The question only: its answer key is written when the professor asks.
+    assert not third["written"]["hasAnswerKey"] and third["written"]["answer"] is None
+    assert "QUESTIONS ONLY" in ai.calls_for("generate_questions")[0]["instructions"]
     assert all(q["written"] is None for q in plan["questions"] if q["number"] != 3)
     assert plan["exam"]["status"] == "building"
-    # Only that question: no other question, no other version, no quality check yet.
+    # Only that question: no other question, no other version, no key, no quality check yet.
     assert len(ai.calls_for("generate_questions")) == 1
-    assert not ai.calls_for("review_exam") and not ai.calls_for("write_variants")
+    assert not ai.calls_for("review_exam") and not ai.calls_for("write_variants") and not ai.calls_for("write_answer_keys")
+
+    # Its key, on request, from the question as saved.
+    keyed = api.post(f"/api/questions/{third['written']['id']}/solution", headers=auth())
+    assert keyed.status_code == 200, keyed.text
+    assert keyed.json()["question"]["hasAnswerKey"] and not keyed.json()["question"]["answerKeyOutdated"]
+    assert len(ai.calls_for("write_answer_keys")) == 1
 
 
 def test_the_professors_own_question_is_what_gets_written(api, supabase, db_a, ai):
@@ -278,7 +287,7 @@ def test_changing_a_written_questions_plan_marks_it_until_it_is_rewritten(api, s
     assert len(exam["questions"]) == 1
 
 
-def test_finishing_writes_the_rest_rewrites_outdated_ones_and_checks_the_exam(api, supabase, db_a, ai):
+def test_finishing_writes_the_rest_and_rewrites_outdated_ones_without_keys(api, supabase, db_a, ai):
     assessment_id = approved(api, supabase, db_a)
     planned = make_plan(api, assessment_id)
     plans_made = len(ai.calls_for("plan_exam"))
@@ -287,7 +296,8 @@ def test_finishing_writes_the_rest_rewrites_outdated_ones_and_checks_the_exam(ap
     edit(api, assessment_id, 2, topic="Something else")
 
     exam = finish(api, assessment_id)
-    assert exam["status"] == "ready" and len(ai.calls_for("review_exam")) == 1
+    assert exam["status"] == "ready" and not ai.calls_for("review_exam") and not ai.calls_for("write_answer_keys")
+    assert not any(question["hasAnswerKey"] for question in exam["questions"])
     ids = {q["position"]: q["id"] for q in exam["questions"]}
     assert len(ids) == len(planned["questions"])
     assert ids[1] == kept and ids[2] != outdated

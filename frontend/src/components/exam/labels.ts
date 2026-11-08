@@ -17,7 +17,7 @@ export const REVISION_SOURCES: Record<Revision["source"], string> = {
   ai_revision: "Changed with AI",
   manual_edit: "Edited by you",
   ai_review_fix: "Fixed by the quality check",
-  solution_regenerated: "Answer key regenerated",
+  solution_regenerated: "Answer key written again",
   restore: "Earlier version restored",
 };
 
@@ -100,4 +100,9 @@ export function builderToolFailure(name: string): string {
     default:
       return "That couldn't be done.";
   }
+}
+
+/** Whether a question has an answer key yet (keys are written on request, after the questions). */
+export function hasAnswerKey(question: { hasAnswerKey?: boolean; correctChoice: string | null; answer: string | null; solution: string | null }) {
+  return question.hasAnswerKey ?? Boolean(question.correctChoice || question.answer || question.solution);
 }

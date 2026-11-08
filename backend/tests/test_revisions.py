@@ -19,11 +19,22 @@ async def _no_slide_images(*_args, **_kwargs):
     return []
 
 
-def ready_exam(api, supabase, db_a, **settings) -> dict:
+def ready_exam(api, supabase, db_a, *, keys: bool = True, **settings) -> dict:
+    """A generated exam; with `keys`, its answer keys written too (Generate all answer keys)."""
     assessment = run(seed_assessment(db_a, **(settings or A_SETTINGS)))
     run(seed_document(supabase, db_a, assessment["id"]))
     interpret_and_approve(api, assessment["id"])
-    return generate(api, assessment["id"])
+    exam = generate(api, assessment["id"])
+    if keys:
+        exam = write_all_keys(api, exam["id"])
+    return exam
+
+
+def write_all_keys(api, exam_id: str) -> dict:
+    started = api.post(f"/api/exams/{exam_id}/answer-keys", headers=auth())
+    assert started.status_code == 202, started.text
+    assert wait_for_run(api, started.json()["run"]["id"])["status"] == "succeeded"
+    return api.get(f"/api/exams/{exam_id}", headers=auth()).json()
 
 
 def version_a(exam: dict) -> list[dict]:
@@ -84,10 +95,11 @@ def test_manual_edits_flag_the_answer_key_and_regeneration_fixes_it(api, supabas
         f"/api/questions/{subjective['id']}", json={"prompt": "A rewritten question about entropy."}, headers=auth()
     )
     assert edited.status_code == 200 and edited.json()["question"]["needsSolutionReview"] is True
+    assert edited.json()["question"]["answerKeyOutdated"] is True
     readiness = api.get(f"/api/exams/{exam['id']}/readiness", headers=auth()).json()
-    assert any(check["id"] == "solution_review" for check in readiness["checks"])
+    assert any(check["id"] == "answer_keys_outdated" for check in readiness["checks"])
     fixed = api.post(f"/api/questions/{subjective['id']}/solution", headers=auth()).json()["question"]
-    assert fixed["needsSolutionReview"] is False and fixed["answer"] == "New answer"
+    assert fixed["needsSolutionReview"] is False and fixed["answer"].startswith("Model answer")
     sources = [r["source"] for r in api.get(f"/api/questions/{subjective['id']}/revisions", headers=auth()).json()]
     assert sources == ["solution_regenerated", "manual_edit"]
 

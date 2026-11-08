@@ -67,39 +67,36 @@ def ready_exam(api, supabase, db_a, **settings) -> tuple[dict, dict]:
     return assessment, generate(api, assessment["id"])
 
 
-def test_full_generation_writes_batches_concurrently_and_reviews_once(api, supabase, db_a, ai):
+def test_full_generation_writes_batches_concurrently_and_nothing_else(api, supabase, db_a, ai):
     _, exam = ready_exam(api, supabase, db_a)
     batches = ai.calls_for("generate_questions")
-    # The plan is made once, the batches overlap (bounded), and the full review runs once, at the end.
+    # The plan is made once and the batches overlap (bounded).
     assert len(ai.calls_for("plan_exam")) == 1
     # Ten questions, written by six calls at once: each writes one or two, so the exam is ready sooner.
     assert 2 <= ai.peak["generate_questions"] <= settings.max_concurrent_generation_calls and len(batches) == 6
-    assert len(ai.calls_for("review_exam")) == 1
-    last_batch = max(end for purpose, _, end in ai.spans if purpose == "generate_questions")
-    review_start = min(start for purpose, start, _ in ai.spans if purpose == "review_exam")
-    assert review_start >= last_batch
+    # No answer key and no quality check is paid for until the professor asks.
+    assert not ai.calls_for("review_exam") and not ai.calls_for("write_answer_keys")
     # High effort only for batches with hard or multi-step questions.
     assert {call["effort"] for call in batches} == {"high", "medium"}
     assert len(exam["questions"]) == 20  # 10 questions in each of 2 versions
 
 
-def test_the_exam_opens_before_its_versions_and_quality_check(api, supabase, db_a, ai):
-    ai.delays["review_exam"] = 0.5
+def test_the_exam_opens_before_its_other_versions(api, supabase, db_a, ai):
+    ai.delays["write_variants"] = 0.5
     assessment = asyncio.run(seed_assessment(db_a, **A_SETTINGS))
     asyncio.run(seed_document(supabase, db_a, assessment["id"]))
     interpret_and_approve(api, assessment["id"])
     started = api.post(f"/api/assessments/{assessment['id']}/exam", json={"mode": "full"}, headers=auth())
     finished = wait_for_run(api, started.json()["run"]["id"], follow=False)
 
-    # The questions are there to read while the check still runs.
+    # The questions are there to read while Version B is still being written.
     exam = api.get(f"/api/assessments/{assessment['id']}/exam", headers=auth()).json()
-    assert finished["status"] == "succeeded" and exam["status"] == "ready" and exam["reviewStatus"] == "running"
-    assert len([q for q in exam["questions"] if q["versionId"] == exam["versions"][0]["id"]]) == 10
+    assert finished["status"] == "succeeded" and exam["status"] == "ready" and len(exam["questions"]) == 10
 
     follow_up = next(r for r in supabase.tables["ai_runs"] if r["kind"] == "versioning")
     assert wait_for_run(api, follow_up["id"])["status"] == "succeeded"
     exam = api.get(f"/api/assessments/{assessment['id']}/exam", headers=auth()).json()
-    assert exam["reviewStatus"] in ("passed", "needs_attention") and len(exam["questions"]) == 20
+    assert exam["reviewStatus"] == "not_run" and len(exam["questions"]) == 20
 
 
 def test_every_version_is_written_at_once(api, supabase, db_a, ai):

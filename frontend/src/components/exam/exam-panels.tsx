@@ -8,6 +8,7 @@ import {
   Download,
   Flag,
   Info,
+  KeyRound,
   RefreshCw,
   ShieldCheck,
   Wrench,
@@ -34,7 +35,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import { apiDownload, apiRequest, errorMessage } from "@/lib/api/client";
+import { hasAnswerKey } from "@/components/exam/labels";
+import { ApiError, apiDownload, apiRequest, errorMessage } from "@/lib/api/client";
 import type { Exam, ExamVersion, Readiness, ReadinessCheck } from "@/lib/api/types";
 import { BLOOM_LABELS, BLOOM_LEVELS } from "@/lib/assessments/draft";
 import { timeAgo } from "@/lib/time";
@@ -242,15 +244,32 @@ const CHECK_ICONS: Record<ReadinessCheck["status"], ReactNode> = {
   blocked: <Ban className="size-3.5 text-destructive" aria-label="Blocked" />,
 };
 
-const EXPORT_KINDS = { student: "Student exam", answer_key: "Answer key", both: "Both" };
+const EXPORT_KINDS = { student: "Questions only", answer_key: "Answer key", both: "Questions and answer key" };
 
-export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalized: () => void }) {
+/** Answer keys are written on request: the panel offers all the missing ones at once, next to the download. */
+type AnswerKeysControl = {
+  /** Generate all answer keys is running (its keys appear under their questions as they are written). */
+  running: boolean;
+  start: () => Promise<void>;
+};
+
+export function FinalReviewPanel({ exam, onFinalized, keys }: { exam: Exam; onFinalized: () => void; keys: AnswerKeysControl }) {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [kind, setKind] = useState<keyof typeof EXPORT_KINDS>("student");
   const [version, setVersion] = useState("all");
   const [downloading, setDownloading] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  // The server's reason to confirm a download (an answer key with keys missing or out of date).
+  const [askReason, setAskReason] = useState<string | null>(null);
+  const [startingKeys, setStartingKeys] = useState(false);
+  const keysHeadingId = useId();
+  const total = exam.questions.length;
+  const missingKeys = exam.questions.filter((question) => !hasAnswerKey(question)).length;
+  const outdatedKeys = exam.questions.filter(
+    (question) => hasAnswerKey(question) && (question.answerKeyOutdated ?? question.needsSolutionReview),
+  ).length;
+  const readyKeys = total - missingKeys - outdatedKeys;
   const [finalizing, setFinalizing] = useState(false);
   const kindId = useId();
   const versionId = useId();
@@ -276,9 +295,25 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
     try {
       await apiDownload(`/api/exams/${exam.id}/export?kind=${kind}&version=${version}${confirm ? "&confirm=true" : ""}`);
     } catch (cause) {
-      setError(errorMessage(cause));
+      // The answer key asks first when some keys are missing or out of date: say which, and let the professor choose.
+      if (cause instanceof ApiError && cause.code === "export_needs_confirmation") {
+        setAskReason(cause.message);
+        setConfirming(true);
+      } else setError(errorMessage(cause));
     } finally {
       setDownloading(false);
+    }
+  }
+
+  async function startKeys() {
+    setStartingKeys(true);
+    setError(null);
+    try {
+      await keys.start();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setStartingKeys(false);
     }
   }
 
@@ -318,9 +353,44 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
         </ul>
       ) : null}
 
+      <section aria-labelledby={keysHeadingId} className="flex flex-col gap-2 rounded-lg border p-3">
+        <h3 id={keysHeadingId} className="flex items-center gap-1.5 text-sm font-medium">
+          <KeyRound className="size-4" />
+          Answer keys
+        </h3>
+        {keys.running ? (
+          <p role="status" className="flex items-center gap-2 text-sm">
+            <Spinner />
+            Writing answer keys: {readyKeys} of {total} ready…
+          </p>
+        ) : total > 0 && missingKeys + outdatedKeys === 0 ? (
+          <p role="status" className="flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-400">
+            <CircleCheck className="size-4 shrink-0" />
+            All {total} answer keys are ready.
+          </p>
+        ) : (
+          <>
+            <p className="text-sm text-muted-foreground">
+              {readyKeys} of {total} questions have an answer key
+              {outdatedKeys > 0 ? `, and ${outdatedKeys} ${outdatedKeys === 1 ? "is" : "are"} out of date` : ""}. Review and edit the
+              questions first: each key is written from the question as you saved it.
+            </p>
+            <Button type="button" size="sm" className="w-fit" disabled={startingKeys || total === 0} onClick={() => void startKeys()}>
+              {startingKeys ? <Spinner /> : <KeyRound />}
+              Generate all answer keys
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Writes the {missingKeys} missing {missingKeys === 1 ? "key" : "keys"}
+              {outdatedKeys > 0 ? ` and writes the ${outdatedKeys} out-of-date ${outdatedKeys === 1 ? "key" : "keys"} again` : ""}.
+              Keys that are up to date are kept.
+            </p>
+          </>
+        )}
+      </section>
+
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor={kindId}>Export</Label>
+          <Label htmlFor={kindId}>Download</Label>
           <Select items={EXPORT_KINDS} value={kind} onValueChange={(value) => value && setKind(value as keyof typeof EXPORT_KINDS)}>
             <SelectTrigger id={kindId} className="w-full">
               <SelectValue />
@@ -354,16 +424,20 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
       </div>
       <p className="text-xs text-muted-foreground">
         {kind === "student"
-          ? "The student paper never includes answers, solutions or notes."
+          ? "The questions as students see them. It needs no answer key, and none is written for it."
           : kind === "answer_key"
-            ? "Answers, worked solutions, rubrics and marks, for markers only."
-            : "A ZIP with the student paper and the answer key."}
+            ? "Each question with its answer, worked solution and rubric, for markers only."
+            : "A ZIP with the questions and the answer key."}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button
           type="button"
           disabled={downloading || !readiness?.canExport}
-          onClick={() => (readiness?.requiresConfirmation ? setConfirming(true) : void download(false))}
+          onClick={() => {
+            setAskReason(null);
+            if (readiness?.requiresConfirmation) setConfirming(true);
+            else void download(false);
+          }}
         >
           {downloading ? <Spinner /> : <Download />}
           Download PDF
@@ -395,17 +469,23 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogContent className="workspace-theme">
           <AlertDialogHeader>
-            <AlertDialogTitle>Export anyway?</AlertDialogTitle>
+            <AlertDialogTitle>Download anyway?</AlertDialogTitle>
             <AlertDialogDescription render={<div />}>
-              <p>These need your attention before the exam is printed:</p>
-              <ul className={cn("mt-2 list-disc pl-5")}>
-                {serious.map((check) => (
-                  <li key={check.id}>
-                    {check.label}
-                    {check.detail ? ` (${check.detail})` : ""}
-                  </li>
-                ))}
-              </ul>
+              {askReason ? (
+                <p>{askReason.replace(/^Please confirm the export: /, "")}</p>
+              ) : (
+                <>
+                  <p>These need your attention before the exam is printed:</p>
+                  <ul className={cn("mt-2 list-disc pl-5")}>
+                    {serious.map((check) => (
+                      <li key={check.id}>
+                        {check.label}
+                        {check.detail ? ` (${check.detail})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -416,7 +496,7 @@ export function FinalReviewPanel({ exam, onFinalized }: { exam: Exam; onFinalize
                 void download(true);
               }}
             >
-              Export anyway
+              Download anyway
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

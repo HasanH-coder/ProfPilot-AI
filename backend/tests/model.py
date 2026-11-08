@@ -12,6 +12,7 @@ from typing import Any
 
 from app.schemas.ai import (
     COGNITIVE_LEVELS,
+    AnswerKeyBatch,
     BloomOpportunity,
     BloomSpec,
     ChoiceOut,
@@ -19,9 +20,12 @@ from app.schemas.ai import (
     DifficultySpec,
     DocumentSummary,
     DocumentTopic,
+    DraftBatch,
+    DraftSubpart,
     ExamPlan,
     ExamSpec,
     FormatSpec,
+    GeneratedDraft,
     GeneratedQuestion,
     InterpretationOutput,
     KnowledgeConcept,
@@ -34,16 +38,18 @@ from app.schemas.ai import (
     PlannedSection,
     QuestionBatch,
     QuestionContent,
+    QuestionDraft,
+    QuestionKey,
     ReviewOutput,
-    RevisedQuestion,
+    RevisedDraft,
     RubricItem,
     SegmentKnowledge,
-    SolutionKey,
     SpecItem,
     StyleProfile,
+    SubpartKey,
     SubpartOut,
-    VariantBatch,
-    VersionVariant,
+    VariantDraft,
+    VariantDraftBatch,
 )
 from app.services.figure_reading import PagePictures, PictureContent, PictureReading
 from tests.fakes import FakeAI
@@ -275,10 +281,29 @@ def make_content(
     )
 
 
+def make_draft(content: QuestionContent) -> QuestionDraft:
+    """A question as the plan's writer returns it: without its answer key."""
+    return QuestionDraft(
+        type=content.type,
+        difficulty=content.difficulty,
+        cognitive_level=content.cognitive_level,
+        points=content.points,
+        prompt=content.prompt,
+        choices=content.choices,
+        subparts=[DraftSubpart(label=p.label, prompt=p.prompt, points=p.points) for p in content.subparts or []] or None,
+        concepts=content.concepts,
+        learning_objectives=content.learning_objectives,
+        source_excerpt_ids=content.source_excerpt_ids,
+        estimated_minutes=content.estimated_minutes,
+        figure_document_id=content.figure_document_id,
+    )
+
+
 _PLAN_LINE = re.compile(r"^(\d+)\. \[[^\]]*\] (\w+), (\w+), ([\d.]+) pts.*Bloom's level: (\w+)", re.M)
 
 
-def well_behaved_batch(call: dict[str, Any]) -> QuestionBatch:
+def well_behaved_batch(call: dict[str, Any]) -> DraftBatch | QuestionBatch:
+    """The planned questions, without their answer keys when told so (QUESTIONS ONLY), like the real writer."""
     text = call["input"]
     targets = text.split("WRITE THESE QUESTIONS NOW (exactly as planned)\n", 1)[1]
     refs = re.findall(r"id (S\d+)", text)[:2]
@@ -290,6 +315,9 @@ def well_behaved_batch(call: dict[str, Any]) -> QuestionBatch:
             int(number), question_type, difficulty, float(points), refs=refs, cognitive_level=level, choices=choices
         )
         questions.append(GeneratedQuestion(number=int(number), **content.model_dump()))
+    if "QUESTIONS ONLY" in call["instructions"]:
+        drafts = [GeneratedDraft(number=q.number, **make_draft(q).model_dump()) for q in questions]
+        return DraftBatch(questions=drafts, warnings=[])
     return QuestionBatch(questions=questions, warnings=[])
 
 
@@ -306,7 +334,7 @@ def well_behaved_single(call: dict[str, Any]) -> QuestionBatch:
 _QUESTION_HEADER = re.compile(r"^Q(\d+) \[(\w+), (\w+)(?:, Bloom's level: (\w+))?, ([\d.]+) pts\]", re.M)
 
 
-def well_behaved_variants(call: dict[str, Any]) -> VariantBatch:
+def well_behaved_variants(call: dict[str, Any]) -> VariantDraftBatch:
     label = re.search(r"Write the Version (\w) equivalent", call["input"]).group(1)
     # Each original's number of choices, which its variant keeps.
     blocks = re.split(r"(?m)^(?=Q\d+ \[)", call["input"])
@@ -327,11 +355,11 @@ def well_behaved_variants(call: dict[str, Any]) -> VariantBatch:
             cognitive_level=level or "apply",
             choices=choices.get(int(number)) or 4,
         )
-        variants.append(VersionVariant(source_number=int(number), question=content, variation="new scenario"))
-    return VariantBatch(variants=variants)
+        variants.append(VariantDraft(source_number=int(number), question=make_draft(content), variation="new scenario"))
+    return VariantDraftBatch(variants=variants)
 
 
-def well_behaved_revision(call: dict[str, Any]) -> RevisedQuestion:
+def well_behaved_revision(call: dict[str, Any]) -> RevisedDraft:
     text = call["input"]
     number, question_type, difficulty, level, points = _QUESTION_HEADER.search(text).groups()
     target = re.search(r"Its difficulty becomes (\w+)", text)
@@ -339,33 +367,57 @@ def well_behaved_revision(call: dict[str, Any]) -> RevisedQuestion:
     content = make_content(
         int(number), question_type, new_difficulty, float(points), stems=REVISION_STEMS, cognitive_level=level or "apply"
     )
-    return RevisedQuestion(question=content, change_summary="Raised the cognitive demand.")
+    return RevisedDraft(question=make_draft(content), change_summary="Raised the cognitive demand.")
 
 
-def well_behaved_solution(call: dict[str, Any]) -> SolutionKey:
-    text = call["input"]
-    header = _QUESTION_HEADER.search(text)
-    question_type, points = header.group(2), float(header.group(5))
-    subparts = len(re.findall(r"^\s+\([a-z]\) \[", text, re.M))
-    if question_type == "mcq":
-        return SolutionKey(
-            correct_choice="B",
-            subpart_answers=None,
-            answer="B",
-            solution="B follows.",
-            rubric=None,
-            explanation="Others fail.",
-            notes=None,
+def well_behaved_keys(call: dict[str, Any]) -> AnswerKeyBatch:
+    """An answer key for each question listed (as saved), fitting it: the second choice of a multiple-choice
+    question, and rubrics adding up to the marks of each question and part."""
+    listing = call["input"].split("THE QUESTIONS, AS THE PROFESSOR SAVED THEM", 1)[1]
+    headers = list(_QUESTION_HEADER.finditer(listing))
+    keys = []
+    for index, match in enumerate(headers):
+        number, question_type, points = int(match.group(1)), match.group(2), float(match.group(5))
+        block = listing[match.start() : headers[index + 1].start() if index + 1 < len(headers) else len(listing)]
+        if question_type == "mcq":
+            letters = re.findall(r"(?m)^  ([A-H])\. ", block)
+            correct = letters[1] if len(letters) > 1 else letters[0]
+            keys.append(
+                QuestionKey(
+                    number=number,
+                    correct_choice=correct,
+                    answer=f"{correct} is correct.",
+                    solution=f"Because {correct}.",
+                    rubric=None,
+                    explanation="The other options misapply the concept.",
+                    subparts=None,
+                    notes=None,
+                )
+            )
+            continue
+        parts = re.findall(r"(?m)^  \(([^)]+)\) \[([\d.]+) pts\]", block)
+        half = points / 2
+        keys.append(
+            QuestionKey(
+                number=number,
+                correct_choice=None,
+                answer=f"Model answer {number}.",
+                solution=f"Worked solution {number}.",
+                rubric=None
+                if parts
+                else [RubricItem(criterion="Method", points=half), RubricItem(criterion="Result", points=half)],
+                explanation=None,
+                subparts=[
+                    SubpartKey(
+                        label=label, answer=f"answer ({label})", rubric=[RubricItem(criterion="Correct", points=float(marks))]
+                    )
+                    for label, marks in parts
+                ]
+                or None,
+                notes=None,
+            )
         )
-    return SolutionKey(
-        correct_choice=None,
-        subpart_answers=[f"answer {i}" for i in range(subparts)] or None,
-        answer="New answer",
-        solution="New worked solution",
-        rubric=None if subparts else [RubricItem(criterion="Correct", points=points)],
-        explanation=None,
-        notes=None,
-    )
+    return AnswerKeyBatch(keys=keys)
 
 
 def clean_review(_call: dict[str, Any]) -> ReviewOutput:
@@ -495,7 +547,7 @@ def install_well_behaved(ai: FakeAI) -> FakeAI:
     ai.on("write_variants", well_behaved_variants)
     ai.on("review_exam", clean_review)
     ai.on("revise_question", well_behaved_revision)
-    ai.on("regenerate_solution", well_behaved_solution)
+    ai.on("write_answer_keys", well_behaved_keys)
     ai.on("summarize_document", summary_handler)
     ai.on("analyze_lecture_segment", segment_handler)
     ai.on("synthesize_lecture", synthesis_handler)

@@ -168,10 +168,13 @@ def test_the_exam_is_planned_from_every_word_and_written_and_checked_looking_at_
     assert images and all(part["image_url"].startswith("data:image/jpeg;base64,") for part in images)
     assert all("THE SLIDES OF THESE QUESTIONS" in call["input"] for call in writers)
 
-    # The reviewer checked every answer key against the same slides.
-    review = ai.calls_for("review_exam")[-1]
-    assert "SOURCE SLIDES OF EACH QUESTION" in review["input"]
-    assert set(shown(review)) == {ref for call in writers for ref in shown(call)}
+    # The answer keys, written on request, are written looking at the same slides.
+    from tests.test_revisions import write_all_keys
+
+    write_all_keys(api, exam["id"])
+    keys = ai.calls_for("write_answer_keys")
+    assert keys and all("SOURCE SLIDES OF EACH QUESTION" in call["input"] for call in keys)
+    assert {ref for call in keys for ref in shown(call)} == {ref for call in writers for ref in shown(call)}
 
     # Every question names the slides it was written from.
     assert all(any(re.search(r"Week \d\.pdf, Page \d+", label) for label in q["sources"]) for q in exam["questions"])

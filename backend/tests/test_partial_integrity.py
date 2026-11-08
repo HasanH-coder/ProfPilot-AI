@@ -14,7 +14,7 @@ from app.schemas.ai import ExamPlan, PlannedSection, QuestionFix, ReviewIssue, R
 from app.services.exam_generation import plan_problems
 from app.services.exam_store import answer_leaks, integrity_leaks, partial_leaks, rewording_keeps_maths
 from app.services.lecture_knowledge import professor_formula_text, traced_to_professor
-from tests.helpers import auth
+from tests.helpers import auth, wait_for_run
 from tests.model import well_behaved_batch
 from tests.seed import seed_assessment, seed_document
 from tests.test_bloom import slot, spec_with
@@ -403,6 +403,10 @@ def flagged_after_review(api, supabase, db_a, ai, professor_prompt: str) -> list
     run(seed_document(supabase, db_a, assessment["id"]))
     interpret_and_approve(api, assessment["id"])
     exam = generate(api, assessment["id"])
+    # The quality check runs when the professor asks for it.
+    started = api.post(f"/api/exams/{exam['id']}/review", headers=auth())
+    assert wait_for_run(api, started.json()["run"]["id"])["status"] == "succeeded"
+    exam = api.get(f"/api/exams/{exam['id']}", headers=auth()).json()
     return [i["questionNumber"] for i in exam["review"]["issues"] if "weren't reliably extracted" in i["message"]]
 
 

@@ -501,7 +501,9 @@ def _check_question(row: dict[str, Any]) -> None:
         raise InvalidInputError()
     if row["type"] == "mcq":
         choices = row.get("choices") or []
-        if not 2 <= len(choices) <= 8 or row.get("correct_choice") not in [c.get("id") for c in choices]:
+        # A question written before its answer key has no correct choice yet.
+        correct = row.get("correct_choice")
+        if not 2 <= len(choices) <= 8 or (correct is not None and correct not in [c.get("id") for c in choices]):
             raise InvalidInputError()
     elif row.get("choices") is not None or row.get("correct_choice") is not None:
         raise InvalidInputError()

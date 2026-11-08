@@ -24,7 +24,7 @@ from app.services.lecture_knowledge import (
     page_texts,
     unverified_formula_problems,
 )
-from tests.helpers import auth
+from tests.helpers import auth, wait_for_run
 from tests.model import make_content, segment_handler, well_behaved_batch, well_behaved_plan, well_behaved_revision
 from tests.seed import pdf_bytes, seed_assessment, seed_course, seed_course_source, seed_document
 from tests.test_workflow import A_SETTINGS, generate, interpret_and_approve
@@ -102,7 +102,10 @@ def test_generation_rejects_garbled_formulas_and_the_review_asks_the_professor_t
     # The question writer saw the formula as unverified evidence, never as the lecture's wording.
     assert "formula UNVERIFIED" in call["input"] and "Extracted evidence, for reference only" in call["input"]
     assert all(GARBLED not in question["prompt"] for question in exam["questions"])
-    # The question with mathematics on that topic is flagged for the professor to confirm.
+    # The quality check, when the professor runs it, flags the question with mathematics on that topic.
+    started = api.post(f"/api/exams/{exam['id']}/review", headers=auth())
+    assert wait_for_run(api, started.json()["run"]["id"])["status"] == "succeeded"
+    exam = api.get(f"/api/exams/{exam['id']}", headers=auth()).json()
     flagged = [issue for issue in exam["review"]["issues"] if "weren't reliably extracted" in issue["message"]]
     assert flagged and flagged[0]["category"] == "answer_key" and flagged[0]["severity"] == "warning"
 
@@ -118,7 +121,7 @@ def test_a_revision_may_not_quote_an_unverified_formula_and_sees_it_marked(api, 
     def quotes_then_corrects(call):
         good = well_behaved_revision(call)
         bad = good.model_copy(deep=True)
-        bad.question.answer = f"{bad.question.answer} Since {GARBLED}."
+        bad.question.prompt = f"{bad.question.prompt} Since {GARBLED}."
         return [bad, good]
 
     ai.on("revise_question", quotes_then_corrects)
@@ -127,7 +130,7 @@ def test_a_revision_may_not_quote_an_unverified_formula_and_sees_it_marked(api, 
     assert reply.status_code == 200, reply.text
     call = ai.calls_for("revise_question")[0]
     assert "quotes an unverified, garbled formula" in " ".join(call["problems"][0]) and call["problems"][1] == []
-    assert GARBLED not in reply.json()["question"]["answer"]
+    assert GARBLED not in reply.json()["question"]["prompt"]
 
 
 def test_variants_may_not_quote_an_unverified_formula(api, supabase, db_a, ai):
@@ -136,7 +139,7 @@ def test_variants_may_not_quote_an_unverified_formula(api, supabase, db_a, ai):
     def quotes_then_corrects(call):
         good = well_behaved_variants(call)
         bad = good.model_copy(deep=True)
-        bad.variants[0].question.solution += f" Using {GARBLED}."
+        bad.variants[0].question.prompt += f" Using {GARBLED}."
         return [bad, good]
 
     ai.on("analyze_lecture_segment", with_garbled_formulas)
@@ -268,3 +271,25 @@ def test_another_professors_identical_copy_is_never_used(api, supabase, db_a, db
     run(DocumentIngestionService(db_b, ai).process(run(context_b.get_document(copy["id"]))))
     run(db_b.update("documents", {"knowledge": None}, filters=[("id", "eq", copy["id"])]))
     assert run(context_b.get_knowledge([run(context_b.get_document(copy["id"]))])) == {}
+
+
+def test_an_answer_key_may_not_quote_an_unverified_formula(api, supabase, db_a, ai):
+    from tests.model import well_behaved_keys
+    from tests.test_revisions import write_all_keys
+
+    def quotes_then_corrects(call):
+        good = well_behaved_keys(call)
+        bad = good.model_copy(deep=True)
+        bad.keys[0].solution += f" Using {GARBLED}."
+        return [bad, good]
+
+    ai.on("analyze_lecture_segment", with_garbled_formulas)
+    ai.on("plan_exam", plan_on_first_topic)
+    ai.on("write_answer_keys", quotes_then_corrects)
+    assessment = run(seed_assessment(db_a, **{**A_SETTINGS, "number_of_versions": 1}))
+    run(seed_document(supabase, db_a, assessment["id"]))
+    interpret_and_approve(api, assessment["id"])
+    exam = write_all_keys(api, generate(api, assessment["id"])["id"])
+    call = ai.calls_for("write_answer_keys")[0]
+    assert "quotes an unverified, garbled formula" in " ".join(call["problems"][0]) and call["problems"][1] == []
+    assert all(GARBLED not in (question["solution"] or "") for question in exam["questions"])

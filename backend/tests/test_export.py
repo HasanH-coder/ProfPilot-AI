@@ -33,8 +33,13 @@ def test_harmless_warnings_never_block_export(api, supabase, db_a):
     readiness = api.get(f"/api/exams/{exam['id']}/readiness", headers=auth()).json()
     assert not readiness["requiresConfirmation"]
     statuses = {check["id"]: check["status"] for check in readiness["checks"]}
-    assert statuses["solution_review"] == "warning" and statuses["approval"] == "info"
+    assert statuses["answer_keys_outdated"] == "warning" and statuses["approval"] == "info"
+    # The questions never wait for answer keys; the answer key asks first about the one out of date.
+    assert api.get(f"/api/exams/{exam['id']}/export?kind=student&version=A", headers=auth()).status_code == 200
+    asked = api.get(f"/api/exams/{exam['id']}/export?kind=answer_key&version=A", headers=auth())
+    assert asked.status_code == 409 and "written before their question changed" in asked.json()["error"]["message"]
     assert api.get(f"/api/exams/{exam['id']}/export?kind=answer_key&version=B", headers=auth()).status_code == 200
+    assert api.get(f"/api/exams/{exam['id']}/export?kind=answer_key&version=A&confirm=true", headers=auth()).status_code == 200
 
 
 def test_unknown_version_is_rejected(api, supabase, db_a):

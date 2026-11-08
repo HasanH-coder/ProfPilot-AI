@@ -233,7 +233,10 @@ def test_generation_gets_and_keeps_each_questions_level(api, supabase, db_a, ai)
         by_slot.setdefault(question["slotId"], set()).add(question["cognitiveLevel"])
     assert all(len(levels) == 1 for levels in by_slot.values())
     assert all(not (q["type"] == "mcq" and q["cognitiveLevel"] == "create") for q in exam["questions"])
-    assert "BLOOM'S LEVELS" in ai.calls_for("review_exam")[0]["instructions"]
+    # The quality check, when the professor runs it, judges levels with the same guide.
+    from app.ai.prompts import DataFramer, reviewer_instructions
+
+    assert "BLOOM'S LEVELS" in reviewer_instructions(DataFramer())
 
 
 def test_a_question_at_the_wrong_level_is_sent_back():

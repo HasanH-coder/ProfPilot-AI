@@ -3,7 +3,7 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 
-import { DIFFICULTY_LABELS, TYPE_LABELS } from "@/components/exam/labels";
+import { DIFFICULTY_LABELS, hasAnswerKey, TYPE_LABELS } from "@/components/exam/labels";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -69,8 +69,13 @@ type QuestionEditDialogProps = {
   onSaved: (result: QuestionResult) => void;
 };
 
-/** Edit any part of a question by hand. Only the fields that changed are sent. */
+/**
+ * Edit any part of a question by hand: its wording, any choice, its parts, and its answer key once it has one.
+ * Only the fields that changed are sent. A question without a key yet is edited as a question only: its key
+ * is written later, from what is saved here.
+ */
 export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: QuestionEditDialogProps) {
+  const keyed = hasAnswerKey(question);
   const [state, setState] = useState<EditState>(() => fromQuestion(question));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +106,7 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
     setState((current) => {
       if (type === "mcq" && current.choices.length === 0) {
         const choices = ["A", "B", "C", "D"].map((id) => ({ id, text: "" }));
-        return { ...current, type, choices, correctChoice: "A", subparts: [] };
+        return { ...current, type, choices, correctChoice: keyed ? "A" : null, subparts: [] };
       }
       return { ...current, type };
     });
@@ -121,7 +126,10 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
     if (state.type === "mcq") {
       const choices = state.choices.map((choice) => ({ id: choice.id, text: choice.text.trim() }));
       if (choices.length < 2 || choices.some((choice) => !choice.text)) return "Give every choice some text (at least 2 choices).";
-      if (!state.correctChoice || !choices.some((choice) => choice.id === state.correctChoice)) return "Choose the correct answer.";
+      // Without a key yet, no correct answer is chosen here: the key is written later, from these choices.
+      if (keyed && (!state.correctChoice || !choices.some((choice) => choice.id === state.correctChoice))) {
+        return "Choose the correct answer.";
+      }
       if (JSON.stringify(choices) !== JSON.stringify(original.choices) || state.type !== original.type) changes.choices = choices;
       if (state.correctChoice !== original.correctChoice || state.type !== original.type) changes.correctChoice = state.correctChoice;
     } else if (original.type === "mcq") {
@@ -142,7 +150,8 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
           prompt: part.prompt.trim(),
           points: partPoints,
           answer: part.answer.trim(),
-          rubric: previous && previous.points === partPoints ? previous.rubric : [{ criterion: "Correct answer", points: partPoints }],
+          rubric:
+            previous && previous.points === partPoints ? previous.rubric : keyed ? [{ criterion: "Correct answer", points: partPoints }] : [],
         });
       }
       changes.subparts = parts.length > 0 ? parts : null;
@@ -197,7 +206,9 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
           <DialogHeader>
             <DialogTitle>Edit question {question.number}</DialogTitle>
             <DialogDescription>
-              If you change the question but not its answer key, it&apos;s flagged so you can check or regenerate the key.
+              {keyed
+                ? "Change the wording or any choice by typing. If you change the question but not its answer key, the key is marked out of date until you write it again."
+                : "Change the wording or any choice by typing. This question has no answer key yet: generate it when you're done, and it is written from what you save here."}
             </DialogDescription>
           </DialogHeader>
 
@@ -276,17 +287,19 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
 
           {state.type === "mcq" ? (
             <fieldset className="flex flex-col gap-2">
-              <legend className="mb-2 text-sm font-medium">Choices (select the correct one)</legend>
+              <legend className="mb-2 text-sm font-medium">{keyed ? "Choices (select the correct one)" : "Choices"}</legend>
               {state.choices.map((choice, index) => (
                 <div key={choice.id} className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name={`correct-${question.id}`}
-                    aria-label={`Choice ${choice.id} is correct`}
-                    checked={state.correctChoice === choice.id}
-                    onChange={() => set("correctChoice", choice.id)}
-                    className="size-4 accent-primary"
-                  />
+                  {keyed && (
+                    <input
+                      type="radio"
+                      name={`correct-${question.id}`}
+                      aria-label={`Choice ${choice.id} is correct`}
+                      checked={state.correctChoice === choice.id}
+                      onChange={() => set("correctChoice", choice.id)}
+                      className="size-4 accent-primary"
+                    />
+                  )}
                   <span className="w-5 text-sm font-medium">{choice.id}.</span>
                   <Input
                     aria-label={`Choice ${choice.id}`}
@@ -368,15 +381,17 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
                   >
                     <Trash2 />
                   </Button>
-                  <Textarea
-                    aria-label={`Part ${part.label} answer`}
-                    placeholder="Answer for this part"
-                    className="min-h-16 sm:col-span-4"
-                    value={part.answer}
-                    onChange={(event) =>
-                      set("subparts", state.subparts.map((item, position) => (position === index ? { ...item, answer: event.target.value } : item)))
-                    }
-                  />
+                  {keyed && (
+                    <Textarea
+                      aria-label={`Part ${part.label} answer`}
+                      placeholder="Answer for this part"
+                      className="min-h-16 sm:col-span-4"
+                      value={part.answer}
+                      onChange={(event) =>
+                        set("subparts", state.subparts.map((item, position) => (position === index ? { ...item, answer: event.target.value } : item)))
+                      }
+                    />
+                  )}
                 </div>
               ))}
               <Button
@@ -397,66 +412,70 @@ export function QuestionEditDialog({ question, open, onOpenChange, onSaved }: Qu
             </fieldset>
           )}
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={ids.answer}>Answer</Label>
-            <Textarea id={ids.answer} className="min-h-16" value={state.answer} onChange={(event) => set("answer", event.target.value)} />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={ids.solution}>Worked solution</Label>
-            <Textarea id={ids.solution} className="min-h-24" value={state.solution} onChange={(event) => set("solution", event.target.value)} />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={ids.explanation}>{state.type === "mcq" ? "Why the other choices are wrong" : "Notes for markers"}</Label>
-            <Textarea id={ids.explanation} className="min-h-16" value={state.explanation} onChange={(event) => set("explanation", event.target.value)} />
-          </div>
+          {keyed && (
+            <>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor={ids.answer}>Answer</Label>
+                <Textarea id={ids.answer} className="min-h-16" value={state.answer} onChange={(event) => set("answer", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor={ids.solution}>Worked solution</Label>
+                <Textarea id={ids.solution} className="min-h-24" value={state.solution} onChange={(event) => set("solution", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor={ids.explanation}>{state.type === "mcq" ? "Why the other choices are wrong" : "Notes for markers"}</Label>
+                <Textarea id={ids.explanation} className="min-h-16" value={state.explanation} onChange={(event) => set("explanation", event.target.value)} />
+              </div>
 
-          {state.type !== "mcq" && (
-            <fieldset className="flex flex-col gap-2">
-              <legend className="mb-2 text-sm font-medium">
-                Marking rubric <span className="font-normal text-muted-foreground">(total {rubricTotal} of {state.points || 0})</span>
-              </legend>
-              {state.rubric.map((item, index) => (
-                <div key={index} className="flex items-center gap-2">
-                  <Input
-                    aria-label={`Rubric criterion ${index + 1}`}
-                    value={item.criterion}
-                    onChange={(event) =>
-                      set("rubric", state.rubric.map((row, position) => (position === index ? { ...row, criterion: event.target.value } : row)))
-                    }
-                  />
-                  <Input
-                    aria-label={`Rubric marks ${index + 1}`}
-                    type="number"
-                    min={0}
-                    step={0.5}
-                    className="w-24"
-                    value={item.points}
-                    onChange={(event) =>
-                      set("rubric", state.rubric.map((row, position) => (position === index ? { ...row, points: event.target.value } : row)))
-                    }
-                  />
+              {state.type !== "mcq" && (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="mb-2 text-sm font-medium">
+                    Marking rubric <span className="font-normal text-muted-foreground">(total {rubricTotal} of {state.points || 0})</span>
+                  </legend>
+                  {state.rubric.map((item, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <Input
+                        aria-label={`Rubric criterion ${index + 1}`}
+                        value={item.criterion}
+                        onChange={(event) =>
+                          set("rubric", state.rubric.map((row, position) => (position === index ? { ...row, criterion: event.target.value } : row)))
+                        }
+                      />
+                      <Input
+                        aria-label={`Rubric marks ${index + 1}`}
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        className="w-24"
+                        value={item.points}
+                        onChange={(event) =>
+                          set("rubric", state.rubric.map((row, position) => (position === index ? { ...row, points: event.target.value } : row)))
+                        }
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove rubric line ${index + 1}`}
+                        onClick={() => set("rubric", state.rubric.filter((_, position) => position !== index))}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  ))}
                   <Button
                     type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={`Remove rubric line ${index + 1}`}
-                    onClick={() => set("rubric", state.rubric.filter((_, position) => position !== index))}
+                    variant="outline"
+                    size="sm"
+                    className="w-fit"
+                    onClick={() => set("rubric", [...state.rubric, { criterion: "", points: "1" }])}
                   >
-                    <Trash2 />
+                    <Plus />
+                    Add rubric line
                   </Button>
-                </div>
-              ))}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="w-fit"
-                onClick={() => set("rubric", [...state.rubric, { criterion: "", points: "1" }])}
-              >
-                <Plus />
-                Add rubric line
-              </Button>
-            </fieldset>
+                </fieldset>
+              )}
+            </>
           )}
 
           {error && (

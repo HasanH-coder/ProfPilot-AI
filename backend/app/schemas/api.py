@@ -145,6 +145,10 @@ class QuestionOut(ApiModel):
     estimated_minutes: float | None
     status: str
     needs_solution_review: bool
+    # Answer keys are written on request: whether this question has one, and whether it was written before
+    # the question last changed.
+    has_answer_key: bool = False
+    answer_key_outdated: bool = False
     revision_count: int
     updated_at: str
 
@@ -310,6 +314,8 @@ class ReadinessOut(ApiModel):
     can_export: bool
     requires_confirmation: bool
     checks: list[ReadinessCheckOut]
+    # {"total": n, "missing": ["Q3", …], "outdated": [...]}: downloading the answer key asks to confirm them.
+    answer_keys: dict[str, Any] = {}
     versions: list[dict[str, Any]]
     duration_minutes: int | None
 

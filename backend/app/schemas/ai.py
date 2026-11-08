@@ -441,9 +441,77 @@ class QuestionBatch(BaseModel):
     warnings: list[str]
 
 
+class DraftSubpart(BaseModel):
+    label: str
+    prompt: str
+    points: float = Field(gt=0, le=1000)
+
+
+class QuestionDraft(BaseModel):
+    """A question as students read it, without its answer key: the key is written later, on request,
+    from the professor's saved wording (see AnswerKeyBatch)."""
+
+    type: QuestionType
+    difficulty: Difficulty
+    cognitive_level: CognitiveLevel | None
+    points: float = Field(gt=0, le=1000)
+    prompt: str
+    choices: list[ChoiceOut] | None
+    subparts: list[DraftSubpart] | None
+    concepts: list[str]
+    learning_objectives: list[str]
+    # ids of the course-material excerpts it is based on (from the prompt).
+    source_excerpt_ids: list[str]
+    estimated_minutes: float = Field(gt=0, le=600)
+    figure_document_id: str | None
+
+
+class GeneratedDraft(QuestionDraft):
+    number: int = Field(ge=1)
+
+
+class DraftBatch(BaseModel):
+    questions: list[GeneratedDraft]
+    warnings: list[str]
+
+
 class RevisedQuestion(BaseModel):
     question: QuestionContent
     change_summary: str
+
+
+class RevisedDraft(BaseModel):
+    """A revised question, without its answer key (a key it had is marked out of date)."""
+
+    question: QuestionDraft
+    change_summary: str
+
+
+class SubpartKey(BaseModel):
+    label: str
+    answer: str
+    rubric: list[RubricItem]
+
+
+class QuestionKey(BaseModel):
+    """The answer key of one question, written from its saved wording."""
+
+    number: int = Field(ge=1)
+    correct_choice: str | None
+    # For multiple choice: the correct choice and why. Otherwise a model answer.
+    answer: str
+    # A worked solution a marker can follow.
+    solution: str
+    rubric: list[RubricItem] | None
+    # For multiple choice: why each other choice is wrong.
+    explanation: str | None
+    subparts: list[SubpartKey] | None
+    # A problem with the question itself (two defensible answers, missing information), or null.
+    notes: str | None
+
+
+class AnswerKeyBatch(BaseModel):
+    keys: list[QuestionKey]
 
 
 class SolutionKey(BaseModel):
@@ -464,6 +532,18 @@ class VersionVariant(BaseModel):
     source_number: int = Field(ge=1)
     question: QuestionContent
     variation: str
+
+
+class VariantDraft(BaseModel):
+    """An equivalent question for another version, without its answer key (written later, on request)."""
+
+    source_number: int = Field(ge=1)
+    question: QuestionDraft
+    variation: str
+
+
+class VariantDraftBatch(BaseModel):
+    variants: list[VariantDraft]
 
 
 class VariantBatch(BaseModel):
