@@ -10,7 +10,7 @@ import { getCurrentProfessor } from "@/lib/auth/current-professor";
 export async function generateMetadata({ params }: PageProps<"/workspace/assessments/[id]/plan">): Promise<Metadata> {
   const { id } = await params;
   const [, assessment] = await Promise.all([getCurrentProfessor(), getAssessment(id)]);
-  return { title: assessment ? `Plan · ${assessmentTitle(assessment.draft.examName)}` : "Assessment not found" };
+  return { title: assessment ? `Improved prompt · ${assessmentTitle(assessment.draft.examName)}` : "Assessment not found" };
 }
 
 export default async function PlanPage({ params }: PageProps<"/workspace/assessments/[id]/plan">) {
@@ -23,8 +23,8 @@ export default async function PlanPage({ params }: PageProps<"/workspace/assessm
     <div className="flex flex-col gap-10">
       <PageHeader
         back={{ href: `/workspace/assessments/${id}`, label: assessmentTitle(assessment.draft.examName) }}
-        title="Review the plan"
-        description="ProfPilot interpreted everything you provided. Check it, edit it if needed, and approve it before the exam is generated."
+        title="Review your improved prompt"
+        description="ProfPilot read everything you provided and improved your prompt. Read it while your question plan is prepared, edit it if needed, then press Next to go to the plan."
       />
       <PlanReview assessmentId={id} />
     </div>

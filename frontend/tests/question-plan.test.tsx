@@ -67,22 +67,23 @@ test("each planned question can be read, and the targets and warnings are shown"
   serve(makePlan([planned(1), planned(2), planned(3)]));
   const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
 
-  await expect.element(screen.getByRole("heading", { name: "Plan for question 2" })).toBeVisible();
+  // Every question shows its planned topic.
+  await expect.element(screen.getByRole("heading", { name: "Question 2: Topic 2" })).toBeVisible();
   await expect.element(screen.getByText("Do task 2")).toBeVisible();
   await expect.element(screen.getByText("target 30")).toBeVisible();
   await expect.element(screen.getByText(/Lecture 4 is thin/)).toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Write the whole exam" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Generate full exam" })).toBeVisible();
 });
 
-test("one question is written from its plan", async () => {
+test("one question is generated from its plan", async () => {
   serve(makePlan([planned(1), planned(2)]));
   const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
 
-  await screen.getByRole("button", { name: "Write this question" }).nth(1).click();
+  await screen.getByRole("button", { name: "Generate question" }).nth(1).click();
   await expect
     .poll(() => posts().map(([path, options]) => [path, options?.body]))
     .toContainEqual(["/api/assessments/assessment-1/question-plan/2/question", { replace: false }]);
-  await expect.element(screen.getByRole("button", { name: "Writing…" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Generating…" })).toBeVisible();
 });
 
 test("an exam made another way is replaced only after the professor confirms", async () => {
@@ -96,7 +97,7 @@ test("an exam made another way is replaced only after the professor confirms", a
   });
   const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
 
-  await screen.getByRole("button", { name: "Write this question" }).click();
+  await screen.getByRole("button", { name: "Generate question" }).click();
   await screen.getByRole("button", { name: "Replace exam" }).click();
   await expect
     .poll(() => posts().map(([, options]) => options?.body))
@@ -109,9 +110,9 @@ test("a written question shows under its plan with its answer key, and a changed
 
   await expect.element(screen.getByText(/\(Question 1\)/)).toBeVisible();
   await expect.element(screen.getByText("Plan changed since it was written")).toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Rewrite this question" })).toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Write the other 1 and finish" })).toBeVisible();
-  await expect.element(screen.getByText(/rewrites question 1, whose plan you changed/)).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Regenerate question" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Generate full exam" })).toBeVisible();
+  await expect.element(screen.getByText(/regenerates question 1, whose plan you changed/)).toBeVisible();
 });
 
 test("the professor asks the AI to change the plan", async () => {
@@ -130,19 +131,50 @@ test("the plan is edited by hand", async () => {
   const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
 
   await screen.getByRole("button", { name: "Edit plan" }).click();
-  await screen.getByLabelText("Topic").fill("Load balancing");
+  await screen.getByLabelText("Topic", { exact: true }).fill("Load balancing");
   await screen.getByRole("button", { name: "Save" }).click();
   await expect.element(screen.getByText("Load balancing")).toBeVisible();
   const [, options] = vi.mocked(apiRequest).mock.calls.find(([, request]) => request?.method === "PATCH")!;
   expect(options?.body).toMatchObject({ topic: "Load balancing", points: 10, type: "mcq" });
 });
 
-test("writing the whole exam opens the exam page, where the questions appear", async () => {
+test("generating the full exam keeps the questions already generated and opens the exam page", async () => {
   const { router } = await import("./mocks/navigation");
-  serve(makePlan([planned(1, true), planned(2)]));
+  serve(makePlan([planned(1, true), planned(2), planned(3)]));
   const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
 
-  await screen.getByRole("button", { name: "Write the other 1 and finish" }).click();
+  await expect.element(screen.getByText(/generate the 2 remaining questions, keeping the 1 you already generated/)).toBeVisible();
+  await screen.getByRole("button", { name: "Generate full exam" }).click();
   await expect.poll(() => vi.mocked(router.push).mock.calls).toContainEqual(["/workspace/assessments/assessment-1/exam"]);
   expect(posts().map(([path]) => path)).toContain("/api/assessments/assessment-1/question-plan/exam");
+});
+
+test("a plan still being prepared shows its progress and isn't started twice", async () => {
+  serve({ ...makePlan([]), status: "none" });
+  const serveNext = vi.mocked(apiRequest).getMockImplementation()!;
+  vi.mocked(apiRequest).mockImplementation(async (path, options) => {
+    const url = String(path);
+    if (url.endsWith("/ai-status")) {
+      return { runs: [{ id: "run-9", kind: "interpretation", status: "running", stage: "planning" }], spec: { status: "approved" } };
+    }
+    if (url.startsWith("/api/runs/")) return { id: "run-9", kind: "interpretation", status: "running", stage: "planning" };
+    return serveNext(path, options);
+  });
+  const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
+
+  await expect.element(screen.getByText("Planning the assessment…").first()).toBeVisible();
+  expect(posts()).toEqual([]);
+});
+
+test("building the exam in a conversation is offered after the plan", async () => {
+  const { router } = await import("./mocks/navigation");
+  serve(makePlan([planned(1)]), () => ({ exam: { id: "exam-1" } }));
+  const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
+
+  await screen.getByRole("button", { name: "Build with AI" }).click();
+  await expect.poll(() => vi.mocked(router.push).mock.calls).toContainEqual(["/workspace/assessments/assessment-1/builder"]);
+  expect(posts().map(([path, options]) => [path, options?.body])).toContainEqual([
+    "/api/assessments/assessment-1/exam",
+    { mode: "interactive", replace: false },
+  ]);
 });

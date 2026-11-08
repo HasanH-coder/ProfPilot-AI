@@ -327,3 +327,45 @@ def test_another_professor_cant_reach_the_plan(api, supabase, db_a):
     assert api.patch(f"/api/assessments/{assessment_id}/question-plan/1", json=body, headers=other).status_code == 404
     assert api.post(f"/api/assessments/{assessment_id}/question-plan/1/question", json={}, headers=other).status_code == 404
     assert api.post(f"/api/assessments/{assessment_id}/question-plan/exam", json={}, headers=other).status_code == 404
+
+
+# -- The whole flow, as the professor goes through it ---------------------------------------------------
+
+
+def test_prompt_then_plan_then_some_questions_then_the_rest(api, supabase, db_a, ai):
+    """Improve with AI → the plan is prepared while the prompt is read (never twice) → an edited prompt is planned
+    again → Next → a topic is edited → two questions are generated → Generate full exam writes only the rest."""
+    assessment_id = interpreted(api, supabase, db_a)
+
+    # Prepared in the background while the prompt is read; a second request while it runs is refused.
+    run(db_a.insert("ai_runs", {"exam_project_id": assessment_id, "kind": "interpretation", "stage": "planning"}))
+    again = api.post(f"/api/assessments/{assessment_id}/question-plan", headers=auth())
+    assert again.status_code == 409 and again.json()["error"]["code"] == "job_running"
+    supabase.tables["ai_runs"][-1]["status"] = "failed"
+    make_plan(api, assessment_id)
+
+    # Editing the prompt drops that plan; the next one is made from the edited prompt.
+    edited = "Write a midterm on gradient descent and regularization, with plain wording."
+    api.patch(f"/api/assessments/{assessment_id}/interpretation", json={"enhancedPrompt": edited}, headers=auth())
+    assert get_plan(api, assessment_id)["status"] == "none"
+    plan = make_plan(api, assessment_id)
+    assert edited in ai.calls_for("plan_exam")[-1]["input"]
+
+    # Next confirms the prompt and keeps the plan.
+    api.post(f"/api/assessments/{assessment_id}/interpretation/approval", headers=auth())
+    planned = [question["number"] for question in plan["questions"]]
+    assert edit(api, assessment_id, 2, topic="Learning rate schedules").status_code == 200
+
+    first = write(api, assessment_id, 1)["questions"][0]["written"]
+    third = write(api, assessment_id, 3)["questions"][2]["written"]
+    exam = finish(api, assessment_id)
+
+    first_version = exam["versions"][0]["id"]
+    by_position = {q["position"]: q for q in exam["questions"] if q["versionId"] == first_version}
+    assert sorted(by_position) == planned  # every planned question, at its planned number
+    assert by_position[1]["id"] == first["id"] and by_position[3]["id"] == third["id"]  # kept, not rewritten
+    written_after = [call["input"] for call in ai.calls_for("generate_questions")[2:]]
+    assert any("Learning rate schedules" in text for text in written_after)  # the edited topic was used
+    targets = [text.split("WRITE THESE QUESTIONS NOW", 1)[1] for text in written_after]
+    assert not any(line.startswith(("1.", "3.")) for text in targets for line in text.splitlines()[1:])
+    assert exam["status"] == "ready"

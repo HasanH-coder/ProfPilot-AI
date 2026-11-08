@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, ArrowRight, Check, MessageSquarePlus, Pencil, PenLine, RefreshCw, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, MessageSquarePlus, Pencil, PenLine, RefreshCw, Sparkles, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
@@ -251,7 +251,9 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
   const outdated = plan.questions.filter((question) => question.outdated).map((question) => question.number);
   const examReady = plan.exam?.status === "ready";
   const finishing = job?.kind === "writing" && job.number === null;
-  const finishLabel = written === 0 ? "Write the whole exam" : written === total ? "Finish the exam" : `Write the other ${total - written} and finish`;
+  const remaining = total - written;
+  // Generate full exam keeps every question already generated and generates only the rest.
+  const finishLabel = remaining === 0 ? "Finish the exam" : "Generate full exam";
 
   return (
     <div className="flex flex-col gap-8">
@@ -262,8 +264,8 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
       {plan.exam?.status === "failed" && plan.exam.errorMessage && (
         <Alert variant="destructive">
           <AlertTriangle />
-          <AlertTitle>Writing stopped</AlertTitle>
-          <AlertDescription>{plan.exam.errorMessage} The questions already written are kept: try again to continue.</AlertDescription>
+          <AlertTitle>Generation stopped</AlertTitle>
+          <AlertDescription>{plan.exam.errorMessage} The questions already generated are kept: try again to continue.</AlertDescription>
         </Alert>
       )}
 
@@ -271,18 +273,18 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
         <Alert role="status">
           <Spinner />
           <AlertTitle>
-            Writing the exam: {written} of {total} {total === 1 ? "question" : "questions"} ready
+            Generating the exam: {written} of {total} {total === 1 ? "question" : "questions"} ready
           </AlertTitle>
           <AlertDescription>
-            Each question appears under its plan as soon as it is written. Start reading while the others are being
-            written.
+            Each question appears under its plan as soon as it is ready. Start reading while the others are being
+            generated.
           </AlertDescription>
         </Alert>
       )}
       {allWritten && !finishing && (
         <Alert>
           <Check />
-          <AlertTitle>All {total} questions are written</AlertTitle>
+          <AlertTitle>All {total} questions are generated</AlertTitle>
           <AlertDescription>
             <span>
               The other versions and the quality check are finishing in the background.{" "}
@@ -329,17 +331,20 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
       <section aria-labelledby="finish-heading" className="flex flex-col gap-4 rounded-xl border bg-card p-4 sm:p-5">
         <div className="flex flex-col gap-1">
           <h2 id="finish-heading" className="font-semibold tracking-tight">
-            {written} of {total} questions written
+            {written} of {total} questions generated
           </h2>
           <p className="text-sm text-muted-foreground">
-            Write questions one at a time above, or write the rest at once
-            {outdated.length > 0 ? ` (this also rewrites ${listNumbers(outdated)}, whose plan you changed)` : ""}: the exam
-            page opens, and each question appears there with its answer key as soon as it is written. The other versions
-            and the quality check finish in the background while you read.
+            {remaining === 0
+              ? "Every question is generated. Finish the exam to create the other versions and run the quality check."
+              : `Generate questions one at a time above, or press Generate full exam to generate the ${remaining} remaining ${
+                  remaining === 1 ? "question" : "questions"
+                }${written > 0 ? `, keeping the ${written} you already generated` : ""}${
+                  outdated.length > 0 ? ` (it also regenerates ${listNumbers(outdated)}, whose plan you changed)` : ""
+                }. The exam page opens and shows each question, in plan order, as soon as it is ready. The other versions and the quality check finish in the background while you read.`}
           </p>
         </div>
         {finishing && (
-          <JobProgress run={run} startingLabel="Writing the exam…" note="Questions appear above as they are written. You can leave this page." />
+          <JobProgress run={run} startingLabel="Generating the exam…" note="Questions appear above as they are generated. You can leave this page." />
         )}
         <div className="flex flex-wrap gap-2">
           <Button size="lg" disabled={busy} onClick={() => void startWriting(null, false)}>
@@ -358,6 +363,8 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
           </Button>
         </div>
       </section>
+
+      <BuildWithAiInstead assessmentId={assessmentId} disabled={busy} />
 
       <AlertDialog open={confirmingReplace !== null} onOpenChange={(open) => !open && setConfirmingReplace(null)}>
         <AlertDialogContent className="workspace-theme">
@@ -407,6 +414,72 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+/** The other way to make the exam, offered after the plan: question by question, in a call or chat. */
+function BuildWithAiInstead({ assessmentId, disabled }: { assessmentId: string; disabled: boolean }) {
+  const router = useRouter();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function start(replace: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest(`/api/assessments/${assessmentId}/exam`, {
+        method: "POST",
+        body: { mode: "interactive", replace },
+        freshSession: true,
+      });
+      router.push(`/workspace/assessments/${assessmentId}/builder`);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === "exam_exists") setConfirming(true);
+      else setError(errorMessage(cause));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby="build-with-ai-heading" className="flex flex-col gap-3 rounded-xl border border-dashed p-4 sm:p-5">
+      <div className="flex flex-col gap-1">
+        <h2 id="build-with-ai-heading" className="flex items-center gap-2 font-semibold tracking-tight">
+          <Sparkles className="size-4 shrink-0" />
+          Prefer a conversation?
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Instead of this plan, build the exam question by question in a live call or chat with ProfPilot.
+        </p>
+      </div>
+      {error && <ErrorAlert message={error} />}
+      <Button className="w-fit" variant="outline" disabled={disabled || busy} onClick={() => void start(false)}>
+        {busy ? <Spinner /> : <Sparkles />}
+        Build with AI
+      </Button>
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent className="workspace-theme">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace the current exam?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The current exam, its questions and your edits to them are deleted, and you build a new one with ProfPilot.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirming(false);
+                void start(true);
+              }}
+            >
+              Replace exam
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
   );
 }
 
@@ -628,7 +701,7 @@ function PlannedQuestionCard({
       <article aria-labelledby={headingId} className="flex flex-col gap-3 rounded-xl border border-dashed bg-muted/30 p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-2">
           <h3 id={headingId} className="font-semibold">
-            Plan for question {question.number}
+            Question {question.number}: {question.professorQuestion ? "your own question" : <MathText text={question.topic} />}
           </h3>
           <Badge variant="secondary">{TYPE_LABELS[question.type]}</Badge>
           <Badge variant="outline">{DIFFICULTY_LABELS[question.difficulty]}</Badge>
@@ -654,13 +727,6 @@ function PlannedQuestionCard({
               </div>
             ) : (
               <div className="flex flex-col gap-1 text-sm">
-                <p>
-                  One question on{" "}
-                  <strong className="font-medium">
-                    <MathText text={question.topic} />
-                  </strong>
-                  .
-                </p>
                 {question.assessmentTarget && (
                   <p className="text-muted-foreground">
                     Students will: <MathText text={question.assessmentTarget} />
@@ -672,7 +738,7 @@ function PlannedQuestionCard({
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant={question.written && !question.outdated ? "outline" : "default"} disabled={disabled} onClick={onWrite}>
                 {writing ? <Spinner /> : <PenLine />}
-                {writing ? "Writing…" : question.written ? "Rewrite this question" : "Write this question"}
+                {writing ? "Generating…" : question.written ? "Regenerate question" : "Generate question"}
               </Button>
               <Button variant="outline" size="sm" disabled={disabled} onClick={() => open("plan")}>
                 <Pencil />
@@ -787,7 +853,7 @@ function PlannedQuestionCard({
             )}
             {question.written && (
               <p className="text-xs text-muted-foreground">
-                This question is already written. Saving keeps it as it is; rewrite it afterwards to follow the new plan.
+                This question is already generated. Saving keeps it as it is; regenerate it afterwards to follow the new plan.
               </p>
             )}
             {error && <ErrorAlert message={error} />}
@@ -813,7 +879,7 @@ function PlannedQuestionCard({
             className="flex items-center gap-2 rounded-xl border border-dashed bg-card p-4 text-sm text-muted-foreground sm:p-5"
           >
             <Spinner />
-            Writing question {question.number} and its answer key…
+            Generating question {question.number} and its answer key…
           </div>
         )
       )}

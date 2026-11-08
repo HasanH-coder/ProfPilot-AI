@@ -87,7 +87,7 @@ export function ExamBuilder({ assessmentId }: { assessmentId: string }) {
         } catch (cause) {
           const message =
             cause instanceof ApiError && cause.status === 404
-              ? "This assessment has no exam yet. Approve the plan and choose Build with AI."
+              ? "This assessment has no exam yet. Open the question plan and choose Build with AI."
               : errorMessage(cause);
           // A failed refresh keeps the exam on screen and says so.
           if (loaded.current) setRefreshError(`The exam couldn't be refreshed. ${message}`);

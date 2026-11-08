@@ -29,15 +29,15 @@ test("while the exam is written, each question appears in order as soon as it is
   });
   const screen = await render(<ExamWorkspace assessmentId="assessment-1" />);
 
-  await expect.element(screen.getByText("Writing the exam: 2 of 3 questions ready")).toBeVisible();
+  await expect.element(screen.getByText("Generating the exam: 2 of 3 questions ready")).toBeVisible();
   // Numbered by the plan, not by arrival: question 3 is "Question 3" even before question 2 exists.
   await expect.element(screen.getByRole("heading", { name: "Question 3" })).toBeVisible();
-  await expect.element(screen.getByText("Writing question 2 and its answer key…")).toBeVisible();
+  await expect.element(screen.getByText("Generating question 2 and its answer key…")).toBeVisible();
   // Reading only: nothing can be changed until the whole exam is written.
   expect(screen.getByRole("button", { name: "Approve" }).query()).toBeNull();
 
   // Question 2 arrives at the next refresh.
   exam = generating([1, 2, 3]);
   await expect.element(screen.getByRole("heading", { name: "Question 2" }), { timeout: 5000 }).toBeVisible();
-  await expect.element(screen.getByText("Writing the exam: 3 of 3 questions ready")).toBeVisible();
+  await expect.element(screen.getByText("Generating the exam: 3 of 3 questions ready")).toBeVisible();
 });

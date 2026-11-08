@@ -142,11 +142,11 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
       <Empty className="border border-dashed py-14">
         <EmptyHeader>
           <EmptyTitle>No exam yet</EmptyTitle>
-          <EmptyDescription>Review and approve the assessment plan, then generate the exam or build it with AI.</EmptyDescription>
+          <EmptyDescription>Read your improved prompt, then go to the question plan to generate the exam.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
           <Link href={`${base}/plan`} className={buttonVariants()}>
-            Open the plan
+            Open your prompt
           </Link>
         </EmptyContent>
       </Empty>
@@ -170,11 +170,11 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
           <Alert role="status">
             <Spinner />
             <AlertTitle>
-              Writing the exam: {written.size} of {planned} {planned === 1 ? "question" : "questions"} ready
+              Generating the exam: {written.size} of {planned} {planned === 1 ? "question" : "questions"} ready
             </AlertTitle>
             <AlertDescription>
-              Each question appears below as soon as it is written, with its answer key. Start reading while the others
-              are being written; you can edit them once the whole exam is written.
+              Each question appears below, in plan order, as soon as it is ready, with its answer key. Start reading
+              while the others are being generated; you can edit them once the whole exam is generated.
             </AlertDescription>
           </Alert>
         )}
@@ -205,7 +205,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
                         className="flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-muted-foreground sm:p-5"
                       >
                         <Spinner />
-                        Writing question {number} and its answer key…
+                        Generating question {number} and its answer key…
                       </div>
                     )}
                   </li>
@@ -264,7 +264,7 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
             <Link href={`${base}/question-plan`} className="font-medium underline underline-offset-4">
               Continue on the plan
             </Link>{" "}
-            to write the remaining questions, create the other versions and run the quality check.
+            to generate the remaining questions, create the other versions and run the quality check.
           </AlertDescription>
         </Alert>
       )}
