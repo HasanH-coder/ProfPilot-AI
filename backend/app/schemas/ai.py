@@ -469,6 +469,8 @@ IssueCategory = Literal[
     "answer_leakage",
     # A question's points don't match the work a complete answer needs.
     "marks",
+    # A question breaks something the professor asked for or ruled out (e.g. a calculation they didn't allow).
+    "professor_rule",
     "other",
 ]
 

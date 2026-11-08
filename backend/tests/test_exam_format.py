@@ -227,3 +227,61 @@ def test_the_writer_is_told_to_word_plainly_and_keep_easy_questions_easy():
     assert "an easy question must be easy for these students" in writing
     assert "counting reading time" in planner_instructions(DataFramer())
     assert "never a table" in writing
+
+
+# -- What the professor asks for is binding --------------------------------------------------------
+
+
+def test_every_step_follows_the_professors_rules_over_the_apps_style_rules():
+    from app.ai.prompts import AUTHORITY, interpreter_instructions, reviewer_instructions, reviser_instructions
+
+    assert "follow the professor" in AUTHORITY
+    for builder in (planner_instructions, generator_instructions, variant_instructions, reviewer_instructions):
+        text = builder(DataFramer())
+        assert "THE PROFESSOR'S RULES" in text and "calculations only for IQR and precision/recall" in text, builder
+    assert "THE PROFESSOR'S RULES" in reviser_instructions(DataFramer())
+    assert "'professor_rule'" in reviewer_instructions(DataFramer())
+    assert "FOLLOWING THE PREVIOUS EXAMS" in interpreter_instructions(DataFramer())
+
+
+def test_a_broken_professor_rule_can_be_reported():
+    from app.schemas.ai import ReviewIssue
+
+    issue = ReviewIssue(
+        question_number=7,
+        version_label="A",
+        severity="critical",
+        category="professor_rule",
+        message="Question 7 asks for min–max scaling; the professor allowed only IQR and precision/recall.",
+        fix=None,
+    )
+    assert issue.category == "professor_rule"
+
+
+def test_a_case_joining_unrelated_situations_is_sent_back_for_repair():
+    joined = "A library predicts overdue returns.\n\nSeparately, two survey coders label the same 100 responses."
+    hard, soft = plan_problems(plan_with([PlannedSection(title="Case Study 2: Library", instructions=joined)]), _spec(), set())
+    assert any("joins unrelated situations" in problem for problem in soft)
+    assert not any("joins" in problem for problem in hard)  # repaired once, never fatal
+    one = "A response center predicts urgent requests. A separate final test set is available."
+    _, soft = plan_problems(plan_with([PlannedSection(title="Case Study 1: Requests", instructions=one)]), _spec(), set())
+    assert not any("joins unrelated situations" in problem for problem in soft)
+
+
+def test_the_planner_lays_out_cases_like_the_previous_exams():
+    planner = planner_instructions(DataFramer())
+    assert "A case is ONE situation on one theme" in planner
+    assert "goes in a small table" in planner and "TEXT FORMAT" in planner
+    assert "total points if given" in planner
+
+
+def test_choices_stay_a_phrase_or_one_sentence():
+    from app.schemas.ai import ChoiceOut
+    from app.services.exam_store import question_problems
+
+    content = make_content(1, "mcq", "easy", 4, cognitive_level="remember")
+    long = " ".join(["word"] * 45)
+    content = content.model_copy(update={"choices": [*content.choices[:3], ChoiceOut(id="D", text=long)]})
+    assert any("run past 40 words" in problem for problem in question_problems(content))
+    assert not any("run past" in problem for problem in question_problems(content, manual=True))  # a professor's own edit
+    assert "never two or three" in generator_instructions(DataFramer())

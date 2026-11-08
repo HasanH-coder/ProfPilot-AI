@@ -105,6 +105,14 @@ _SECTION_NUMBERING = re.compile(
     r"\bquestions?\s+\d+\b|\bworth\s+\d+(?:\.\d+)?\s*(?:points?|marks?)\b|\(\s*\d+(?:\.\d+)?\s*(?:points?|marks?)\s*\)",
     re.IGNORECASE,
 )
+# A case that joins unrelated situations ("Separately, …"): each case is one situation, as in the
+# professor's previous exams. ("A separate final test set" within one situation is fine.)
+_JOINED_CASE = re.compile(
+    r"(?:^|[.;:]\s+)(?:separately\b|in a separate (?:audit|analysis|study|diagnostic|review|survey|sample|project)\b"
+    r"|another (?:analysis|audit|study|team|project|diagnostic)\b"
+    r"|a separate (?:audit|analysis|study|diagnostic|review|survey|sample|project)\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
 _SECTION_NOTES = re.compile(
     r"\bprofpilot\b|\b(?:exam|question)\s+(?:author|writer)s?\b|\beventual exam\b|\bapplication's\b"
     r"|\b(?:mcq|multiple-choice) format\b",
@@ -466,6 +474,11 @@ def plan_problems(
             hard.append(
                 f"Section {index}'s title or instructions name question numbers or the marks of particular "
                 "questions. They are printed for students, who see each question's own number and marks: remove them."
+            )
+        if _JOINED_CASE.search(section.instructions or ""):
+            soft.append(
+                f"Section {index} ({section.title}) joins unrelated situations in one case. Make each case one "
+                "situation on one theme, and give a topic that doesn't fit a short case of its own."
             )
         if _SECTION_NOTES.search(text):
             hard.append(

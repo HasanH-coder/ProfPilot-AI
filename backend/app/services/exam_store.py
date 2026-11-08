@@ -125,6 +125,10 @@ def student_texts(content: QuestionContent) -> list[str]:
     return [text for text in texts if text]
 
 
+# An AI-written choice longer than this is a paragraph students must read five times over.
+_CHOICE_WORDS = 40
+
+
 def question_problems(content: QuestionContent, *, label: str = "The question", manual: bool = False) -> list[str]:
     """Business rules a question must satisfy before it is saved.
 
@@ -171,6 +175,12 @@ def question_problems(content: QuestionContent, *, label: str = "The question", 
             problems.append(f"{label} has empty or repeated choices.")
         if content.correct_choice not in ids:
             problems.append(f"{label}'s correct_choice must be one of its choice ids ({', '.join(ids)}).")
+        long_choices = [choice.id for choice in choices if len(choice.text.split()) > _CHOICE_WORDS]
+        if long_choices and not manual:
+            problems.append(
+                f"{label}'s choice(s) {', '.join(long_choices)} run past {_CHOICE_WORDS} words. Keep each choice to a "
+                "phrase or one sentence, putting what every choice shares into the stem."
+            )
         if content.cognitive_level == "create" and not manual:
             problems.append(f"{label} is multiple choice, which can't assess the Create level; use another level.")
     else:
