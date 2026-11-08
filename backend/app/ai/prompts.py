@@ -127,7 +127,10 @@ DIFFICULTY_WRITING = (
     "interpretation, the question assesses the intended learning objective, and all required "
     "knowledge comes from the taught course material. If any check fails, revise the question. "
     "Design each question to land in the requested predicted difficulty band. If its demand profile "
-    "falls outside that band, revise the question rather than merely changing its label. A "
+    "falls outside that band, revise the question rather than merely changing its label. Keep the band "
+    "honest in both directions: an easy question must be easy for these students, a direct question on "
+    "one idea with the information it needs and nothing more, no trade-off to weigh, and a setting of a "
+    "sentence or two only when it needs one, even at the apply level. A "
     "replacement or variant must preserve the learning objective, the Bloom level when fixed, and the "
     "predicted difficulty band, while changing enough surface details to be a genuine variant. "
     "For MCQs, every distractor must be plausible to a student making a recognisable reasoning, "
@@ -229,15 +232,21 @@ CLEAR_WORDING = (
     "multiple-choice choice stands on its own: never refer to another choice by letter or position "
     "('both A and B', 'options 1 and 3', 'the first two'), because versions reorder choices. Explain in plain "
     "words any scenario detail that isn't from the lectures. A question is hard because of the "
-    "thinking it needs, never because it is hard to read. The same applies to choices, answers, "
-    "solutions and rubrics. Follow the professor's own wording instructions where they differ."
+    "thinking it needs, never because it is hard to read. Write one idea per sentence, and never chain "
+    "clauses with semicolons. Ask directly ('Which statement is correct?', 'What should the team do?'), "
+    "not through abstract nouns ('Which assessment of this claim is best?'). Put the words every choice "
+    "would repeat into the stem, so each choice says only what differs between them. When the "
+    "professor's previous exams are given, word stems and choices as plainly as they do. The same "
+    "applies to choices, answers, solutions and rubrics. Follow the professor's own wording "
+    "instructions where they differ."
 )
 
 TIME_GUIDE = (
     "TIME. Estimate the minutes a prepared student needs for each question, starting from: about 1 "
     "minute for a simple recall MCQ, 2-3 for an MCQ that needs application or analysis, 3-8 for a "
     "short answer, 5-15 for a calculation or multi-step problem, and 15-30 for a long answer or essay; "
-    "then adjust for the actual work. The total should be about 85-95% of the duration, leaving time "
+    "then adjust for the actual work, counting reading time: a setting, a table or long choices add a "
+    "minute or more. The total should be about 85-95% of the duration, leaving time "
     "to read and check, and never more than the duration."
 )
 
@@ -459,6 +468,10 @@ def interpreter_instructions(framer: DataFramer) -> str:
         "MCQ/subjective split and the easy/medium/hard split, each with source 'professor'. "
         "If the written instructions contradict a setting, keep the setting and add a warning "
         "describing the conflict. Splits must add up to 100.",
+        "CHOICES PER QUESTION. If the professor says how many choices each multiple-choice question has "
+        "('five choices', 'options a to e', or what their previous exams consistently use when they ask to "
+        "follow them), set mcq_choices to that number (3 to 6) and state it in the brief; otherwise null, "
+        "which means 4.",
         "LEARNING FOCUS. Always fill bloom, the split of marks across the six Bloom's levels. If the "
         "settings give a split (a preset or the professor's own), copy it exactly. If the focus is "
         "automatic, recommend a split that suits the course material, its learning objectives, the "
@@ -505,6 +518,22 @@ def planner_instructions(framer: DataFramer) -> str:
         "few percentage points), the total time as in TIME, "
         "coverage proportional to emphasis, and the question count range if given. "
         "Questions of the same section should be consecutive. Use whole or half points. "
+        "SECTIONS. A section's title and instructions are printed on the student paper exactly as you write "
+        "them, under the section heading. Write instructions to students, and only what they need to answer: "
+        "what to do ('Choose one answer for each question.') or the case they read first (see CASES); null "
+        "when there is nothing to say. Never put in them notes for the question writer, how the exam was "
+        "planned or why, anything about ProfPilot or the application, the duration, total marks, number of "
+        "versions or of questions (the paper's header shows those), question numbers, or the marks of "
+        "particular questions (each question shows its own marks, and the order can change). "
+        "CASES. When the professor's previous exams group their questions under shared cases (a case title, "
+        "a short scenario, then one to three questions on it), or the professor or the brief asks for case "
+        "studies, make every case its own section, in order. Its title names it ('Case Study 1: Credit Card "
+        "Fraud Detection'). Its instructions are the scenario students read once, before its questions: the "
+        "setting in plain sentences and all the shared data its questions use (values, a small table), every "
+        "number correct and consistent with the others, written as the previous exams write theirs. Its "
+        "questions (usually one to three, simplest first) all build on it without repeating it, and nothing "
+        "in the case gives away a question's answer. Mix difficulties and lectures across the cases; a case's "
+        "questions stay together. "
         "ASSESSMENT TARGETS. Give every question its own assessment target and write it in "
         "assessment_target: what exactly students do, on which case (e.g. 'compute the loss of a "
         "confident wrong prediction', 'identify which treaty clause limited imperial authority', "
@@ -545,7 +574,8 @@ def planner_instructions(framer: DataFramer) -> str:
         "an order ('easy questions first', 'lecture by lecture', 'finish Lecture 3 first'), follow it "
         "exactly and summarise their request in ordering_request; otherwise set ordering_request to null. "
         "The difficulty split always refers to marks, whatever the order.",
-        "Question types: 'mcq' (one correct answer among 4 choices), 'short_answer' (a few "
+        "Question types: 'mcq' (one correct answer among spec.mcq_choices choices, or 4 when it is null), "
+        "'short_answer' (a few "
         "sentences or a short derivation), 'long_answer' (an extended explanation or essay), "
         "'problem' (a multi-step calculation, design or analysis, often with subparts). "
         "Every type other than 'mcq' counts as subjective.",
@@ -569,12 +599,23 @@ def planner_instructions(framer: DataFramer) -> str:
     )
 
 
-def generator_instructions(framer: DataFramer) -> str:
+def choice_ids(count: int) -> str:
+    """'A, B, C, D' for 4 choices."""
+    return ", ".join("ABCDEF"[:count])
+
+
+def generator_instructions(framer: DataFramer, *, choices: int = 4) -> str:
     return preamble(
         framer,
         "TASK. Write the planned questions, each with a complete, correct answer key. Follow "
         "the plan exactly for each question's number, type, difficulty, Bloom's level "
         "(cognitive_level) and points, and follow the ExamSpec and enhanced prompt.",
+        "SECTIONS AND CASES. Each planned question shows its section in brackets, and THE SECTIONS shows what "
+        "students read under each section heading, just before its questions. When that text is a case (a "
+        "scenario with its data), write the question on the case: use its facts and data exactly as given, "
+        "never change or contradict them, and don't repeat the case in the question. Add only what this "
+        "question needs beyond it (a further value, a claim to judge). A student reading the case and then "
+        "the question must have everything needed to answer.",
         "THE PROFESSOR'S OWN QUESTION. When a planned question gives the professor's own question, that is the "
         "question to write: keep its wording and meaning (fix only obvious typos) in place of the planned topic and "
         "target, and complete what its type needs (choices, answer key, explanation).",
@@ -616,13 +657,15 @@ def generator_instructions(framer: DataFramer) -> str:
         "criterion rewards a distinct, non-trivial step, never restating given values. Choose values that "
         "make each step real work; an edge case (a boundary value, a zero, an empty input) is fine when it "
         "tests an important idea, and it earns only the marks of the reasoning it needs.",
-        "MULTIPLE CHOICE: exactly 4 choices with ids A, B, C, D; exactly one is correct "
+        f"MULTIPLE CHOICE: exactly {choices} choices with ids {choice_ids(choices)}; exactly one is correct "
         "(correct_choice). Distractors must be plausible, parallel in length and form to the correct "
         "choice, and reflect real misconceptions or likely slips: each is what a student with a "
         "specific misunderstanding of the same idea would choose, of the same kind as the answer (if "
         "the answer is a definition of a boundary, every choice describes a boundary-like idea), never "
-        "a different kind of thing that is obviously wrong; avoid 'all of the above' and 'none "
-        "of the above'; vary the position of the correct answer across questions. 'answer' states "
+        "a different kind of thing that is obviously wrong; avoid 'all of the above', and use 'none of the "
+        "above' only when the professor's previous exams use it and it is a fair choice; vary the position "
+        "of the correct answer across questions. A choice is text, a value or a formula: never a table "
+        "(put a table students compare in the stem). 'answer' states "
         "the correct choice and why; 'explanation' says why each distractor is wrong. choices and "
         "correct_choice are null for every other type, and MCQs have no subparts.",
         "SUBJECTIVE: give a model answer in 'answer', a worked solution a marker can follow in "
@@ -670,7 +713,10 @@ def variant_instructions(framer: DataFramer) -> str:
         "answer must still have to do the same thinking on the other. A student who saw one "
         "version must not gain an advantage on the other, and neither version may be harder. "
         "Recompute every answer, solution and rubric for the new details. Set source_number to the "
-        "number of the question you are varying, and describe the variation briefly.",
+        "number of the question you are varying, and describe the variation briefly. Keep the same number "
+        "of choices. A question shown under a case (a section's scenario, printed once for every version) "
+        "keeps using that case exactly as written: vary what the question itself adds, its wording and its "
+        "choices, never the case.",
         FORMULA_FIDELITY,
         DIFFICULTY_GUIDE,
         DIFFICULTY_WRITING,
@@ -697,6 +743,10 @@ def reviewer_instructions(framer: DataFramer) -> str:
         "question that needs a slide students can't see, is an answerability issue.",
         "STICKING TO THE LECTURES. Report with category 'answerability' any question, choice or answer "
         "key that needs a fact, term, formula or method the course material doesn't teach.",
+        "SECTIONS. A section's text is printed once under its heading, before its questions. When it is a case, "
+        "check that it is correct and clear, that its questions use it consistently and need nothing it "
+        "lacks, and that it gives no answer away. Report with category 'clarity' section text that is not "
+        "written for students (notes for the writer, question numbers, marks of particular questions).",
         "EASY READING. Judge each question by CLEAR WORDING (never by its length). Report with category "
         "'clarity' a question that is confusing or hard to follow, or uses advanced words the lectures "
         "don't use, and propose "
@@ -751,7 +801,8 @@ def reviser_instructions(framer: DataFramer) -> str:
         framer,
         "TASK. Revise ONE exam question as the professor asks, and nothing else. Keep "
         "everything the instruction doesn't ask to change (topic, type, points, difficulty, "
-        "Bloom's level, subparts) unless the instruction requires changing it. Then make the answer "
+        "Bloom's level, subparts, the number of choices, and the case it builds on) unless the instruction "
+        "requires changing it. Then make the answer "
         "key match the revised question exactly: correct_choice must be one of the choices, the "
         "answer and solution must solve the new question, and rubric points must add up to the "
         "question's points (subpart points too). Set cognitive_level to the level the revised "

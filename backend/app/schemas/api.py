@@ -188,8 +188,15 @@ class ExamOut(ApiModel):
 # -----------------------------------------------------------------------------
 
 
+class PlannedSectionOut(ApiModel):
+    title: str
+    # What students read before the section's questions: what to do, or a case with its data.
+    instructions: str | None
+
+
 class PlannedQuestionOut(ApiModel):
     number: int
+    section_index: int = 0
     type: str
     difficulty: str
     cognitive_level: str
@@ -214,6 +221,7 @@ class PlanExamOut(ApiModel):
 
 class QuestionPlanOut(ApiModel):
     status: Literal["none", "ready"]
+    sections: list[PlannedSectionOut] = []
     questions: list[PlannedQuestionOut]
     rationale: str | None
     warnings: list[str] = []

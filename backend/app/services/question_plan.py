@@ -152,7 +152,7 @@ class QuestionPlanService:
         record = await self.context.get_assessment(assessment_id)
         state = PlanState.of(record)
         if state is None:
-            return {"status": "none", "questions": [], "rationale": None, "warnings": [], "exam": None}
+            return {"status": "none", "sections": [], "questions": [], "rationale": None, "warnings": [], "exam": None}
         exam = await self._exam_of(record.id, state)
         written: dict[int, dict[str, Any]] = {}
         if exam is not None:
@@ -163,6 +163,7 @@ class QuestionPlanService:
         summary = distribution.summarize(state.plan.questions)
         return {
             "status": "ready",
+            "sections": [section.model_dump() for section in state.plan.sections],
             "rationale": state.plan.rationale,
             "warnings": state.plan.warnings,
             "summary": summary,

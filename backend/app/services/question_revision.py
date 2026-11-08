@@ -210,6 +210,16 @@ class QuestionRevisionService:
             input="\n\n".join(
                 [
                     *ctx.common_sections(framer),
+                    # The case this question builds on, which students read before it (see the reviser's rules).
+                    next(
+                        (
+                            "THE CASE THIS QUESTION BUILDS ON (keep it exactly as it is)\n"
+                            + framer.block("section", section["title"], section["instructions"])
+                            for section in full.sections
+                            if section["id"] == question.get("section_id") and section.get("instructions")
+                        ),
+                        "",
+                    ),
                     "OTHER QUESTIONS IN THIS VERSION (don't duplicate them)\n"
                     + ("\n".join(f"- {text[:200]}" for text in others) or "(none)"),
                     render_excerpts(excerpts, framer),

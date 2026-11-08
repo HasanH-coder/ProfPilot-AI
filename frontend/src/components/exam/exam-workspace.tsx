@@ -7,6 +7,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { JobProgress } from "@/components/ai/job-progress";
 import { DistributionPanel, FinalReviewPanel, QualityCheckPanel } from "@/components/exam/exam-panels";
 import { QuestionCard } from "@/components/exam/question-card";
+import { QuestionText } from "@/components/exam/question-text";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -332,7 +333,8 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
               {section.title && (
                 <div className="flex flex-col gap-1 border-b pb-2">
                   <h2 className="text-base font-semibold tracking-tight">{section.title}</h2>
-                  {section.instructions && <p className="text-sm text-muted-foreground">{section.instructions}</p>}
+                  {/* What students read before the section's questions: what to do, or a case with its data. */}
+                  {section.instructions && <QuestionText text={section.instructions} />}
                 </div>
               )}
               {section.questions.map((question, index, group) => (

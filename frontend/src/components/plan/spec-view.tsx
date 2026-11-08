@@ -115,6 +115,9 @@ export function SpecView({ spec, editHref, className }: SpecViewProps) {
           <NotSpecified />
         )}
       </Row>
+      {spec.mcq_choices ? (
+        <Row term="Choices per question">{`${spec.mcq_choices} choices in every multiple-choice question`}</Row>
+      ) : null}
       <Row term="Difficulty" source={spec.difficulty?.source}>
         {spec.difficulty ? (
           <span className="flex flex-col gap-2">

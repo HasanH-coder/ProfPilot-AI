@@ -10,7 +10,7 @@ import { BloomSwatch } from "@/components/assessment/bloom-chart";
 import { DifficultyBar } from "@/components/assessment/difficulty-bar";
 import { DIFFICULTY_LABELS, marks, TYPE_LABELS } from "@/components/exam/labels";
 import { QuestionCard } from "@/components/exam/question-card";
-import { MathText } from "@/components/exam/question-text";
+import { MathText, QuestionText } from "@/components/exam/question-text";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -296,20 +296,32 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
       )}
 
       <ol className="flex flex-col gap-6" aria-label="Planned questions">
-        {plan.questions.map((question) => (
-          <li key={question.number}>
-            <PlannedQuestionCard
-              assessmentId={assessmentId}
-              question={question}
-              disabled={busy}
-              writing={job?.kind === "writing" && job.number === question.number}
-              pending={(job?.kind === "writing" && job.number === question.number) || (finishing && (!question.written || question.outdated))}
-              onSaved={setPlan}
-              onWrite={() => void startWriting(question.number, false)}
-              onChanged={() => void refreshPlan()}
-            />
-          </li>
-        ))}
+        {plan.questions.map((question, index) => {
+          // A section's text (a case students read before its questions) shows above its first question.
+          const sectionIndex = question.sectionIndex ?? 0;
+          const section = plan.sections?.[sectionIndex];
+          const startsSection = index === 0 || (plan.questions[index - 1].sectionIndex ?? 0) !== sectionIndex;
+          return (
+            <li key={question.number} className="flex flex-col gap-4">
+              {startsSection && section?.instructions && (
+                <div className="flex flex-col gap-2 rounded-xl border bg-muted/30 p-4 sm:p-5">
+                  <h2 className="font-semibold tracking-tight">{section.title}</h2>
+                  <QuestionText text={section.instructions} />
+                </div>
+              )}
+              <PlannedQuestionCard
+                assessmentId={assessmentId}
+                question={question}
+                disabled={busy}
+                writing={job?.kind === "writing" && job.number === question.number}
+                pending={(job?.kind === "writing" && job.number === question.number) || (finishing && (!question.written || question.outdated))}
+                onSaved={setPlan}
+                onWrite={() => void startWriting(question.number, false)}
+                onChanged={() => void refreshPlan()}
+              />
+            </li>
+          );
+        })}
       </ol>
 
       {actionError && <ErrorAlert message={actionError} />}

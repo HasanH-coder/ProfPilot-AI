@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.ai.openai_service import Effort, OpenAIService, Usage, gather_limited, get_openai_service
-from app.ai.prompts import DataFramer, generator_instructions, planner_instructions, variant_instructions
+from app.ai.prompts import DataFramer, choice_ids, generator_instructions, planner_instructions, variant_instructions
 from app.core.config import settings
 from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
@@ -98,6 +98,18 @@ logger = logging.getLogger("profpilot.generation")
 
 _BATCH_SIZE = 4
 _PLAN_TOLERANCE = 6.0  # percentage points
+# A section's title and instructions are printed for students. These show they were written for someone
+# else: question numbers or marks (each question shows its own, and the order can change), or notes about
+# the writer or the app. Kept narrow, so a case about a loan application or quartiles (Q1) still passes.
+_SECTION_NUMBERING = re.compile(
+    r"\bquestions?\s+\d+\b|\bworth\s+\d+(?:\.\d+)?\s*(?:points?|marks?)\b|\(\s*\d+(?:\.\d+)?\s*(?:points?|marks?)\s*\)",
+    re.IGNORECASE,
+)
+_SECTION_NOTES = re.compile(
+    r"\bprofpilot\b|\b(?:exam|question)\s+(?:author|writer)s?\b|\beventual exam\b|\bapplication's\b"
+    r"|\b(?:mcq|multiple-choice) format\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -146,6 +158,11 @@ class GenerationContext:
     @property
     def figure_ids(self) -> set[str]:
         return {doc.id for doc in self.attachments if doc.is_image}
+
+    @property
+    def mcq_choices(self) -> int:
+        """Choices in every multiple-choice question: the number the professor asked for, else 4."""
+        return self.spec.mcq_choices or 4
 
     @property
     def has_course_material(self) -> bool:
@@ -443,6 +460,19 @@ def plan_problems(
                 "inventory; use ids exactly as listed (or none if there is no inventory)."
             )
 
+    for index, section in enumerate(plan.sections, start=1):
+        text = f"{section.title}\n{section.instructions or ''}"
+        if _SECTION_NUMBERING.search(text):
+            hard.append(
+                f"Section {index}'s title or instructions name question numbers or the marks of particular "
+                "questions. They are printed for students, who see each question's own number and marks: remove them."
+            )
+        if _SECTION_NOTES.search(text):
+            hard.append(
+                f"Section {index}'s instructions hold notes that aren't for students (about the writer, ProfPilot or "
+                "the app). Write only what students need to answer."
+            )
+
     if slides:
         pages_hard, pages_soft = slide_problems(questions, slides)
         hard += pages_hard
@@ -663,7 +693,25 @@ class ExamPlanningService:
 # =============================================================================
 
 
-def batch_problems(batch: QuestionBatch, planned: list[PlannedQuestion], others: list[str]) -> list[str]:
+def render_sections(sections: list[tuple[str, str | None]], framer: DataFramer) -> str:
+    """What students read under each section heading (a case's scenario, or what to do), for the writers.
+    Empty when no section has any text."""
+    if not any((instructions or "").strip() for _, instructions in sections):
+        return ""
+    texts = [f"[{title}]\n{(instructions or '').strip() or '(no text)'}" for title, instructions in sections]
+    return "THE SECTIONS (each title, and the text students read under it before its questions)\n" + framer.block(
+        "sections", "section texts", "\n\n".join(texts)
+    )
+
+
+def choice_count_problems(content: QuestionContent, label: str, expected: int) -> list[str]:
+    """An MCQ with another number of choices than the exam uses (the professor's number, else 4)."""
+    if content.type != "mcq" or len(content.choices or []) == expected:
+        return []
+    return [f"{label} must have exactly {expected} choices, with ids {choice_ids(expected)}."]
+
+
+def batch_problems(batch: QuestionBatch, planned: list[PlannedQuestion], others: list[str], *, choices: int = 4) -> list[str]:
     problems: list[str] = []
     by_number = {q.number: q for q in batch.questions}
     if sorted(by_number) != sorted(p.number for p in planned) or len(batch.questions) != len(planned):
@@ -683,6 +731,7 @@ def batch_problems(batch: QuestionBatch, planned: list[PlannedQuestion], others:
         if (content.figure_document_id or None) != (slot.figure_document_id or None):
             problems.append(f"{label} must use figure_document_id {slot.figure_document_id!r}, as planned.")
         problems.extend(question_problems(content, label=label))
+        problems.extend(choice_count_problems(content, label, choices))
         for other in others:
             if similar(content.prompt, other) > 0.85:
                 problems.append(f"{label} is almost the same as another question in the exam; make it test something different.")
@@ -710,6 +759,8 @@ def variant_problems(batch: VariantBatch, sources: dict[int, dict[str, Any]]) ->
         if similar(content.prompt, source["prompt"]) > 0.95:
             problems.append(f"{label} is identical to the original; change its values, scenario or wording.")
         problems.extend(question_problems(content, label=label))
+        if source["type"] == "mcq" and source.get("choices"):
+            problems.extend(choice_count_problems(content, label, len(source["choices"])))
     return problems
 
 
@@ -858,6 +909,7 @@ class ExamGenerationService:
         others = list(written)
         sections = [
             *ctx.common_sections(framer),
+            render_sections([(section.title, section.instructions) for section in plan.sections], framer),
             "FULL EXAM PLAN (for context)\n" + "\n".join(plan_lines),
             "QUESTIONS ALREADY WRITTEN (don't repeat them)\n"
             + ("\n".join(f"- {text[:240]}" for text in others[-40:]) if others else "(none yet)"),
@@ -874,14 +926,14 @@ class ExamGenerationService:
         ]
         batch_result = await self.ai.parse_with_files(
             purpose="generate_questions",
-            instructions=generator_instructions(framer),
+            instructions=generator_instructions(framer, choices=ctx.mcq_choices),
             text="\n\n".join(part for part in sections if part),
             files=image_parts(images, slides),
             schema=QuestionBatch,
             effort=batch_effort(batch),
             max_output_tokens=48_000,
             validate=lambda result: (
-                batch_problems(result, batch, others)
+                batch_problems(result, batch, others, choices=ctx.mcq_choices)
                 + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)
                 + excerpt_id_problems(((f"Question {q.number}", q) for q in result.questions), excerpts)
                 + leak_messages([normalize_content(q) for q in result.questions], [q.number for q in result.questions])
@@ -932,13 +984,19 @@ class ExamGenerationService:
         source_version = full.version_by_label(source_label) or full.primary_version
         numbers = {q["id"]: n for n, q in enumerate(full.version_questions(source_version["id"]), start=1)}
         sources = {numbers.get(q["id"], i + 1): q for i, q in enumerate(group)}
-        listing = "\n\n".join(render_question(q, number) for number, q in sources.items())
+        ordered_sections = sorted(full.sections, key=lambda section: section["position"])
+        titles = {section["id"]: section["title"] for section in ordered_sections}
+        listing = "\n\n".join(
+            (f"[{titles[q['section_id']]}]\n" if q.get("section_id") in titles else "") + render_question(q, number)
+            for number, q in sources.items()
+        )
         result = await self.ai.parse(
             purpose="write_variants",
             instructions=variant_instructions(framer),
             input="\n\n".join(
                 [
                     *ctx.common_sections(framer),
+                    render_sections([(section["title"], section.get("instructions")) for section in ordered_sections], framer),
                     f"Write the Version {label} equivalent of each of these Version {source_label} questions.",
                     f"VERSION {source_label} QUESTIONS (application data)\n"
                     + framer.block("questions", f"version {source_label}", listing),
@@ -1035,7 +1093,7 @@ class ExamGenerationService:
         ]
         result = await self.ai.parse(
             purpose="generate_question",
-            instructions=generator_instructions(framer),
+            instructions=generator_instructions(framer, choices=ctx.mcq_choices),
             input="\n\n".join(
                 [
                     *ctx.common_sections(framer),
@@ -1050,7 +1108,7 @@ class ExamGenerationService:
             effort=question_effort(slot_type, slot_difficulty),
             max_output_tokens=24_000,
             validate=lambda batch: (
-                _single_problems(batch, slot, others, ctx.figure_ids)
+                _single_problems(batch, slot, others, ctx.figure_ids, choices=ctx.mcq_choices)
                 + ctx.formula_problems(("The question", normalize_content(q)) for q in batch.questions)
                 + excerpt_id_problems((("The question", q) for q in batch.questions), excerpts)
                 + leak_messages(
@@ -1074,7 +1132,9 @@ class ExamGenerationService:
         )
 
 
-def _single_problems(batch: QuestionBatch, slot: PlannedQuestion, others: list[str], figure_ids: set[str]) -> list[str]:
+def _single_problems(
+    batch: QuestionBatch, slot: PlannedQuestion, others: list[str], figure_ids: set[str], *, choices: int = 4
+) -> list[str]:
     if len(batch.questions) != 1:
         return ["Write exactly one question."]
     question = normalize_content(batch.questions[0])
@@ -1088,6 +1148,7 @@ def _single_problems(batch: QuestionBatch, slot: PlannedQuestion, others: list[s
     if question.figure_document_id and question.figure_document_id not in figure_ids:
         problems.append("figure_document_id must be null or one of the listed image attachments.")
     problems.extend(question_problems(question))
+    problems.extend(choice_count_problems(question, "The question", choices))
     if any(similar(question.prompt, other) > 0.85 for other in others):
         problems.append("The question is almost the same as one already in the exam; make it different.")
     return problems

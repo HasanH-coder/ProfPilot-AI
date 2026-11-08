@@ -48,6 +48,8 @@ export type AiStatus = {
 /** One planned question: what ProfPilot will ask, and the question once it is written. */
 export type PlannedQuestion = {
   number: number;
+  /** Index into the plan's sections; missing in plans read before sections were shown. */
+  sectionIndex?: number;
   type: QuestionType;
   difficulty: QuestionDifficulty;
   cognitiveLevel: BloomLevel;
@@ -67,6 +69,8 @@ export type PlannedQuestion = {
 /** The page where the exam is built: the plan, the questions written so far, and the targets. */
 export type QuestionPlan = {
   status: "none" | "ready";
+  /** Each section's title and what students read before its questions (a case, or what to do). */
+  sections?: { title: string; instructions: string | null }[];
   questions: PlannedQuestion[];
   rationale: string | null;
   warnings: string[];
@@ -93,6 +97,8 @@ export type ExamSpec = {
   question_count_max: number | null;
   question_count_source: Provenance | null;
   question_format: { mcq_percent: number; subjective_percent: number; source: Provenance } | null;
+  /** Choices in every multiple-choice question, when the professor asked for a number; null means 4. */
+  mcq_choices?: number | null;
   difficulty: { easy_percent: number; medium_percent: number; hard_percent: number; source: Provenance } | null;
   /** Missing in plans made before the learning focus existed. */
   bloom?: ({ focus: LearningFocus; source: Provenance } & Record<`${BloomLevel}_percent`, number>) | null;

@@ -254,11 +254,21 @@ class ExamReviewService:
             slide_images(self.db, slides, [ref for _, refs in cited for ref in refs], limit=REVIEW_IMAGES, files=ctx.files),
         )
         excerpts = assign_refs(found_excerpts)
+        # Each section's heading and text (a case's scenario) is printed once, before its questions.
+        headings = {
+            section["id"]: "\n".join(part for part in [f"SECTION: {section['title']}", section.get("instructions")] if part)
+            for section in full.sections
+        }
         versions_text = []
         for version in full.versions:
-            questions = full.version_questions(version["id"])
-            body = "\n\n".join(render_question(row, number) for number, row in enumerate(questions, start=1))
-            versions_text.append(framer.block("exam_version", f"Version {version['label']}", body))
+            parts: list[str] = []
+            current = None
+            for number, row in enumerate(full.version_questions(version["id"]), start=1):
+                if row.get("section_id") in headings and row.get("section_id") != current:
+                    current = row["section_id"]
+                    parts.append(headings[current])
+                parts.append(render_question(row, number))
+            versions_text.append(framer.block("exam_version", f"Version {version['label']}", "\n\n".join(parts)))
         return await self.ai.parse_with_files(
             purpose="review_exam",
             instructions=reviewer_instructions(framer),

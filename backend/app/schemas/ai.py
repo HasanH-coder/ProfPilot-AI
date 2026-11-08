@@ -122,6 +122,9 @@ class ExamSpec(BaseModel):
     question_count_max: int | None = Field(ge=1, le=200)
     question_count_source: Provenance | None
     question_format: FormatSpec | None
+    # Choices in every multiple-choice question, when the professor asks for a number ("five choices");
+    # null means the usual 4. (The default keeps specs saved before this field existed valid.)
+    mcq_choices: int | None = Field(default=None, ge=3, le=6)
     difficulty: DifficultySpec | None
     # The cognitive mix by marks. (The default keeps specs saved before this
     # field existed valid; the API still requires the field.)

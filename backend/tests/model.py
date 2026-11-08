@@ -227,18 +227,20 @@ def make_content(
     refs: list[str] | None = None,
     stems: list[str] = STEMS,
     cognitive_level: str = "apply",
+    choices: int = 4,
 ) -> QuestionContent:
     stem = stems[(number - 1 + stem_offset) % len(stems)].format(topic=f"concept {number}")
     prompt = f"{label}{stem}."
     if question_type == "mcq":
-        correct = "ABCD"[(number + stem_offset) % 4]
+        letters = "ABCDEF"[:choices]
+        correct = letters[(number + stem_offset) % choices]
         return QuestionContent(
             type="mcq",
             difficulty=difficulty,
             cognitive_level=cognitive_level,
             points=points,
             prompt=prompt,
-            choices=[ChoiceOut(id=letter, text=f"Option {letter} for item {number}{label}") for letter in "ABCD"],
+            choices=[ChoiceOut(id=letter, text=f"Option {letter} for item {number}{label}") for letter in letters],
             correct_choice=correct,
             subparts=None,
             answer=f"{correct} is correct.",
@@ -280,9 +282,13 @@ def well_behaved_batch(call: dict[str, Any]) -> QuestionBatch:
     text = call["input"]
     targets = text.split("WRITE THESE QUESTIONS NOW (exactly as planned)\n", 1)[1]
     refs = re.findall(r"id (S\d+)", text)[:2]
+    # As many choices as the instructions ask for, like the real writer.
+    choices = int(re.search(r"exactly (\d) choices with ids", call["instructions"]).group(1))
     questions = []
     for number, question_type, difficulty, points, level in _PLAN_LINE.findall(targets):
-        content = make_content(int(number), question_type, difficulty, float(points), refs=refs, cognitive_level=level)
+        content = make_content(
+            int(number), question_type, difficulty, float(points), refs=refs, cognitive_level=level, choices=choices
+        )
         questions.append(GeneratedQuestion(number=int(number), **content.model_dump()))
     return QuestionBatch(questions=questions, warnings=[])
 
@@ -302,6 +308,13 @@ _QUESTION_HEADER = re.compile(r"^Q(\d+) \[(\w+), (\w+)(?:, Bloom's level: (\w+))
 
 def well_behaved_variants(call: dict[str, Any]) -> VariantBatch:
     label = re.search(r"Write the Version (\w) equivalent", call["input"]).group(1)
+    # Each original's number of choices, which its variant keeps.
+    blocks = re.split(r"(?m)^(?=Q\d+ \[)", call["input"])
+    choices = {
+        int(match.group(1)): len(re.findall(r"(?m)^  [A-F]\. ", block))
+        for block in blocks
+        if (match := re.match(r"Q(\d+) \[", block))
+    }
     variants = []
     for number, question_type, difficulty, level, points in _QUESTION_HEADER.findall(call["input"]):
         content = make_content(
@@ -312,6 +325,7 @@ def well_behaved_variants(call: dict[str, Any]) -> VariantBatch:
             stem_offset=7,
             label=f"[{label}] ",
             cognitive_level=level or "apply",
+            choices=choices.get(int(number)) or 4,
         )
         variants.append(VersionVariant(source_number=int(number), question=content, variation="new scenario"))
     return VariantBatch(variants=variants)

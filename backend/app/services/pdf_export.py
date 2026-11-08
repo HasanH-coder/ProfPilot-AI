@@ -170,6 +170,8 @@ META = ParagraphStyle("meta", parent=BODY, fontSize=10, leading=14, alignment=TA
 SECTION = ParagraphStyle(
     "section", parent=BODY, fontName="ExamBold", fontSize=12.5, leading=16, spaceBefore=10, keepWithNext=True
 )
+# What students read under a section heading: what to do, or a case before its questions.
+SECTION_TEXT = ParagraphStyle("section-text", parent=BODY, spaceAfter=4)
 QUESTION = ParagraphStyle("question", parent=BODY, leftIndent=0.6 * cm)
 QUESTION_LEAD = ParagraphStyle("question-lead", parent=QUESTION, firstLineIndent=-0.6 * cm, keepWithNext=True)
 CHOICE = ParagraphStyle("choice", parent=BODY, leftIndent=0.6 * cm, firstLineIndent=0, spaceBefore=6)
@@ -245,20 +247,43 @@ def _table_at(lines: list[str], start: int) -> tuple[list[list[str]], int] | Non
     return (rows, end) if len(rows) >= (2 if pipe else 3) else None
 
 
+def _column_widths(rows: list[list[str]], font_size: float, width: float) -> list[float]:
+    """Column widths filling `width`, each wide enough for its longest word where the table allows,
+    so no word is broken in the middle ("Accur acy"). Measured in the fonts the cells use."""
+    count = len(rows[0])
+    padding = 16
+
+    def measure(text: str, header: bool) -> float:
+        return pdfmetrics.stringWidth(text, "ExamBold" if header else "ExamRoman", font_size)
+
+    shortest = [
+        max(max((measure(word, r == 0) for word in row[i].split()), default=0) for r, row in enumerate(rows)) + padding
+        for i in range(count)
+    ]
+    preferred = [
+        max(shortest[i], min(160, max(32, max(measure(row[i], r == 0) for r, row in enumerate(rows)) + padding)))
+        for i in range(count)
+    ]
+    if sum(preferred) <= width:
+        return [width * weight / sum(preferred) for weight in preferred]
+    if sum(shortest) <= width:
+        # Every word fits; the space left goes to the columns with the most text to wrap.
+        spare = width - sum(shortest)
+        extra = [p - s for p, s in zip(preferred, shortest, strict=True)]
+        return [s + spare * e / sum(extra) for s, e in zip(shortest, extra, strict=True)]
+    return [width * weight / sum(shortest) for weight in shortest]
+
+
 def _data_table(rows: list[list[str]], style: ParagraphStyle) -> Flowable:
     count = len(rows[0])
     cell_style = ParagraphStyle("table-cell", parent=BODY, fontSize=10 if count > 6 else 11, leading=14)
-    weights = [
-        min(160, max(32, max(pdfmetrics.stringWidth(row[i], "Times-Roman", cell_style.fontSize) for row in rows) + 16))
-        for i in range(count)
-    ]
     width = A4[0] - 5.08 * cm - style.leftIndent
     table = _PageSizedTable(
         [
             [Paragraph(("<b>" if r == 0 else "") + inline_markup(cell) + ("</b>" if r == 0 else ""), cell_style) for cell in row]
             for r, row in enumerate(rows)
         ],
-        colWidths=[width * weight / sum(weights) for weight in weights],
+        colWidths=_column_widths(rows, cell_style.fontSize, width),
         repeatRows=1,
         hAlign="LEFT",
     )
@@ -482,7 +507,7 @@ class PdfExportService:
                 story.append(Paragraph(markup(f"{section['title']} ({_marks(section_points)})"), SECTION))
                 story.append(_rule())
                 if section.get("instructions"):
-                    story.extend(rich_text(section["instructions"], SMALL))
+                    story.extend(rich_text(section["instructions"], SECTION_TEXT))
                 story.append(Spacer(1, 4))
             block = self._question(question, number, answer_key=answer_key, figures=figures)
             # Leave room for a useful part of the stem, not just its opening line.
@@ -535,10 +560,20 @@ class PdfExportService:
         choice_block: list[Flowable] = []
         for choice in q.get("choices") or []:
             correct = answer_key and choice.get("id") == q.get("correct_choice")
-            text = f"{escape(str(choice.get('id', '')).lower())})  {inline_markup(str(choice.get('text', '')))}"
-            if correct:
-                text = f'<b>{text}</b>  <font name="ZapfDingbats">\u2714</font>'
-            choice_block.append(Paragraph(text, CHOICE))
+            letter = f"{escape(str(choice.get('id', '')).lower())})  "
+            tick = '  <font name="ZapfDingbats">\u2714</font>' if correct else ""
+            choice_text = str(choice.get("text", "")).strip()
+            # One line is one paragraph; several (e.g. a table) are rendered like any other text.
+            parts: list[Flowable] = rich_text(choice_text, CHOICE) if "\n" in choice_text else []
+            if parts and isinstance(parts[0], Paragraph):
+                first = letter + parts[0].text
+                parts[0] = Paragraph((f"<b>{first}</b>" if correct else first) + tick, CHOICE)
+            elif parts:
+                parts.insert(0, Paragraph((f"<b>{letter}</b>" if correct else letter) + tick, CHOICE))
+            else:
+                text = letter + inline_markup(choice_text)
+                parts = [Paragraph((f"<b>{text}</b>" if correct else text) + tick, CHOICE)]
+            choice_block.extend(parts)
         if choice_block:
             block.extend(choice_block)
 
