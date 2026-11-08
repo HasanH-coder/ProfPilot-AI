@@ -30,7 +30,8 @@ export function useDocumentAnalysis(assessmentId: string | null, documentIds: st
         const current = await apiRequest<AiStatus>(`/api/assessments/${assessmentId}/ai-status`);
         if (cancelled) return;
         setStatus(current);
-        const waiting = current.documents.some((document) => document.status === "pending");
+        const pending = current.documents.filter((document) => document.status === "pending");
+        const waiting = pending.length > 0;
         const reading = current.runs.some((run) => run.kind === "document_processing" && run.status === "running");
         if (waiting && !reading) {
           await apiRequest(`/api/assessments/${assessmentId}/documents/processing`, {
@@ -38,6 +39,16 @@ export function useDocumentAnalysis(assessmentId: string | null, documentIds: st
             body: {},
             freshSession: true,
           }).catch(() => undefined); // already running elsewhere: just keep checking
+        } else if (waiting) {
+          // A reading job is already busy (a lecture alone takes about two minutes) and only reads the
+          // files it started with. A file added meanwhile would wait for all of that, so start it now.
+          await Promise.all(
+            pending.map((document) =>
+              apiRequest(`/api/documents/${document.id}/processing`, { method: "POST", freshSession: true }).catch(
+                () => undefined, // it keeps its place: the next check tries again
+              ),
+            ),
+          );
         }
         const busy = current.documents.some((document) => document.status === "pending" || document.status === "processing");
         if (busy || waiting) timer = setTimeout(check, POLL_MS);
