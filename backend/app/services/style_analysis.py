@@ -17,6 +17,9 @@ from app.services.assessment_context import AssessmentContextService, DocumentRe
 
 # Characters of previous-exam text sent for analysis, shared between the exams.
 _STYLE_BUDGET = 60_000
+# Part of the cache key: a profile analysed by an older version of this analysis (before each previous
+# question was listed, for counting the mix of tasks and the lengths) is analysed again, once.
+_ANALYSIS_VERSION = "questions-v1"
 
 
 class StyleAnalysisService:
@@ -38,7 +41,8 @@ class StyleAnalysisService:
                 )
             return None
 
-        source_hash = hashlib.sha256("|".join(sorted(f"{doc.id}:{doc.content_sha256}" for doc in exams)).encode()).hexdigest()
+        files = "|".join(sorted(f"{doc.id}:{doc.content_sha256}" for doc in exams))
+        source_hash = hashlib.sha256(f"{_ANALYSIS_VERSION}|{files}".encode()).hexdigest()
         if existing and existing[1].get("source_hash") == source_hash:
             return existing[0]
 
@@ -64,7 +68,7 @@ class StyleAnalysisService:
             schema=StyleProfile,
             effort="medium",
             verbosity="low",
-            max_output_tokens=12_000,
+            max_output_tokens=20_000,
             usage=self.usage,
             model=settings.light_model,
         )

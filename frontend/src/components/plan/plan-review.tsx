@@ -35,6 +35,9 @@ async function preparePlan(assessmentId: string): Promise<PlanProgress> {
   try {
     const plan = await apiRequest<QuestionPlan>(`/api/assessments/${assessmentId}/question-plan`);
     if (plan.status === "ready") return { kind: "ready" };
+    // A plan being made is followed through its run; one that stopped early keeps what the professor
+    // did with it, and is planned again only from the plan page.
+    if (plan.status !== "none") return { kind: "unknown" };
     const started = await apiRequest<StartedRun>(`/api/assessments/${assessmentId}/question-plan`, {
       method: "POST",
       freshSession: true,
@@ -325,7 +328,7 @@ function PlanStatus({ progress }: { progress: PlanProgress }) {
     return (
       <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
         <Spinner />
-        Preparing your question plan in the background…
+        Preparing your question plan in the background. Press Next to watch it arrive question by question.
       </p>
     );
   }

@@ -162,7 +162,8 @@ test("a plan still being prepared shows its progress and isn't started twice", a
   });
   const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
 
-  await expect.element(screen.getByText("Planning the assessment…").first()).toBeVisible();
+  await expect.element(screen.getByText(/Planning the questions: 0 planned so far/)).toBeVisible();
+  await expect.element(screen.getByText("Planning question 1…")).toBeVisible();
   expect(posts()).toEqual([]);
 });
 
@@ -177,4 +178,74 @@ test("building the exam in a conversation is offered after the plan", async () =
     "/api/assessments/assessment-1/exam",
     { mode: "interactive", replace: false },
   ]);
+});
+
+test("a plan still being made: its case comes first, and a planned question is changed and generated while the rest loads", async () => {
+  const caseText = "A clinic screens 1,000 patients. The test flags 120, of whom 90 are ill.";
+  let plan: QuestionPlan = {
+    ...makePlan([
+      { ...planned(1), sectionIndex: 0 },
+      { ...planned(2), sectionIndex: 0 },
+    ]),
+    status: "planning",
+    expectedQuestions: 5,
+    sections: [{ title: "Case Study 1: Screening", instructions: caseText }],
+  };
+  serve(plan, (path) => (path.endsWith("/question-plan/2") ? { ...plan, questions: [plan.questions[0], { ...plan.questions[1], topic: "Recall" }] } : { run: { id: "run-2" } }));
+  const serveNext = vi.mocked(apiRequest).getMockImplementation()!;
+  vi.mocked(apiRequest).mockImplementation(async (path, options) => {
+    const url = String(path);
+    if (options?.method === undefined && url.endsWith("/question-plan")) return plan;
+    if (url.endsWith("/ai-status")) {
+      return { runs: [{ id: "run-9", kind: "interpretation", status: "running", stage: "planning" }], spec: { status: "approved" } };
+    }
+    if (url === "/api/runs/run-9") return { id: "run-9", kind: "interpretation", status: "running", stage: "planning" };
+    return serveNext(path, options);
+  });
+  const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
+
+  // The case is shown before the questions built on it, and the rest of the plan is still loading.
+  await expect.element(screen.getByRole("heading", { name: "Case Study 1: Screening" })).toBeVisible();
+  await expect.element(screen.getByText(caseText)).toBeVisible();
+  await expect.element(screen.getByRole("heading", { name: "Question 2: Topic 2" })).toBeVisible();
+  await expect.element(screen.getByText(/Planning question 3… About 3 more to plan\./)).toBeVisible();
+  await expect.element(screen.getByText(/Planning the questions: 2 of about 5 planned so far/)).toBeVisible();
+  // The full exam waits for the whole plan; one planned question doesn't.
+  await expect.element(screen.getByRole("button", { name: "Generate full exam" })).toBeDisabled();
+
+  // A planned question is changed while the rest is planned…
+  await screen.getByRole("button", { name: "Edit plan" }).nth(1).click();
+  await screen.getByLabelText("Topic", { exact: true }).fill("Recall");
+  await screen.getByRole("button", { name: "Save" }).click();
+  await expect.element(screen.getByRole("heading", { name: "Question 2: Recall" })).toBeVisible();
+
+  // …and generated.
+  await screen.getByRole("button", { name: "Generate question" }).nth(1).click();
+  await expect
+    .poll(() => posts().map(([path, options]) => [path, options?.body]))
+    .toContainEqual(["/api/assessments/assessment-1/question-plan/2/question", { replace: false }]);
+
+  // The next planned question appears at the next refresh, under its case.
+  plan = { ...plan, questions: [...plan.questions, { ...planned(3), sectionIndex: 0 }] };
+  await expect.element(screen.getByRole("heading", { name: "Question 3: Topic 3" }), { timeout: 5000 }).toBeVisible();
+});
+
+test("a plan finished while the professor was away is shown whole at once", async () => {
+  serve({
+    ...makePlan([
+      { ...planned(1), sectionIndex: 0, task: "conceptual" },
+      { ...planned(2), sectionIndex: 0, task: "calculation" },
+    ]),
+    sections: [{ title: "Case Study 1: Screening", instructions: "A clinic screens 1,000 patients." }],
+    tasks: { conceptual: 1, application: 0, calculation: 1 },
+    previousTasks: { conceptual: 18, application: 11, calculation: 1 },
+  });
+  const screen = await render(<QuestionPlanBuilder assessmentId="assessment-1" />);
+
+  await expect.element(screen.getByRole("heading", { name: "Question 2: Topic 2" })).toBeVisible();
+  expect(screen.getByText(/Planning question/).query()).toBeNull();
+  await expect.element(screen.getByRole("button", { name: "Generate full exam" })).toBeEnabled();
+  // What students do, next to the professor's previous exams.
+  await expect.element(screen.getByText(/1 conceptual · 0 application · 1 calculation/)).toBeVisible();
+  await expect.element(screen.getByText(/your previous exams: 18 conceptual · 11 application · 1 calculation \(of 30\)/)).toBeVisible();
 });

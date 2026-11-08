@@ -22,9 +22,12 @@ import logging
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import Any
+
+import pydantic
 
 from app.ai.openai_service import Effort, OpenAIService, Usage, gather_limited, get_openai_service
 from app.ai.prompts import DataFramer, choice_ids, generator_instructions, planner_instructions, variant_instructions
@@ -33,6 +36,7 @@ from app.core.errors import AppError, ConflictError, InvalidInputError
 from app.core.timing import timed
 from app.db.supabase import Database
 from app.domain import distribution
+from app.domain.exam_style import StyleNumbers, length_problems, mix_problems, style_numbers
 from app.domain.setup import BLOOM_PRESETS
 from app.schemas.ai import (
     COGNITIVE_LEVELS,
@@ -41,6 +45,7 @@ from app.schemas.ai import (
     ExamSpec,
     GeneratedQuestion,
     PlannedQuestion,
+    PlannedSection,
     QuestionBatch,
     QuestionContent,
     StyleProfile,
@@ -168,6 +173,11 @@ class GenerationContext:
         return {doc.id for doc in self.attachments if doc.is_image}
 
     @property
+    def style_numbers(self) -> StyleNumbers | None:
+        """The previous exams in numbers (the mix of tasks, lengths, cases), when they were analysed."""
+        return style_numbers(self.style)
+
+    @property
     def mcq_choices(self) -> int:
         """Choices in every multiple-choice question: the number the professor asked for, else 4."""
         return self.spec.mcq_choices or 4
@@ -186,7 +196,7 @@ class GenerationContext:
             "APPROVED EXAM SPEC (approved by the professor; binding)\n" + json.dumps(self.spec.model_dump(), indent=1),
             "APPROVED BRIEF (approved by the professor)\n" + self.enhanced_prompt,
             render_preferences(self.preferences),
-            render_style_profile(self.style, framer),
+            render_style_profile(self.style, framer, planned=self.spec.question_count_max or self.spec.question_count_min),
             (
                 "IMAGE ATTACHMENTS (a question may show one by setting figure_document_id)\n"
                 + framer.block("attachments", "image attachments", "\n".join(attachments))
@@ -390,14 +400,15 @@ def _interleave_score(
     return lag
 
 
-def interleave_plan(plan: ExamPlan, document_names: list[str]) -> ExamPlan:
+def interleave_plan(plan: ExamPlan, document_names: list[str], fixed: AbstractSet[int] = frozenset()) -> ExamPlan:
     """The plan with difficulties and topics mixed inside each section, if they were grouped.
 
     Only the order changes: every question keeps its type, difficulty, points
     and topic, so the format and difficulty splits stay exactly as planned.
     Sections stay in order with their questions together, and a section whose
     questions are grouped by type keeps that grouping. Questions are renumbered
-    1, 2, 3… in the new order.
+    1, 2, 3… in the new order. `fixed`: numbers that stay where they are (questions the
+    professor changed or wrote while the plan was made); the others move around them.
     """
     sources = {q.number: _source_key(q, document_names) for q in plan.questions}
     ordered: list[PlannedQuestion] = []
@@ -413,7 +424,8 @@ def interleave_plan(plan: ExamPlan, document_names: list[str]) -> ExamPlan:
         for unit in units:
             clustered = is_clustered([q.difficulty for q in unit]) or is_clustered([sources[q.number] for q in unit])
             if clustered:
-                mixed = _interleave(unit, sources)
+                free = iter(q for q in _interleave(unit, sources) if q.number not in fixed)
+                mixed = [q if q.number in fixed else next(free) for q in unit]
                 changed = changed or mixed != unit
                 ordered.extend(mixed)
             else:
@@ -435,9 +447,12 @@ def plan_problems(
     figure_ids: set[str],
     knowledge_refs: set[str] | None = None,
     slides: SlideIndex | None = None,
+    *,
+    style: StyleNumbers | None = None,
 ) -> tuple[list[str], list[str]]:
     """(structural problems, softer target misses) for a plan. `knowledge_refs`: the topic ids it may
-    cite; `slides`: the analysed pages each question must cite (every question traced to its pages)."""
+    cite; `slides`: the analysed pages each question must cite (every question traced to its pages);
+    `style`: the previous exams in numbers, whose mix of tasks the plan should match."""
     hard: list[str] = []
     soft: list[str] = []
     questions = plan.questions
@@ -499,6 +514,7 @@ def plan_problems(
             f"The questions need about {summary['estimatedMinutes']:g} minutes, more than the "
             f"{spec.duration_minutes}-minute duration. Remove or shorten questions."
         )
+    soft.extend(mix_problems(questions, style))
     if spec.question_count_min and len(questions) < spec.question_count_min:
         soft.append(f"Plan at least {spec.question_count_min} questions.")
     if spec.question_count_max and len(questions) > spec.question_count_max:
@@ -527,10 +543,18 @@ def plan_effort(spec: ExamSpec) -> Effort:
     return "medium" if count is not None and count <= _SMALL_EXAM_QUESTIONS else "high"
 
 
-def fit_points(plan: ExamPlan, total: int | None) -> ExamPlan:
+def fit_points(plan: ExamPlan, total: float | None, fixed: AbstractSet[int] = frozenset()) -> ExamPlan:
     """Scales the planned points to add up to the exam's total, in code, so a points total alone never
     costs another model call. The shares by type, difficulty and level stay as planned (points scale
-    together). Whole points when the plan used whole points, else halves. Unchanged when it can't fit."""
+    together). Whole points when the plan used whole points, else halves. Unchanged when it can't fit.
+    `fixed`: numbers whose points stay as they are (the professor set them); the others make up the rest."""
+    if fixed and total:
+        kept = sum(q.points for q in plan.questions if q.number in fixed)
+        others = plan.model_copy(update={"questions": [q for q in plan.questions if q.number not in fixed]})
+        if total - kept <= 0:
+            return plan
+        fitted = {q.number: q for q in fit_points(others, total - kept).questions}
+        return plan.model_copy(update={"questions": [fitted.get(q.number, q) for q in plan.questions]})
     questions = plan.questions
     current = sum(q.points for q in questions)
     if not total or not questions or current <= 0 or abs(current - total) <= 0.01:
@@ -573,6 +597,114 @@ def change_request(instruction: str) -> str:
     )
 
 
+# Called with the plan written so far: its sections (complete) and its complete questions.
+PlanProgress = Callable[[list[PlannedSection], list[PlannedQuestion]], Awaitable[None]]
+
+_SECTIONS_START = re.compile(r'\s*\{\s*"sections"\s*:\s*\[')
+_QUESTIONS_START = re.compile(r'\s*,\s*"questions"\s*:\s*\[')
+
+
+def _array_items(text: str, start: int) -> tuple[list[Any], int | None]:
+    """The complete JSON values of the array opened just before `start`, and the index after its closing
+    bracket (None while it is still open)."""
+    decoder = json.JSONDecoder()
+    items: list[Any] = []
+    index = start
+    while True:
+        while index < len(text) and text[index] in " \t\r\n,":
+            index += 1
+        if index >= len(text):
+            return items, None
+        if text[index] == "]":
+            return items, index + 1
+        try:
+            item, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            return items, None
+        items.append(item)
+
+
+def partial_plan(text: str) -> tuple[list[PlannedSection], list[PlannedQuestion]] | None:
+    """The sections and the complete questions in a plan still being written (a JSON prefix), or None
+    until every section is complete (each case is shown before the questions that build on it)."""
+    opened = _SECTIONS_START.match(text)
+    if not opened:
+        return None
+    raw_sections, after = _array_items(text, opened.end())
+    if after is None:
+        return None
+    try:
+        sections = [PlannedSection.model_validate(item) for item in raw_sections]
+    except pydantic.ValidationError:
+        return None
+    questions: list[PlannedQuestion] = []
+    started = _QUESTIONS_START.match(text, after)
+    if started:
+        raw_questions, _ = _array_items(text, started.end())
+        for item in raw_questions:
+            try:
+                question = PlannedQuestion.model_validate(item)
+            except pydantic.ValidationError:
+                break
+            # Shown in order only: a question out of sequence waits for the finished plan.
+            if question.number != len(questions) + 1:
+                break
+            questions.append(question)
+    return sections, questions
+
+
+class PlanStream:
+    """Turns the streamed text of a plan into progress: the sections once they are complete, then each
+    new complete question. The text is read again only when a JSON value may have closed."""
+
+    def __init__(self, on_progress: PlanProgress) -> None:
+        self.on_progress = on_progress
+        self.length = 0
+        self.shown: tuple[int, int] | None = None
+
+    async def feed(self, text: str) -> None:
+        added = text[self.length :] if len(text) >= self.length else text
+        self.length = len(text)
+        if "}" not in added and "]" not in added:
+            return
+        found = partial_plan(text)
+        if found is None:
+            return
+        sections, questions = found
+        if self.shown == (len(sections), len(questions)):
+            return
+        self.shown = (len(sections), len(questions))
+        await self.on_progress(sections, questions)
+
+
+def keep_questions(plan: ExamPlan, kept: dict[int, PlannedQuestion], base: ExamPlan | None = None) -> ExamPlan:
+    """The plan with the professor's questions (changed or written while it was made) put back at their
+    numbers, and, from `base`, the text of the sections they sit in (the case they were written on)."""
+    if not kept:
+        return plan
+    questions = []
+    for question in plan.questions:
+        own = kept.get(question.number)
+        # Under the section the plan has there, so the sections stay in order.
+        questions.append(own.model_copy(update={"section_index": question.section_index}) if own else question)
+    sections = list(plan.sections)
+    if base is not None:
+        for own in kept.values():
+            index = own.section_index
+            if index < len(sections) and index < len(base.sections):
+                sections[index] = base.sections[index]
+    return plan.model_copy(update={"questions": questions, "sections": sections})
+
+
+def fits_kept(plan: ExamPlan, kept: dict[int, PlannedQuestion], base: ExamPlan) -> bool:
+    """Whether a revised plan still has each kept question's place: its number, in the same section."""
+    by_number = {question.number: question for question in plan.questions}
+    return all(
+        number in by_number and by_number[number].section_index == own.section_index and own.section_index < len(base.sections)
+        for number, own in kept.items()
+    )
+
+
 class ExamPlanningService:
     def __init__(self, db: Database, ai: OpenAIService, usage: Usage) -> None:
         self.db = db
@@ -607,12 +739,25 @@ class ExamPlanningService:
         ]
         return "\n\n".join(part for part in sections if part)
 
-    async def plan(self, ctx: GenerationContext) -> ExamPlan:
+    def problems(self, plan: ExamPlan, ctx: GenerationContext) -> tuple[list[str], list[str]]:
+        return plan_problems(plan, ctx.spec, ctx.figure_ids, ctx.knowledge_refs, ctx.slides, style=ctx.style_numbers)
+
+    async def plan(
+        self,
+        ctx: GenerationContext,
+        *,
+        on_progress: PlanProgress | None = None,
+        touched: Callable[[], Awaitable[dict[int, PlannedQuestion]]] | None = None,
+    ) -> ExamPlan:
+        """The plan: one planning call, then one repair for the targets it misses.
+
+        `on_progress` gets the plan as it is written: the sections (cases) first, complete, then each
+        question as soon as it is complete. `touched` returns the questions the professor changed or
+        wrote meanwhile, by number: they are kept exactly as they are, and the repair plans around them.
+        The order is mixed separately (see order()), so the caller can keep questions touched later."""
         framer = DataFramer()
-        slides = ctx.slides
         base_input = await self._planning_input(ctx, framer)
-        figure_ids = ctx.figure_ids
-        known = ctx.knowledge_refs
+        stream = PlanStream(on_progress) if on_progress else None
 
         plan = await self.ai.parse(
             purpose="plan_exam",
@@ -621,13 +766,23 @@ class ExamPlanningService:
             schema=ExamPlan,
             effort=plan_effort(ctx.spec),
             max_output_tokens=24_000,
-            validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
+            validate=lambda result: self.problems(result, ctx)[0],
             usage=self.usage,
+            on_text=stream.feed if stream else None,
         )
-        plan = fit_points(plan, ctx.spec.total_points)
-        _, soft = plan_problems(plan, ctx.spec, figure_ids, known, slides)
+        kept = await touched() if touched else {}
+        plan = fit_points(keep_questions(plan, kept), ctx.spec.total_points, set(kept))
+        _, soft = self.problems(plan, ctx)
         if soft:
             # One focused repair for targets the plan misses.
+            keep_note = (
+                "\nKeep questions "
+                + ", ".join(map(str, sorted(kept)))
+                + " exactly as they are, at the same numbers and in the same sections, with their sections' text "
+                "unchanged: the professor has already changed or written them."
+                if kept
+                else ""
+            )
             try:
                 repaired = await self.ai.parse(
                     purpose="replan_exam",
@@ -641,7 +796,8 @@ class ExamPlanningService:
                                 {
                                     "type": "input_text",
                                     "text": "Revise the plan so it meets these targets, keeping everything else:\n- "
-                                    + "\n- ".join(soft),
+                                    + "\n- ".join(soft)
+                                    + keep_note,
                                 }
                             ],
                         },
@@ -649,22 +805,31 @@ class ExamPlanningService:
                     schema=ExamPlan,
                     effort=plan_effort(ctx.spec),
                     max_output_tokens=24_000,
-                    validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
+                    validate=lambda result: self.problems(result, ctx)[0],
                     usage=self.usage,
                 )
-                repaired = fit_points(repaired, ctx.spec.total_points)
-                remaining = plan_problems(repaired, ctx.spec, figure_ids, known, slides)[1]
-                if len(remaining) <= len(soft):
-                    plan, soft = repaired, remaining
+                kept = await touched() if touched else {}
+                if fits_kept(repaired, kept, plan):
+                    repaired = fit_points(keep_questions(repaired, kept, plan), ctx.spec.total_points, set(kept))
+                    remaining = self.problems(repaired, ctx)[1]
+                    if len(remaining) <= len(soft):
+                        plan, soft = repaired, remaining
+                else:
+                    logger.info("Plan repair moved questions the professor kept; keeping the first plan")
             except AppError:
                 logger.info("Plan repair failed; keeping the first plan with warnings")
         for problem in soft:
             plan.warnings.append(problem)
-        # Mix difficulties and topics in code, without another model call, unless
-        # the professor asked for an order (then the planner's order is theirs).
-        if not plan.ordering_request and not professor_requested_order(ctx):
-            plan = interleave_plan(plan, [doc.original_name for doc in ctx.documents if doc.category == "course_material"])
+        if touched is None:
+            plan = self.order(plan, ctx)
         return plan
+
+    def order(self, plan: ExamPlan, ctx: GenerationContext, fixed: AbstractSet[int] = frozenset()) -> ExamPlan:
+        """Mixes difficulties and topics in code, without another model call, unless the professor asked
+        for an order (then the planner's order is theirs). `fixed` questions stay at their numbers."""
+        if plan.ordering_request or professor_requested_order(ctx):
+            return plan
+        return interleave_plan(plan, [doc.original_name for doc in ctx.documents if doc.category == "course_material"], fixed)
 
     async def change(self, ctx: GenerationContext, current: ExamPlan, instruction: str) -> ExamPlan:
         """The plan with the professor's requested changes, and everything else as it was.
@@ -672,10 +837,7 @@ class ExamPlanningService:
         Points aren't refitted to the total here: what the professor asked for wins, and a total that
         no longer matches shows on the plan page with the other targets."""
         framer = DataFramer()
-        slides = ctx.slides
         base_input = await self._planning_input(ctx, framer)
-        figure_ids = ctx.figure_ids
-        known = ctx.knowledge_refs
         changed = await self.ai.parse(
             purpose="change_plan",
             instructions=planner_instructions(framer),
@@ -687,7 +849,7 @@ class ExamPlanningService:
             schema=ExamPlan,
             effort=plan_effort(ctx.spec),
             max_output_tokens=24_000,
-            validate=lambda result: plan_problems(result, ctx.spec, figure_ids, known, slides)[0],
+            validate=lambda result: self.problems(result, ctx)[0],
             usage=self.usage,
         )
         # The professor's own questions stay with their slots unless the request moved them.
@@ -696,7 +858,7 @@ class ExamPlanningService:
             old = before.get(question.number)
             if old and old.professor_question and not question.professor_question and old.topic == question.topic:
                 question.professor_question = old.professor_question
-        _, soft = plan_problems(changed, ctx.spec, figure_ids, known, slides)
+        _, soft = self.problems(changed, ctx)
         changed.warnings = soft
         return changed
 
@@ -724,7 +886,14 @@ def choice_count_problems(content: QuestionContent, label: str, expected: int) -
     return [f"{label} must have exactly {expected} choices, with ids {choice_ids(expected)}."]
 
 
-def batch_problems(batch: QuestionBatch, planned: list[PlannedQuestion], others: list[str], *, choices: int = 4) -> list[str]:
+def batch_problems(
+    batch: QuestionBatch,
+    planned: list[PlannedQuestion],
+    others: list[str],
+    *,
+    choices: int = 4,
+    style: StyleNumbers | None = None,
+) -> list[str]:
     problems: list[str] = []
     by_number = {q.number: q for q in batch.questions}
     if sorted(by_number) != sorted(p.number for p in planned) or len(batch.questions) != len(planned):
@@ -745,6 +914,9 @@ def batch_problems(batch: QuestionBatch, planned: list[PlannedQuestion], others:
             problems.append(f"{label} must use figure_document_id {slot.figure_document_id!r}, as planned.")
         problems.extend(question_problems(content, label=label))
         problems.extend(choice_count_problems(content, label, choices))
+        # The professor's own question keeps their wording, however long.
+        if not slot.professor_question:
+            problems.extend(length_problems(content, label, style))
         for other in others:
             if similar(content.prompt, other) > 0.85:
                 problems.append(f"{label} is almost the same as another question in the exam; make it test something different.")
@@ -910,7 +1082,8 @@ class ExamGenerationService:
         plan_lines = [
             f"{q.number}. [{plan.sections[q.section_index].title if q.section_index < len(plan.sections) else ''}] "
             f"{q.type}, {q.difficulty}, {q.points:g} pts, ~{q.estimated_minutes:g} min — {q.topic}: {q.learning_objective}"
-            f" (Bloom's level: {q.cognitive_level}; source: {q.source_hint or 'any'}; figure: {q.figure_document_id or 'none'}"
+            f" (Bloom's level: {q.cognitive_level}; task: {q.task or 'as the target says'}; source: {q.source_hint or 'any'}; "
+            f"figure: {q.figure_document_id or 'none'}"
             + (f"; pages: {', '.join(q.source_pages)}" if q.source_pages else "")
             + (f"; lecture knowledge: {', '.join(q.knowledge_refs)}" if q.knowledge_refs else "")
             + (f"; target: {q.assessment_target}" if q.assessment_target else "")
@@ -946,7 +1119,7 @@ class ExamGenerationService:
             effort=batch_effort(batch),
             max_output_tokens=48_000,
             validate=lambda result: (
-                batch_problems(result, batch, others, choices=ctx.mcq_choices)
+                batch_problems(result, batch, others, choices=ctx.mcq_choices, style=ctx.style_numbers)
                 + ctx.formula_problems((f"Question {q.number}", normalize_content(q)) for q in result.questions)
                 + excerpt_id_problems(((f"Question {q.number}", q) for q in result.questions), excerpts)
                 + leak_messages([normalize_content(q) for q in result.questions], [q.number for q in result.questions])
@@ -1121,7 +1294,7 @@ class ExamGenerationService:
             effort=question_effort(slot_type, slot_difficulty),
             max_output_tokens=24_000,
             validate=lambda batch: (
-                _single_problems(batch, slot, others, ctx.figure_ids, choices=ctx.mcq_choices)
+                _single_problems(batch, slot, others, ctx.figure_ids, choices=ctx.mcq_choices, style=ctx.style_numbers)
                 + ctx.formula_problems(("The question", normalize_content(q)) for q in batch.questions)
                 + excerpt_id_problems((("The question", q) for q in batch.questions), excerpts)
                 + leak_messages(
@@ -1146,7 +1319,13 @@ class ExamGenerationService:
 
 
 def _single_problems(
-    batch: QuestionBatch, slot: PlannedQuestion, others: list[str], figure_ids: set[str], *, choices: int = 4
+    batch: QuestionBatch,
+    slot: PlannedQuestion,
+    others: list[str],
+    figure_ids: set[str],
+    *,
+    choices: int = 4,
+    style: StyleNumbers | None = None,
 ) -> list[str]:
     if len(batch.questions) != 1:
         return ["Write exactly one question."]
@@ -1162,6 +1341,8 @@ def _single_problems(
         problems.append("figure_document_id must be null or one of the listed image attachments.")
     problems.extend(question_problems(question))
     problems.extend(choice_count_problems(question, "The question", choices))
+    if not slot.professor_question:
+        problems.extend(length_problems(question, "The question", style))
     if any(similar(question.prompt, other) > 0.85 for other in others):
         problems.append("The question is almost the same as one already in the exam; make it different.")
     return problems

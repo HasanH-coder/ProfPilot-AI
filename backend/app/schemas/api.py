@@ -178,6 +178,7 @@ class ExamOut(ApiModel):
     updated_at: str
     spec: dict[str, Any] | None
     planned_question_count: int
+    planned_sections: list[int] = []
     versions: list[VersionOut]
     sections: list[SectionOut]
     questions: list[QuestionOut]
@@ -200,6 +201,8 @@ class PlannedQuestionOut(ApiModel):
     type: str
     difficulty: str
     cognitive_level: str
+    # What students do: conceptual, application or calculation (None in older plans).
+    task: str | None = None
     points: float
     estimated_minutes: float
     topic: str
@@ -220,9 +223,16 @@ class PlanExamOut(ApiModel):
 
 
 class QuestionPlanOut(ApiModel):
-    status: Literal["none", "ready"]
+    # planning: questions still arriving (each is shown, and can be changed or written, once planned);
+    # stopped: planning ended before every question was planned.
+    status: Literal["none", "planning", "stopped", "ready"]
     sections: list[PlannedSectionOut] = []
     questions: list[PlannedQuestionOut]
+    # While planning: how many questions the exam should have, when the prompt says.
+    expected_questions: int | None = None
+    # Questions by what students do, and the same counts in the professor's previous exams (when analysed).
+    tasks: dict[str, int] | None = None
+    previous_tasks: dict[str, int] | None = None
     rationale: str | None
     warnings: list[str] = []
     summary: dict[str, Any] | None = None

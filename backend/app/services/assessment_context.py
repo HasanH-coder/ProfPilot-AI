@@ -11,6 +11,7 @@ from typing import Any
 from app.ai.prompts import DataFramer
 from app.core.errors import NotFoundError
 from app.db.supabase import Database
+from app.domain.exam_style import render_style_numbers, style_numbers
 from app.domain.setup import AssessmentSetup
 from app.schemas.ai import StyleProfile
 from app.schemas.common import parse_id
@@ -404,9 +405,13 @@ def render_material_overview(documents: list[DocumentRecord], framer: DataFramer
     return "UPLOADED FILES (overview made from the files themselves)\n" + "\n\n".join(sections)
 
 
-def render_style_profile(style: StyleProfile | None, framer: DataFramer) -> str:
+def render_style_profile(style: StyleProfile | None, framer: DataFramer, *, planned: int | None = None) -> str:
+    """The previous exams' style, and their questions in numbers (counted in code; see exam_style.py).
+    `planned`: the number of questions this exam will have, to scale the proportions to."""
     if style is None:
         return "PREVIOUS-EXAM STYLE: no previous exams were uploaded."
-    return "PREVIOUS-EXAM STYLE (analysed from the professor's previous exams)\n" + framer.block(
-        "style_profile", f"{style.exams_analyzed} previous exam(s)", style.model_dump_json(indent=1)
+    described = "PREVIOUS-EXAM STYLE (analysed from the professor's previous exams)\n" + framer.block(
+        "style_profile", f"{style.exams_analyzed} previous exam(s)", style.model_dump_json(indent=1, exclude={"questions"})
     )
+    numbers = render_style_numbers(style_numbers(style), planned)
+    return described + ("\n\n" + numbers if numbers else "")

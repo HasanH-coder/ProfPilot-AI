@@ -23,9 +23,11 @@ import re
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from pydantic import BaseModel
 
 from app.ai.openai_service import ToolCall, ToolLoopResult, Usage
 from app.core.errors import AIServiceError, ConflictError, InvalidInputError, NotFoundError
@@ -591,6 +593,10 @@ class FakeAI:
         self.embedded_texts: list[str] = []
         self.embedding_calls = 0
         self.secrets: list[dict[str, Any]] = []
+        # Streamed answers (on_text) arrive in pieces this long; after each piece, `stream_pause` (if set)
+        # is awaited with the purpose and the text so far, so a test can act while an answer is half written.
+        self.stream_chunk = 400
+        self.stream_pause: Callable[[str, str], Awaitable[None]] | None = None
 
     def on(self, purpose: str, handler: Handler) -> None:
         self.handlers[purpose] = handler
@@ -611,6 +617,7 @@ class FakeAI:
         validate=None,
         usage=None,
         model=None,
+        on_text=None,
         **_,
     ):
         text = input if isinstance(input, str) else _flatten(input)
@@ -624,6 +631,13 @@ class FakeAI:
         if usage is not None:
             usage.add(1000, 200)
             usage.model_call(purpose)
+        if on_text is not None and isinstance(candidates[0], BaseModel):
+            # Like the real service: the first answer is streamed, piece by piece.
+            streamed = candidates[0].model_dump_json()
+            for end in range(self.stream_chunk, len(streamed) + self.stream_chunk, self.stream_chunk):
+                await on_text(streamed[:end])
+                if self.stream_pause is not None:
+                    await self.stream_pause(purpose, streamed[:end])
         problems: list[str] = []
         # Like the real service: one first answer plus one repair attempt.
         for candidate in candidates[:2]:

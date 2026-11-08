@@ -186,32 +186,44 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
                 Show answer keys
               </Label>
             </div>
-            <ol className="flex flex-col gap-6" aria-label="Questions">
-              {Array.from({ length: planned }, (_, index) => index + 1).map((number) => {
-                const question = written.get(number);
-                return (
-                  <li key={number}>
-                    {question ? (
-                      <QuestionCard
-                        question={{ ...question, number }}
-                        showKey={showKey}
-                        multiVersion={false}
-                        readOnly
-                        onChanged={() => undefined}
-                      />
-                    ) : (
-                      <div
-                        role="status"
-                        className="flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-muted-foreground sm:p-5"
-                      >
-                        <Spinner />
-                        Generating question {number} and its answer key…
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
+            {plannedGroups(exam, planned, written).map((group) => (
+              // Each case is shown with its questions, before the first one is even written.
+              <section key={group.key} aria-label={group.title ?? "Questions"} className="flex flex-col gap-4">
+                {(group.title || group.instructions) && (
+                  <div className="flex flex-col gap-2 border-b pb-3">
+                    {group.title && <h2 className="text-base font-semibold tracking-tight">{group.title}</h2>}
+                    {group.instructions && <QuestionText text={group.instructions} />}
+                  </div>
+                )}
+                <ol className="flex flex-col gap-6" aria-label={group.title ? `${group.title}: questions` : "Questions"}>
+                  {group.numbers.map((number) => {
+                    const question = written.get(number);
+                    return (
+                      <li key={number}>
+                        {question ? (
+                          <QuestionCard
+                            question={{ ...question, number }}
+                            headingLevel={group.title ? 3 : 2}
+                            showKey={showKey}
+                            multiVersion={false}
+                            readOnly
+                            onChanged={() => undefined}
+                          />
+                        ) : (
+                          <div
+                            role="status"
+                            className="flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-muted-foreground sm:p-5"
+                          >
+                            <Spinner />
+                            Generating question {number} and its answer key…
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </section>
+            ))}
           </>
         )}
       </div>
@@ -369,6 +381,32 @@ export function ExamWorkspace({ assessmentId }: { assessmentId: string }) {
       </div>
     </div>
   );
+}
+
+/** While the exam is written: planned numbers 1…planned under their sections, each case with its text. */
+function plannedGroups(exam: Exam, planned: number, written: Map<number, Question>) {
+  const sections = [...exam.sections].sort((a, b) => a.position - b.position);
+  const byId = new Map(sections.map((section, index) => [section.id, index]));
+  const groups: { key: string; title: string | null; instructions: string | null; numbers: number[] }[] = [];
+  let currentIndex: number | null = null;
+  for (let number = 1; number <= planned; number++) {
+    const sectionId = written.get(number)?.sectionId;
+    const index = exam.plannedSections?.[number - 1] ?? (sectionId ? byId.get(sectionId) : undefined) ?? 0;
+    const last = groups.at(-1);
+    if (last && index === currentIndex) {
+      last.numbers.push(number);
+      continue;
+    }
+    currentIndex = index;
+    const section = sections[index];
+    groups.push({
+      key: `${groups.length}-${index}`,
+      title: section && sections.length > 1 ? section.title : null,
+      instructions: section?.instructions ?? null,
+      numbers: [number],
+    });
+  }
+  return groups;
 }
 
 function groupBySection(questions: Question[], exam: Exam) {

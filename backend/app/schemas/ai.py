@@ -14,6 +14,9 @@ from pydantic import BaseModel, BeforeValidator, Field
 
 QuestionType = Literal["mcq", "short_answer", "long_answer", "problem"]
 Difficulty = Literal["easy", "medium", "hard"]
+# What students do in a question: explain or tell apart ideas (conceptual), use an idea on a given
+# situation or given results without computing (application), or compute any number (calculation).
+TaskKind = Literal["conceptual", "application", "calculation"]
 # Where a setting came from, so the professor can see what they decided and what
 # the AI added.
 Provenance = Literal["professor", "ai_inferred", "ai_assumption"]
@@ -285,6 +288,24 @@ class StyleTrait(BaseModel):
     evidence: str
 
 
+class PreviousExamQuestion(BaseModel):
+    """One question of a previous exam, as the professor wrote it. Code counts these (the mix of tasks,
+    the lengths, the cases), so the new exam can match the old one's proportions."""
+
+    # Which previous exam (1, 2… in the order given) and the question's number as printed ("3", "2b").
+    exam: int
+    label: str
+    type: QuestionType
+    task: TaskKind
+    difficulty: Difficulty
+    marks: float | None
+    # Words in the question and its choices (not in the case it builds on).
+    words: int
+    # The case or scenario it builds on, when several questions share one; null when it stands alone.
+    case: str | None
+    topic: str
+
+
 class StyleProfile(BaseModel):
     """How the professor's previous exams look. Only traits the exams support."""
 
@@ -302,6 +323,8 @@ class StyleProfile(BaseModel):
     recurring_preferences: list[StyleTrait]
     limitations: list[str]
     summary: str
+    # Every question of every previous exam (None in profiles analysed before this was asked).
+    questions: list[PreviousExamQuestion] | None = None
 
 
 # =============================================================================
@@ -323,6 +346,8 @@ class PlannedQuestion(BaseModel):
     topic: str
     learning_objective: str
     cognitive_level: PlannedLevel
+    # What students do (see TaskKind); None in plans made before it was asked.
+    task: TaskKind | None = None
     # Which uploaded material it should draw on (file name and pages/slides).
     source_hint: str | None
     estimated_minutes: float = Field(gt=0, le=600)

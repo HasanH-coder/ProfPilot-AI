@@ -164,3 +164,54 @@ def test_the_api_key_is_never_part_of_settings_repr(monkeypatch):
     settings = Settings(openai_api_key="sk-test-should-not-leak")
     assert "sk-test-should-not-leak" not in repr(settings)
     assert "sk-test-should-not-leak" not in str(settings.model_dump())
+
+
+class FakeStream:
+    """The SDK's streamed structured answer: text deltas, then the parsed response."""
+
+    def __init__(self, chunks, final):
+        self.chunks, self.final = chunks, final
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+    def __aiter__(self):
+        async def events():
+            for chunk in self.chunks:
+                yield SimpleNamespace(type="response.output_text.delta", delta=chunk)
+            yield SimpleNamespace(type="response.completed")
+
+        return events()
+
+    async def get_final_response(self):
+        return self.final
+
+
+@pytest.mark.anyio
+async def test_a_streamed_answer_reports_its_text_as_it_grows_and_a_repair_is_not_streamed():
+    ai, responses = service(response(Answer(total=100)))
+    streamed = []
+    responses.stream = lambda **kwargs: (
+        responses.requests.append({**kwargs, "streamed": True}),
+        FakeStream(['{"to', 'tal": 9', "0}"], response(Answer(total=90))),
+    )[1]
+
+    async def on_text(text):
+        streamed.append(text)
+
+    result = await ai.parse(
+        purpose="t",
+        instructions="i",
+        input="x",
+        schema=Answer,
+        validate=lambda a: [] if a.total == 100 else ["wrong"],
+        on_text=on_text,
+    )
+    assert streamed == ['{"to', '{"total": 9', '{"total": 90}']
+    assert result.total == 100
+    # The first answer was streamed with the same request; the repair was an ordinary call.
+    assert responses.requests[0]["streamed"] and responses.requests[0]["text_format"] is Answer
+    assert "streamed" not in responses.requests[1]

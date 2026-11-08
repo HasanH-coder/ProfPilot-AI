@@ -581,9 +581,17 @@ async def _start_writing(
 ) -> StartedRunOut:
     """Writes one planned question (`number`), or finishes the whole exam (None)."""
     record, _ = await PromptInterpreterService(db, ai).require_approved(assessment_id)
-    await require_idle(db, record.id, kinds=("interpretation", "generation"), doing="write questions")
-    await _require_read_material(db, ai, record.id)
     service = QuestionPlanService(db, ai)
+    if number is None:
+        # The full exam is written from the whole plan.
+        await service.require_complete(record.id)
+    # One planned question can be written while the rest of the plan is still being made.
+    await require_idle(
+        db, record.id, kinds=("interpretation", "generation"), doing="write questions", while_planning=number is not None
+    )
+    await _require_read_material(db, ai, record.id)
+    if number is not None:
+        await service.touch(record.id, number)
     exam = await service.prepare_exam(record.id, replace=replace)
 
     async def work(run: RunContext) -> None:

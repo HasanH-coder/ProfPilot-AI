@@ -676,6 +676,9 @@ def serialize_exam(full: FullExam) -> dict[str, Any]:
         "updatedAt": exam["updated_at"],
         "spec": spec.model_dump() if spec else None,
         "plannedQuestionCount": len(plan.get("questions") or []),
+        # The section of each planned question, in order (0-based, by section position): while the exam is
+        # written, a question not written yet is already shown under its case.
+        "plannedSections": [int(question.get("section_index") or 0) for question in plan.get("questions") or []],
         "versions": versions,
         "sections": [
             {"id": s["id"], "position": s["position"], "title": s["title"], "instructions": s.get("instructions")}
@@ -790,6 +793,24 @@ class ExamStore:
             ],
             columns="id, position, title, instructions",
         )
+
+    async def sync_sections(self, exam_id: str, sections: list[tuple[str, str | None]]) -> None:
+        """Makes the exam's sections match its plan's, by position: their titles and the text students read
+        (a plan finished after its first questions were written may have settled a section's text later)."""
+        if not sections:
+            sections = [("Questions", None)]
+        existing = sorted(
+            await self.db.select(
+                "exam_sections", columns="id, position, title, instructions", filters=[("exam_id", "eq", exam_id)]
+            ),
+            key=lambda row: row["position"],
+        )
+        for index, (title, instructions) in enumerate(sections):
+            values = {"title": title[:200] or f"Section {index + 1}", "instructions": instructions}
+            if index >= len(existing):
+                await self.db.insert("exam_sections", {"exam_id": exam_id, "position": index + 1, **values}, columns="id")
+            elif (existing[index]["title"], existing[index].get("instructions")) != (values["title"], instructions):
+                await self.db.update("exam_sections", values, filters=[("id", "eq", existing[index]["id"])], columns="id")
 
     async def insert_question(self, exam_id: str, version_id: str, values: dict[str, Any]) -> dict[str, Any]:
         rows = await self.db.insert(

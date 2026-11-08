@@ -276,6 +276,29 @@ PREVIOUS_EXAMS = (
     "professor explicitly asks you to reuse them."
 )
 
+# For the planner and the writers: the previous exams' overall style, not only their wording.
+STYLE_MATCH = (
+    "MATCHING THE PROFESSOR'S PREVIOUS EXAMS (when they are given). The lectures decide what can be asked; "
+    "the previous exams show how this professor chooses and asks. Match their overall style, not only their "
+    "wording: the mix of conceptual, application and calculation questions (THE PREVIOUS EXAMS IN NUMBERS "
+    "gives it; scale it to this exam's number of questions: one calculation question in thirty means about "
+    "one here, never six or seven); how they use formulas and rules (asked for their meaning and when they "
+    "apply, or worked with numbers); which topics they weight most, within the scope the professor set for "
+    "this exam; their question types and case layout; their spread of difficulty and how deep their "
+    "reasoning goes; and how long a question is and how much students read. Where the professor's "
+    "instructions for this exam say otherwise, follow the professor."
+)
+
+# For every step that plans or writes questions.
+DIFFICULTY_NOT_LENGTH = (
+    "DIFFICULTY IS NOT LENGTH. A hard question is about as long as an easy one, and as long as the "
+    "professor's own questions. Its difficulty comes from the thinking it needs: a finer distinction "
+    "between close ideas, a fair but unfamiliar situation, two ideas to connect, a result to interpret, "
+    "choices built on real misconceptions. Never make a question harder by adding words, a longer "
+    "setting, more data, extra calculation steps or more parts. Keep every question short and direct, "
+    "and hard in the way the professor's hard questions are hard."
+)
+
 FORMATTING = (
     "TEXT FORMAT. Write plain text that reads well on screen and in a printed exam. Use line "
     "breaks for structure. Write mathematics in LaTeX: use \\( ... \\) for inline math and "
@@ -426,6 +449,17 @@ def style_instructions(framer: DataFramer) -> str:
         "Report only traits the exams actually support, each with brief evidence (question "
         "numbers or short quotes). If something can't be determined (for example marks are not "
         "shown), use null and add it to limitations. Do not judge quality; describe style.",
+        "QUESTIONS. List every question of every previous exam in questions, in order, one entry per question "
+        "students answer (each lettered part of a question is its own entry). exam: 1 for the first exam given, "
+        "2 for the second… label: its number as printed ('3', '2b'). type: mcq, short_answer, long_answer or "
+        "problem. task: 'calculation' when students must compute any number to answer (a formula with values, "
+        "arithmetic, a count); 'application' when they use an idea on a given situation, data or result without "
+        "computing anything (choose a method for a case, read what a given result means); 'conceptual' when they "
+        "recall, define, explain or tell apart ideas with no situation to apply them to. difficulty: how hard it "
+        "is for the students it was written for (easy, medium or hard). marks: as printed, or null. words: the "
+        "number of words in the question and its choices, not counting the shared case it builds on or tables. "
+        "case: a short name of the shared case or scenario it builds on, the same name for every question on that "
+        "case, or null when it stands alone. topic: a short name of what it asks about.",
         PREVIOUS_EXAMS,
     )
 
@@ -533,8 +567,11 @@ def planner_instructions(framer: DataFramer) -> str:
         "TASK. Plan the exam before any question is written. Follow the approved ExamSpec and "
         "enhanced prompt exactly. Choose sections, then list every question with its number "
         "(1, 2, 3… in exam order), section_index (0-based into your sections), type, difficulty, "
-        "points, topic, learning objective, Bloom's level (cognitive_level), the source material it "
-        "should draw on, and a realistic estimate of the minutes a prepared student needs. Leave "
+        "points, topic, learning objective, Bloom's level (cognitive_level), task (what students do: "
+        "'conceptual' to explain or tell apart ideas, 'application' to use an idea on a given situation or "
+        "given results without computing, 'calculation' when they compute any number), the source material it "
+        "should draw on, and a realistic estimate of the minutes a prepared student needs. Write the sections "
+        "first, cases complete, so every case is settled before the questions that build on it. Leave "
         "professor_question empty: it is for the professor, who reviews this plan. "
         "Every warning names the problem and a concrete fix the professor can make (e.g. 'lower "
         "Create to 20%', 'upload the notes for Lecture 4', 'allow 75 minutes').",
@@ -627,9 +664,11 @@ def planner_instructions(framer: DataFramer) -> str:
         DISTRIBUTION_GUIDE,
         TIME_GUIDE,
         DIFFICULTY_GUIDE,
+        DIFFICULTY_NOT_LENGTH,
         BLOOM_GUIDE,
         GROUNDING,
         PROFESSOR_RULES,
+        STYLE_MATCH,
         FORMATTING,
     )
 
@@ -668,8 +707,12 @@ def generator_instructions(framer: DataFramer, *, choices: int = 4) -> str:
         "justified judgement against stated criteria; a create question asks for a design or "
         "construction. Set cognitive_level to the planned level only if the question truly meets it. "
         "Keep difficulty as planned too, independently of the level: a hard question is hard because of "
-        "what the student must work out (connecting several ideas, a fair but unfamiliar context, more "
-        "steps), never because of length. Never list in the stem the points a full answer must contain "
+        "what the student must work out (connecting several ideas, a fair but unfamiliar context, a step "
+        "that needs judgement), never because of length (see DIFFICULTY IS NOT LENGTH). "
+        "THE PLANNED TASK. Each planned question shows its task. Only a 'calculation' question has students "
+        "compute anything. A 'conceptual' or 'application' question has them compute nothing: give any value "
+        "it needs already worked out and ask what it means, which applies, or why. "
+        "Never list in the stem the points a full answer must contain "
         "(that turns understanding into a checklist): ask the question, and put those points in the "
         "rubric. Work the solution out in full before you settle the answer key.",
         "QUALITY. Put the whole problem in the stem; avoid negative stems ('which is NOT') unless "
@@ -729,11 +772,13 @@ def generator_instructions(framer: DataFramer, *, choices: int = 4) -> str:
         FORMULA_FIDELITY,
         DIFFICULTY_GUIDE,
         DIFFICULTY_WRITING,
+        DIFFICULTY_NOT_LENGTH,
         BLOOM_GUIDE,
         GROUNDING,
         PROFESSOR_RULES,
         CLEAR_WORDING,
         PREVIOUS_EXAMS,
+        STYLE_MATCH,
         FORMATTING,
     )
 
@@ -756,6 +801,7 @@ def variant_instructions(framer: DataFramer) -> str:
         FORMULA_FIDELITY,
         DIFFICULTY_GUIDE,
         DIFFICULTY_WRITING,
+        DIFFICULTY_NOT_LENGTH,
         BLOOM_GUIDE,
         GROUNDING,
         PROFESSOR_RULES,
@@ -854,6 +900,7 @@ def reviser_instructions(framer: DataFramer) -> str:
         FORMULA_FIDELITY,
         DIFFICULTY_GUIDE,
         DIFFICULTY_WRITING,
+        DIFFICULTY_NOT_LENGTH,
         BLOOM_GUIDE,
         GROUNDING,
         PROFESSOR_RULES,

@@ -114,12 +114,16 @@ class OpenAIService:
         validate: Validator[T] | None = None,
         usage: Usage | None = None,
         model: str | None = None,
+        on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> T:
         """Asks the reasoning model (or `model`) for an answer that matches `schema` exactly.
 
         If the answer is cut off, malformed, or breaks a business rule checked by
         `validate`, the model gets one more try with the problems spelled out.
         Malformed output is never returned.
+
+        `on_text`: called with the reply's text so far (a JSON prefix) while the first answer is
+        written, so a page can show each finished part at once. A repair is not streamed.
         """
         messages: list[dict[str, Any]] = (
             [{"role": "user", "content": [{"type": "input_text", "text": input}]}] if isinstance(input, str) else list(input)
@@ -143,20 +147,21 @@ class OpenAIService:
                     },
                 ]
             started = time.monotonic()
+            request: dict[str, Any] = {
+                "model": model or settings.reasoning_model,
+                "instructions": instructions,
+                "input": attempt_input,
+                "text_format": schema,
+                "text": {"verbosity": verbosity},
+                "reasoning": {"effort": effort},
+                "max_output_tokens": max_output_tokens,
+                "store": False,
+            }
             try:
-                response = await _patiently(
-                    purpose,
-                    lambda attempt_input=attempt_input, max_output_tokens=max_output_tokens: self.client.responses.parse(
-                        model=model or settings.reasoning_model,
-                        instructions=instructions,
-                        input=attempt_input,
-                        text_format=schema,
-                        text={"verbosity": verbosity},
-                        reasoning={"effort": effort},
-                        max_output_tokens=max_output_tokens,
-                        store=False,
-                    ),
-                )
+                if on_text is not None and attempt == 0:
+                    response = await _patiently(purpose, lambda request=request: self._stream(request, on_text))
+                else:
+                    response = await _patiently(purpose, lambda request=request: self.client.responses.parse(**request))
             except pydantic.ValidationError:
                 # The reply was cut off or didn't match the schema.
                 logger.warning("%s: unparseable reply (attempt %s)", purpose, attempt + 1)
@@ -199,6 +204,16 @@ class OpenAIService:
             "The AI's answer didn't pass ProfPilot's quality checks. Please try again.",
             code="ai_invalid_output",
         )
+
+    async def _stream(self, request: dict[str, Any], on_text: Callable[[str], Awaitable[None]]) -> Any:
+        """One structured answer, streamed: `on_text` gets the text so far as it grows."""
+        text = ""
+        async with self.client.responses.stream(**request) as stream:
+            async for event in stream:
+                if event.type == "response.output_text.delta":
+                    text += event.delta
+                    await on_text(text)
+            return await stream.get_final_response()
 
     # -- Tool calling (text conversations) -------------------------------------
 

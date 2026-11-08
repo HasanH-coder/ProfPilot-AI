@@ -45,6 +45,9 @@ export type AiStatus = {
   runs: Run[];
 };
 
+/** What students do in a question: explain ideas, use them on a given situation, or compute. */
+export type PlannedTask = "conceptual" | "application" | "calculation";
+
 /** One planned question: what ProfPilot will ask, and the question once it is written. */
 export type PlannedQuestion = {
   number: number;
@@ -53,6 +56,8 @@ export type PlannedQuestion = {
   type: QuestionType;
   difficulty: QuestionDifficulty;
   cognitiveLevel: BloomLevel;
+  /** What students do; missing in plans made before it was planned. */
+  task?: PlannedTask | null;
   points: number;
   estimatedMinutes: number;
   topic: string;
@@ -68,10 +73,16 @@ export type PlannedQuestion = {
 
 /** The page where the exam is built: the plan, the questions written so far, and the targets. */
 export type QuestionPlan = {
-  status: "none" | "ready";
+  /** planning: questions still arriving, each usable once planned; stopped: planning ended early. */
+  status: "none" | "planning" | "stopped" | "ready";
   /** Each section's title and what students read before its questions (a case, or what to do). */
   sections?: { title: string; instructions: string | null }[];
   questions: PlannedQuestion[];
+  /** While planning: how many questions the exam should have, when the prompt says. */
+  expectedQuestions?: number | null;
+  /** Questions by what students do, and the same counts in the professor's previous exams. */
+  tasks?: Record<PlannedTask, number> | null;
+  previousTasks?: Record<PlannedTask, number> | null;
   rationale: string | null;
   warnings: string[];
   summary: DistributionSummary | null;
@@ -242,6 +253,8 @@ export type Exam = {
   updatedAt: string;
   spec: ExamSpec | null;
   plannedQuestionCount: number;
+  /** The section of each planned question, in plan order (0-based by section position). */
+  plannedSections?: number[];
   versions: ExamVersion[];
   sections: { id: string; position: number; title: string; instructions: string | null }[];
   questions: Question[];

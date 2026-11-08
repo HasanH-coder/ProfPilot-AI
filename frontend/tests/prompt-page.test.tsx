@@ -54,7 +54,7 @@ test("the plan is prepared in the background while the prompt is read", async ()
   serve({ planRun: "running" });
   const screen = await render(<PlanReview assessmentId="a1" />);
 
-  await expect.element(screen.getByText("Preparing your question plan in the background…")).toBeVisible();
+  await expect.element(screen.getByText(/Preparing your question plan in the background/)).toBeVisible();
   expect(posts()).toEqual(["/api/assessments/a1/question-plan"]);
 });
 
@@ -69,7 +69,7 @@ test("a plan already being prepared is followed, not started again", async () =>
   serve({ runs: [{ id: "plan-run", kind: "interpretation", status: "running", stage: "planning" }] });
   const screen = await render(<PlanReview assessmentId="a1" />);
 
-  await expect.element(screen.getByText("Preparing your question plan in the background…")).toBeVisible();
+  await expect.element(screen.getByText(/Preparing your question plan in the background/)).toBeVisible();
   await expect.element(screen.getByText("Write a 60-minute midterm on lectures 3 to 5.")).toBeVisible();
   expect(posts()).toEqual([]);
 });

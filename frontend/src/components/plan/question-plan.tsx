@@ -37,6 +37,7 @@ import type {
   ExamSpec,
   Interpretation,
   PlannedQuestion,
+  PlannedTask,
   QuestionDifficulty,
   QuestionPlan,
   QuestionType,
@@ -44,18 +45,31 @@ import type {
 } from "@/lib/api/types";
 import { BLOOM_LABELS, BLOOM_LEVELS, type BloomLevel } from "@/lib/assessments/draft";
 
-/** A job this page follows: making or changing the plan, or writing (one question, or the rest and finishing). */
-type Job =
-  | { kind: "planning" | "changing"; runId: string }
-  | { kind: "writing"; runId: string; number: number | null };
+/** A job this page follows besides planning: changing the plan, or writing (one question, or the rest and finishing). */
+type Job = { kind: "changing"; runId: string } | { kind: "writing"; runId: string; number: number | null };
 
-/** While questions are being written, each appears under its plan as soon as it is saved. */
-const REFRESH_WHILE_WRITING_MS = 2000;
+/** While questions are being planned or written, each appears as soon as it is saved. */
+const REFRESH_MS = 1500;
+
+type Section = NonNullable<QuestionPlan["sections"]>[number];
+/** One section of the plan (a case, or a group of questions) with its planned questions. */
+type SectionGroup = { index: number; section: Section | null; questions: PlannedQuestion[] };
+
+/** The plan's questions under their sections, in order: a case is shown before its questions. */
+function groupBySection(plan: QuestionPlan): SectionGroup[] {
+  const sections = plan.sections ?? [];
+  if (sections.length === 0) return [{ index: 0, section: null, questions: plan.questions }];
+  const groups: SectionGroup[] = sections.map((section, index) => ({ index, section, questions: [] }));
+  for (const question of plan.questions) (groups[question.sectionIndex ?? 0] ?? groups[groups.length - 1]).questions.push(question);
+  return groups;
+}
 
 /**
- * The page where the exam is built: ProfPilot's plan, question by question. The professor reads each
- * planned question, changes it (by hand, with their own question, or by asking the AI), writes the
- * questions one at a time or all at once, changes a written question, and finishes the exam here.
+ * The page where the exam is built: ProfPilot's plan, question by question. The plan appears as it is made
+ * (its cases first, then each question as soon as it is planned), and a planned question can be read,
+ * changed and generated at once while the rest is still being planned. The professor changes any planned
+ * question (by hand, with their own question, or by asking the AI), writes the questions one at a time or
+ * all at once, changes a written question, and finishes the exam here.
  */
 export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) {
   const router = useRouter();
@@ -65,6 +79,8 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  // The plan being made, followed apart from other jobs: questions can be written while it runs.
+  const [planningRunId, setPlanningRunId] = useState<string | null>(null);
   // A write the professor must confirm first, because it replaces an exam made another way.
   const [confirmingReplace, setConfirmingReplace] = useState<{ number: number | null } | null>(null);
   const [confirmingReplan, setConfirmingReplan] = useState(false);
@@ -92,13 +108,15 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
         method: "POST",
         freshSession: true,
       });
-      setJob({ kind: "planning", runId: started.run.id });
+      setPlanningRunId(started.run.id);
+      // The new plan replaces the old one at once; its questions appear as they are planned.
+      void refreshPlan();
     } catch (cause) {
       // Already running (e.g. started from the prompt page): follow that one instead.
       if (cause instanceof ApiError && cause.code === "job_running") load();
       else setActionError(errorMessage(cause));
     }
-  }, [assessmentId, load]);
+  }, [assessmentId, load, refreshPlan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,13 +131,15 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
         setStatus(nextStatus);
         setSpec(interpretation.spec);
         setLoadError(null);
-        // Pick up a job that is already running (e.g. started before a reload, or from the prompt page).
+        // Pick up jobs already running (e.g. started before a reload, or from the prompt page).
         const running = nextStatus.runs.filter((run) => run.status === "running");
-        const planning = running.find((run) => run.kind === "interpretation");
+        const planning = running.find((run) => run.kind === "interpretation" && run.stage !== "changing_plan");
+        const changing = running.find((run) => run.kind === "interpretation" && run.stage === "changing_plan");
         const writing = running.find((run) => run.kind === "generation");
-        if (planning) setJob({ kind: planning.stage === "changing_plan" ? "changing" : "planning", runId: planning.id });
+        if (planning) setPlanningRunId(planning.id);
+        if (changing) setJob({ kind: "changing", runId: changing.id });
         else if (writing) setJob({ kind: "writing", runId: writing.id, number: null });
-        else if (nextPlan.status === "none" && nextStatus.spec.status === "approved" && !planningStarted.current) {
+        if (!planning && nextPlan.status === "none" && nextStatus.spec.status === "approved" && !planningStarted.current) {
           planningStarted.current = true;
           void startPlanning();
         }
@@ -132,6 +152,12 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
     };
   }, [assessmentId, reloads, startPlanning]);
 
+  useRun(planningRunId, (finished) => {
+    setPlanningRunId(null);
+    if (finished.status === "failed") setActionError(finished.errorMessage ?? "ProfPilot couldn't plan the questions. Please try again.");
+    void refreshPlan();
+  });
+
   const { run } = useRun(job?.runId ?? null, (finished) => {
     const kind = job?.kind;
     const finishing = job?.kind === "writing" && job.number === null;
@@ -139,7 +165,7 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
     if (finished.status === "failed") {
       setActionError(
         finished.errorMessage ??
-          (kind === "writing" ? "ProfPilot couldn't write this. Please try again." : "ProfPilot couldn't plan the questions. Please try again."),
+          (kind === "writing" ? "ProfPilot couldn't write this. Please try again." : "ProfPilot couldn't change the plan. Please try again."),
       );
     }
     void apiRequest<QuestionPlan>(`/api/assessments/${assessmentId}/question-plan`)
@@ -151,13 +177,14 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
       .catch(() => load());
   });
 
-  // Written questions appear on the page as they are written.
-  const writing = job?.kind === "writing";
+  // Planned and written questions appear on the page as they are saved.
+  const planning = planningRunId !== null || plan?.status === "planning";
+  const refreshing = planning || job?.kind === "writing";
   useEffect(() => {
-    if (!writing) return;
-    const timer = setInterval(() => void refreshPlan(), REFRESH_WHILE_WRITING_MS);
+    if (!refreshing) return;
+    const timer = setInterval(() => void refreshPlan(), REFRESH_MS);
     return () => clearInterval(timer);
-  }, [writing, refreshPlan]);
+  }, [refreshing, refreshPlan]);
 
   async function startWriting(number: number | null, replace: boolean) {
     setActionError(null);
@@ -211,17 +238,7 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
   }
   if (!plan || !status) return <PlanSkeleton />;
 
-  if (job?.kind === "planning") {
-    return (
-      <JobProgress
-        run={run}
-        startingLabel="Planning the assessment…"
-        note="ProfPilot is deciding what to ask, question by question. This can take a minute or two."
-      />
-    );
-  }
-
-  if (plan.status === "none") {
+  if (plan.status === "none" && !planning) {
     const approved = status.spec.status === "approved";
     return (
       <div className="flex flex-col items-start gap-4 rounded-xl border border-dashed p-6">
@@ -246,6 +263,8 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
   }
 
   const busy = job !== null;
+  const complete = plan.status === "ready" && !planning;
+  const stopped = plan.status === "stopped" && !planning;
   const written = plan.questions.filter((question) => question.written).length;
   const total = plan.questions.length;
   const outdated = plan.questions.filter((question) => question.outdated).map((question) => question.number);
@@ -254,12 +273,47 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
   const remaining = total - written;
   // Generate full exam keeps every question already generated and generates only the rest.
   const finishLabel = remaining === 0 ? "Finish the exam" : "Generate full exam";
+  const groups = groupBySection(plan);
+  // The section still being planned: its questions are still arriving (the first one, before any question).
+  const current = planning ? (plan.questions.at(-1)?.sectionIndex ?? 0) : -1;
+  const expected = plan.expectedQuestions ?? null;
+  const toPlan = expected !== null ? Math.max(0, expected - total) : null;
 
   return (
     <div className="flex flex-col gap-8">
-      <PlanOverview plan={plan} spec={spec} />
+      {planning ? (
+        <Alert role="status">
+          <Spinner />
+          <AlertTitle>
+            Planning the questions: {total} {expected !== null && expected > total ? `of about ${expected} ` : ""}planned so far
+          </AlertTitle>
+          <AlertDescription>
+            {(plan.sections?.length ?? 0) > 0
+              ? "Each case appears first, then each question as soon as it is planned. Read, change or generate a planned question right away; ProfPilot keeps your changes while it plans the rest."
+              : "ProfPilot is deciding the sections and cases first. The questions appear here one by one as soon as each is planned."}
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <PlanOverview plan={plan} spec={spec} />
+      )}
 
-      <AskToChange disabled={busy} changing={job?.kind === "changing"} run={job?.kind === "changing" ? run : null} onAsk={changePlan} />
+      {stopped && (
+        <Alert variant="destructive">
+          <AlertTriangle />
+          <AlertTitle>Planning stopped before every question was planned</AlertTitle>
+          <AlertDescription>
+            The {total} planned {total === 1 ? "question is" : "questions are"} kept, with your changes. Make a new plan to plan the
+            whole exam.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <AskToChange
+        disabled={busy || !complete}
+        changing={job?.kind === "changing"}
+        run={job?.kind === "changing" ? run : null}
+        onAsk={changePlan}
+      />
 
       {plan.exam?.status === "failed" && plan.exam.errorMessage && (
         <Alert variant="destructive">
@@ -297,34 +351,53 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
         </Alert>
       )}
 
-      <ol className="flex flex-col gap-6" aria-label="Planned questions">
-        {plan.questions.map((question, index) => {
-          // A section's text (a case students read before its questions) shows above its first question.
-          const sectionIndex = question.sectionIndex ?? 0;
-          const section = plan.sections?.[sectionIndex];
-          const startsSection = index === 0 || (plan.questions[index - 1].sectionIndex ?? 0) !== sectionIndex;
+      <div className="flex flex-col gap-8">
+        {groups.map((group) => {
+          const isCase = Boolean(group.section?.instructions);
+          const showTitle = group.section !== null && (isCase || groups.length > 1);
+          const waiting = planning && group.questions.length === 0;
+          if (!planning && group.questions.length === 0) return null;
           return (
-            <li key={question.number} className="flex flex-col gap-4">
-              {startsSection && section?.instructions && (
-                <div className="flex flex-col gap-2 rounded-xl border bg-muted/30 p-4 sm:p-5">
-                  <h2 className="font-semibold tracking-tight">{section.title}</h2>
-                  <QuestionText text={section.instructions} />
+            <section
+              key={group.index}
+              aria-label={group.section?.title ?? "Questions"}
+              className={isCase ? "flex flex-col gap-4 rounded-2xl border p-3 sm:p-4" : "flex flex-col gap-4"}
+            >
+              {showTitle && group.section && (
+                <div className={isCase ? "flex flex-col gap-2 rounded-xl bg-muted/40 p-4 sm:p-5" : "flex flex-col gap-1"}>
+                  <h2 className="font-semibold tracking-tight">{group.section.title}</h2>
+                  {group.section.instructions && <QuestionText text={group.section.instructions} />}
                 </div>
               )}
-              <PlannedQuestionCard
-                assessmentId={assessmentId}
-                question={question}
-                disabled={busy}
-                writing={job?.kind === "writing" && job.number === question.number}
-                pending={(job?.kind === "writing" && job.number === question.number) || (finishing && (!question.written || question.outdated))}
-                onSaved={setPlan}
-                onWrite={() => void startWriting(question.number, false)}
-                onChanged={() => void refreshPlan()}
-              />
-            </li>
+              <ol className="flex flex-col gap-6">
+                {group.questions.map((question) => (
+                  <li key={question.number}>
+                    <PlannedQuestionCard
+                      assessmentId={assessmentId}
+                      question={question}
+                      disabled={busy}
+                      writing={job?.kind === "writing" && job.number === question.number}
+                      pending={
+                        (job?.kind === "writing" && job.number === question.number) || (finishing && (!question.written || question.outdated))
+                      }
+                      onSaved={setPlan}
+                      onWrite={() => void startWriting(question.number, false)}
+                      onChanged={() => void refreshPlan()}
+                    />
+                  </li>
+                ))}
+              </ol>
+              {waiting && group.index !== current && (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Spinner />
+                  {isCase ? "The questions on this case are planned next." : "This section's questions are planned next."}
+                </p>
+              )}
+              {planning && group.index === current && <PlanningPlaceholders next={total + 1} more={toPlan} />}
+            </section>
           );
         })}
-      </ol>
+      </div>
 
       {actionError && <ErrorAlert message={actionError} />}
 
@@ -334,20 +407,22 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
             {written} of {total} questions generated
           </h2>
           <p className="text-sm text-muted-foreground">
-            {remaining === 0
-              ? "Every question is generated. Finish the exam to create the other versions and run the quality check."
-              : `Generate questions one at a time above, or press Generate full exam to generate the ${remaining} remaining ${
-                  remaining === 1 ? "question" : "questions"
-                }${written > 0 ? `, keeping the ${written} you already generated` : ""}${
-                  outdated.length > 0 ? ` (it also regenerates ${listNumbers(outdated)}, whose plan you changed)` : ""
-                }. The exam page opens and shows each question, in plan order, as soon as it is ready. The other versions and the quality check finish in the background while you read.`}
+            {!complete
+              ? "Generate any planned question above now. Generate full exam is available once every question is planned."
+              : remaining === 0
+                ? "Every question is generated. Finish the exam to create the other versions and run the quality check."
+                : `Generate questions one at a time above, or press Generate full exam to generate the ${remaining} remaining ${
+                    remaining === 1 ? "question" : "questions"
+                  }${written > 0 ? `, keeping the ${written} you already generated` : ""}${
+                    outdated.length > 0 ? ` (it also regenerates ${listNumbers(outdated)}, whose plan you changed)` : ""
+                  }. The exam page opens and shows each question, in plan order, as soon as it is ready. The other versions and the quality check finish in the background while you read.`}
           </p>
         </div>
         {finishing && (
           <JobProgress run={run} startingLabel="Generating the exam…" note="Questions appear above as they are generated. You can leave this page." />
         )}
         <div className="flex flex-wrap gap-2">
-          <Button size="lg" disabled={busy} onClick={() => void startWriting(null, false)}>
+          <Button size="lg" disabled={busy || !complete} onClick={() => void startWriting(null, false)}>
             {finishing ? <Spinner /> : <Wand2 />}
             {finishLabel}
           </Button>
@@ -357,14 +432,14 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
               <ArrowRight data-icon="inline-end" />
             </Link>
           )}
-          <Button size="lg" variant="ghost" disabled={busy} onClick={() => setConfirmingReplan(true)}>
+          <Button size="lg" variant="ghost" disabled={busy || planning} onClick={() => setConfirmingReplan(true)}>
             <RefreshCw />
             Make a new plan
           </Button>
         </div>
       </section>
 
-      <BuildWithAiInstead assessmentId={assessmentId} disabled={busy} />
+      <BuildWithAiInstead assessmentId={assessmentId} disabled={busy || planning} />
 
       <AlertDialog open={confirmingReplace !== null} onOpenChange={(open) => !open && setConfirmingReplace(null)}>
         <AlertDialogContent className="workspace-theme">
@@ -413,6 +488,22 @@ export function QuestionPlanBuilder({ assessmentId }: { assessmentId: string }) 
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+/** Where the next questions will appear while they are being planned. */
+function PlanningPlaceholders({ next, more }: { next: number; more: number | null }) {
+  const shown = Math.max(1, Math.min(3, more ?? 1));
+  return (
+    <div className="flex flex-col gap-3" aria-busy="true">
+      <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Spinner />
+        Planning question {next}…{more !== null && more > 1 ? ` About ${more} more to plan.` : ""}
+      </p>
+      {Array.from({ length: shown }, (_, index) => (
+        <Skeleton key={index} className="h-24 w-full rounded-xl" />
+      ))}
     </div>
   );
 }
@@ -529,6 +620,7 @@ function PlanOverview({ plan, spec }: { plan: QuestionPlan; spec: ExamSpec | nul
           </p>
         </div>
       )}
+      {plan.tasks && <TaskMix tasks={plan.tasks} previous={plan.previousTasks ?? null} />}
       {summary?.bloom && (
         <div className="flex flex-col gap-1.5 text-sm">
           <p className="text-muted-foreground">Bloom&apos;s levels by marks</p>
@@ -557,6 +649,33 @@ function PlanOverview({ plan, spec }: { plan: QuestionPlan; spec: ExamSpec | nul
         </ul>
       )}
     </section>
+  );
+}
+
+const TASK_LABELS: Record<PlannedTask, string> = {
+  conceptual: "Conceptual",
+  application: "Application",
+  calculation: "Calculation",
+};
+const TASK_ORDER: PlannedTask[] = ["conceptual", "application", "calculation"];
+
+/** What students do across the plan, next to the same counts in the professor's previous exams. */
+function TaskMix({ tasks, previous }: { tasks: Record<PlannedTask, number>; previous: Record<PlannedTask, number> | null }) {
+  const previousTotal = previous ? TASK_ORDER.reduce((sum, task) => sum + previous[task], 0) : 0;
+  return (
+    <div className="flex flex-col gap-1 text-sm">
+      <p className="text-muted-foreground">What students do</p>
+      <p>
+        {TASK_ORDER.map((task) => `${tasks[task]} ${TASK_LABELS[task].toLowerCase()}`).join(" · ")}
+        {previous && previousTotal > 0 && (
+          <span className="text-muted-foreground">
+            {" "}
+            · your previous exams: {TASK_ORDER.map((task) => `${previous[task]} ${TASK_LABELS[task].toLowerCase()}`).join(" · ")} (of{" "}
+            {previousTotal})
+          </span>
+        )}
+      </p>
+    </div>
   );
 }
 
@@ -706,6 +825,7 @@ function PlannedQuestionCard({
           <Badge variant="secondary">{TYPE_LABELS[question.type]}</Badge>
           <Badge variant="outline">{DIFFICULTY_LABELS[question.difficulty]}</Badge>
           <Badge variant="outline">{BLOOM_LABELS[question.cognitiveLevel]}</Badge>
+          {question.task && <Badge variant="outline">{TASK_LABELS[question.task]}</Badge>}
           <span className="text-xs text-muted-foreground">
             {marks(question.points)} · about {question.estimatedMinutes} min
           </span>
