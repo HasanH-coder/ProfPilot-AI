@@ -1,13 +1,13 @@
 "use client";
 
-import { Check, MessageSquarePlus, Pencil, RefreshCw, Wand2 } from "lucide-react";
+import { Check, MessageSquarePlus, Pencil, RefreshCw, Sparkles, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { JobProgress } from "@/components/ai/job-progress";
 import { DIFFICULTY_LABELS, marks, TYPE_LABELS } from "@/components/exam/labels";
-import { MathText } from "@/components/exam/question-text";
+import { MathText, QuestionText } from "@/components/exam/question-text";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -28,8 +28,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiRequest, errorMessage } from "@/lib/api/client";
 import { useRun } from "@/lib/api/runs";
-import type { AiStatus, PlannedQuestion, QuestionPlan, StartedRun } from "@/lib/api/types";
+import type { AiStatus, PlannedQuestion, QuestionPlan, StartedRun, WrittenQuestion } from "@/lib/api/types";
 import { BLOOM_LABELS } from "@/lib/assessments/draft";
+import { cn } from "@/lib/utils";
 
 /**
  * ProfPilot's plan, question by question, before anything is written: the
@@ -44,6 +45,8 @@ export function QuestionPlanReview({ assessmentId }: { assessmentId: string }) {
   const [planningRun, setPlanningRun] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [confirmingReplace, setConfirmingReplace] = useState(false);
+  // How many questions are being generated on this page: the exam waits for them, so it keeps them.
+  const [writingCount, setWritingCount] = useState(0);
   // Planning starts by itself when this page opens, once: a failure offers Try again, never a loop.
   const planningStarted = useRef(false);
   const base = `/workspace/assessments/${assessmentId}`;
@@ -205,7 +208,9 @@ export function QuestionPlanReview({ assessmentId }: { assessmentId: string }) {
             <PlannedQuestionCard
               assessmentId={assessmentId}
               question={question}
+              disabled={generating}
               onSaved={setPlan}
+              onWritingChange={(writing) => setWritingCount((count) => count + (writing ? 1 : -1))}
             />
           </li>
         ))}
@@ -225,11 +230,15 @@ export function QuestionPlanReview({ assessmentId }: { assessmentId: string }) {
       {actionError && <ErrorAlert message={actionError} />}
 
       <div className="flex flex-wrap gap-2 border-t pt-6">
-        <Button size="lg" disabled={generating} onClick={() => (hasExam ? setConfirmingReplace(true) : void generate(false))}>
+        <Button
+          size="lg"
+          disabled={generating || writingCount > 0}
+          onClick={() => (hasExam ? setConfirmingReplace(true) : void generate(false))}
+        >
           {generating ? <Spinner /> : <Wand2 />}
           Generate exam
         </Button>
-        <Button size="lg" variant="outline" disabled={generating} onClick={planAgain}>
+        <Button size="lg" variant="outline" disabled={generating || writingCount > 0} onClick={planAgain}>
           <RefreshCw />
           Make a new plan
         </Button>
@@ -264,11 +273,16 @@ export function QuestionPlanReview({ assessmentId }: { assessmentId: string }) {
 function PlannedQuestionCard({
   assessmentId,
   question,
+  disabled,
   onSaved,
+  onWritingChange,
 }: {
   assessmentId: string;
   question: PlannedQuestion;
+  /** The exam is being generated. */
+  disabled: boolean;
   onSaved: (plan: QuestionPlan) => void;
+  onWritingChange: (writing: boolean) => void;
 }) {
   const topicId = useId();
   const targetId = useId();
@@ -279,6 +293,26 @@ function PlannedQuestionCard({
   const [own, setOwn] = useState(question.professorQuestion);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [writing, setWriting] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
+
+  async function write() {
+    setWriting(true);
+    setWriteError(null);
+    onWritingChange(true);
+    try {
+      const saved = await apiRequest<QuestionPlan>(`/api/assessments/${assessmentId}/question-plan/${question.number}/question`, {
+        method: "POST",
+        freshSession: true,
+      });
+      onSaved(saved);
+    } catch (cause) {
+      setWriteError(errorMessage(cause));
+    } finally {
+      setWriting(false);
+      onWritingChange(false);
+    }
+  }
 
   function open(mode: "plan" | "own") {
     setTopic(question.topic);
@@ -343,12 +377,24 @@ function PlannedQuestionCard({
               {question.sourceHint && <p className="text-xs text-muted-foreground">From {question.sourceHint}</p>}
             </div>
           )}
+          {question.written && <WrittenQuestionView number={question.number} question={question.written} />}
+          {writing && (
+            <p role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Spinner className="size-3.5" aria-hidden />
+              Generating question {question.number}…
+            </p>
+          )}
+          {writeError && <ErrorAlert message={writeError} />}
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={() => open("plan")}>
+            <Button size="sm" disabled={writing || disabled} onClick={write}>
+              {question.written ? <RefreshCw /> : <Sparkles />}
+              {question.written ? "Generate again" : "Generate this question"}
+            </Button>
+            <Button variant="outline" size="sm" disabled={writing} onClick={() => open("plan")}>
               <Pencil />
               Edit
             </Button>
-            <Button variant="outline" size="sm" onClick={() => open("own")}>
+            <Button variant="outline" size="sm" disabled={writing} onClick={() => open("own")}>
               <MessageSquarePlus />
               {question.professorQuestion ? "Change your question" : "Give your own question"}
             </Button>
@@ -396,6 +442,84 @@ function PlannedQuestionCard({
         </div>
       )}
     </article>
+  );
+}
+
+/** A question generated on the plan page, with its answer key. */
+function WrittenQuestionView({ number, question }: { number: number; question: WrittenQuestion }) {
+  return (
+    <section
+      aria-label={`Generated question ${number}`}
+      className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 text-sm sm:p-4"
+    >
+      <QuestionText text={question.prompt} />
+      {question.choices && (
+        <ol className="flex flex-col gap-1.5" aria-label="Choices">
+          {question.choices.map((choice) => (
+            <li
+              key={choice.id}
+              className={cn(
+                "flex items-start gap-2 rounded-lg border bg-card px-3 py-2",
+                choice.id === question.correctChoice && "border-emerald-600/50 bg-emerald-50 dark:bg-emerald-950/30",
+              )}
+            >
+              <span className="font-medium">{choice.id}.</span>
+              <QuestionText text={choice.text} className="min-w-0 flex-1" />
+            </li>
+          ))}
+        </ol>
+      )}
+      {question.subparts?.map((part) => (
+        <div key={part.label} className="flex flex-col gap-1 border-l-2 pl-3">
+          <p>
+            <span className="font-medium">({part.label})</span>{" "}
+            <span className="text-muted-foreground">[{marks(part.points)}]</span>
+          </p>
+          <QuestionText text={part.prompt} />
+          {part.answer && (
+            <div className="text-muted-foreground">
+              <span className="font-medium text-foreground">Answer:</span>
+              <QuestionText text={part.answer} />
+            </div>
+          )}
+        </div>
+      ))}
+      <div className="flex flex-col gap-2 border-t pt-3">
+        {question.answer && !question.subparts && (
+          <div>
+            <p className="font-medium">Answer</p>
+            <QuestionText text={question.answer} />
+          </div>
+        )}
+        {question.solution && (
+          <div>
+            <p className="font-medium">Solution</p>
+            <QuestionText text={question.solution} />
+          </div>
+        )}
+        {question.explanation && (
+          <div>
+            <p className="font-medium">{question.type === "mcq" ? "Why the other choices are wrong" : "Notes"}</p>
+            <QuestionText text={question.explanation} />
+          </div>
+        )}
+        {question.rubric && question.rubric.length > 0 && (
+          <div>
+            <p className="font-medium">Marking</p>
+            <ul className="list-disc pl-5">
+              {question.rubric.map((item, index) => (
+                <li key={index}>
+                  <MathText text={item.criterion} /> ({marks(item.points)})
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {question.sources.length > 0 && (
+          <p className="text-xs text-muted-foreground">Based on: {question.sources.join("; ")}</p>
+        )}
+      </div>
+    </section>
   );
 }
 

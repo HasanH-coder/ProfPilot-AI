@@ -120,10 +120,15 @@ const EMPTY_FORM: FormValues = {
 /** Turns the form into the draft that is validated and saved. */
 function toDraft(values: FormValues): AssessmentDraft {
   const { distribution } = values;
+  const minutes = durationInMinutes(values.duration);
   return {
     courseId: values.courseId,
-    examName: values.examName,
-    durationMinutes: durationInMinutes(values.duration),
+    // The demo hides the name, which is the exam's title, so it follows the duration.
+    examName:
+      DEMO_MODE && minutes !== null && Number.isInteger(minutes) && minutes > 0
+        ? minutes === MINI_QUIZ_MINUTES ? `${minutes}-minute mini quiz` : `${minutes}-minute exam`
+        : values.examName,
+    durationMinutes: minutes,
     mcqPercentage: distribution.enabled ? distribution.mcqPercentage : null,
     subjectivePercentage: distribution.enabled
       ? 100 - distribution.mcqPercentage
@@ -143,7 +148,7 @@ function toFormValues(draft: AssessmentDraft, sourceIds: string[] = []): FormVal
     sourceIds,
     courseId: draft.courseId,
     examName: draft.examName,
-    duration: DEMO_MODE ? MINI_QUIZ_DURATION : durationValue(draft.durationMinutes),
+    duration: DEMO_MODE && draft.durationMinutes === null ? MINI_QUIZ_DURATION : durationValue(draft.durationMinutes),
     // Without a saved split, the slider starts at 50/50 when it's switched on.
     distribution:
       draft.mcqPercentage === null

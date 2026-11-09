@@ -251,6 +251,22 @@ def excerpt_ref_map(excerpts: list[Excerpt]) -> dict[str, dict[str, Any]]:
     return {e.ref: {"chunk_id": e.chunk_id, "document_id": e.document_id, "label": e.label} for e in excerpts}
 
 
+# Questions generated one at a time on the plan page (see question_plan.py), kept in the stored plan:
+# {"<number>": {"slot": the planned question it was written for, "row": the question}}.
+PLAN_WRITTEN_KEY = "written"
+
+
+def written_on_plan(stored: dict[str, Any] | None, plan: ExamPlan) -> dict[int, dict[str, Any]]:
+    """The plan page's generated questions, by number, whose planned question hasn't changed since."""
+    slots = {slot.number: slot for slot in plan.questions}
+    written = {}
+    for key, entry in ((stored or {}).get(PLAN_WRITTEN_KEY) or {}).items():
+        slot = slots.get(int(key))
+        if slot is not None and PlannedQuestion.model_validate(entry["slot"]) == slot:
+            written[slot.number] = entry["row"]
+    return written
+
+
 def excerpt_id_problems(questions: Iterable[tuple[str, QuestionContent]], excerpts: list[Excerpt]) -> list[str]:
     """Questions citing excerpt ids that this request didn't give: sent back, never silently dropped
     (excerpt ids are numbered per request, so an id from the brief or plan means another excerpt)."""
@@ -699,10 +715,20 @@ class ExamGenerationService:
         slides = ctx.slides
         primary = full.primary_version
         existing = {q["position"] for q in full.version_questions(primary["id"])}
-        missing = [q for q in plan.questions if q.number not in existing]
-        batches = _batches(missing, settings.max_concurrent_generation_calls)
         written = [q["prompt"] for q in full.version_questions(primary["id"])]
         sections = sorted(full.sections, key=lambda s: s["position"])
+        # The questions the professor already generated on the plan page are kept as they read them.
+        for number, kept in written_on_plan(full.exam.get("plan"), plan).items():
+            if number not in existing:
+                slot = next(q for q in plan.questions if q.number == number)
+                section = sections[slot.section_index] if slot.section_index < len(sections) else sections[-1]
+                row = await self.store.insert_question(
+                    exam_id, primary["id"], {**kept, "position": number, "section_id": section["id"]}
+                )
+                existing.add(number)
+                written.append(row["prompt"])
+        missing = [q for q in plan.questions if q.number not in existing]
+        batches = _batches(missing, settings.max_concurrent_generation_calls)
 
         async def generate(batch: list[PlannedQuestion]) -> None:
             questions, excerpts = await self._write_batch(ctx, plan, batch, written)
@@ -758,6 +784,18 @@ class ExamGenerationService:
 
         await run.stage("finalizing")
         await self.store.update_exam(exam_id, {"status": "ready", "error_message": None})
+
+    async def write_planned(
+        self, ctx: GenerationContext, plan: ExamPlan, slot: PlannedQuestion, written: list[str]
+    ) -> dict[str, Any]:
+        """One planned question, written exactly as full generation writes it, as a question row."""
+        questions, excerpts = await self._write_batch(ctx, plan, [slot], written)
+        return content_to_row(
+            normalize_content(questions[0]),
+            excerpt_refs=excerpt_ref_map(excerpts),
+            allowed_figures=ctx.figure_ids,
+            topic_refs=ctx.slides.sources(slot.source_pages) + topic_sources(slot.knowledge_refs, ctx.documents, ctx.knowledge),
+        )
 
     async def _write_batch(
         self, ctx: GenerationContext, plan: ExamPlan, batch: list[PlannedQuestion], written: list[str]

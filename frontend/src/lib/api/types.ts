@@ -57,7 +57,14 @@ export type PlannedQuestion = {
   assessmentTarget: string;
   sourceHint: string | null;
   professorQuestion: string;
+  /** The question generated from this plan on the plan page, which the exam keeps; null until then. */
+  written: WrittenQuestion | null;
 };
+
+export type WrittenQuestion = Pick<
+  Question,
+  "type" | "points" | "prompt" | "choices" | "correctChoice" | "subparts" | "answer" | "solution" | "rubric" | "explanation" | "sources"
+>;
 
 export type QuestionPlan = {
   status: "none" | "ready";

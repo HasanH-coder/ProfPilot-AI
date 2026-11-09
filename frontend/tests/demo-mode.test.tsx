@@ -32,7 +32,36 @@ const planned: QuestionPlan = {
     assessmentTarget: `Do task ${number}`,
     sourceHint: "Lecture 1, slides 2-4",
     professorQuestion: "",
+    written: null,
   })),
+};
+
+/** The plan after question 1 was generated on the plan page. */
+const generated: QuestionPlan = {
+  ...planned,
+  questions: planned.questions.map((question) =>
+    question.number === 1
+      ? {
+          ...question,
+          written: {
+            type: "mcq",
+            points: 2,
+            prompt: "Which page replacement policy evicts the least recently used page?",
+            choices: [
+              { id: "A", text: "FIFO" },
+              { id: "B", text: "LRU" },
+            ],
+            correctChoice: "B",
+            subparts: null,
+            answer: "B. LRU evicts the page unused for the longest time.",
+            solution: null,
+            rubric: null,
+            explanation: null,
+            sources: ["Lecture 1, slide 3"],
+          },
+        }
+      : question,
+  ),
 };
 
 const approvedStatus = { spec: { status: "approved" }, runs: [], exam: null };
@@ -46,6 +75,7 @@ function servePlan(plan: QuestionPlan, status: object = approvedStatus) {
     if (url.endsWith("/ai-status")) return status;
     if (url.endsWith("/question-plan") && options?.method === "POST") return { run: { id: "run-1" } };
     if (url.endsWith("/question-plan")) return plan;
+    if (url.endsWith("/question-plan/1/question")) return generated;
     if (url.includes("/question-plan/")) {
       return {
         ...plan,
@@ -74,13 +104,17 @@ test("the form shows only the demo's steps, with the mini quiz as the one durati
 
   const quiz = screen.getByRole("button", { name: "10 min mini quiz" });
   await expect.element(quiz).toHaveAttribute("aria-pressed", "true");
-  for (const name of ["Not specified", "60 min", "90 min", "120 min", "Custom", "Continue"]) {
+  for (const name of ["Not specified", "60 min", "90 min", "120 min", "Continue"]) {
     expect(screen.getByRole("button", { name, exact: true }).query()).toBeNull();
   }
   for (const text of ["Set up with AI", "Course & Assessment Details", "Additional notes", "Additional images or attachments"]) {
     expect(screen.getByRole("heading", { name: text }).query()).toBeNull();
   }
   await expect.element(screen.getByText("Difficulty distribution", { exact: true })).toBeVisible();
+
+  // Or a duration the professor types.
+  await screen.getByRole("button", { name: "Custom", exact: true }).click();
+  await expect.element(screen.getByRole("spinbutton")).toBeVisible();
 });
 
 test("choosing a course lists the material saved in Sources, with no assessment name to fill in", async () => {
@@ -222,6 +256,38 @@ test("the professor can give their own question", async () => {
 
   await expect.element(card.getByText("What does a TLB cache?")).toBeVisible();
   expect(sent[0].body).toEqual({ topic: "Topic 1", assessmentTarget: "Do task 1", professorQuestion: "What does a TLB cache?" });
+});
+
+test("the professor can generate one planned question and read it on the plan", async () => {
+  const sent = servePlan(planned);
+  const screen = await render(<QuestionPlanReview assessmentId="a1" />);
+  const card = screen.getByRole("article", { name: "Question 1" });
+
+  await card.getByRole("button", { name: "Generate this question" }).click();
+
+  const question = card.getByRole("region", { name: "Generated question 1" });
+  await expect.element(question.getByText("Which page replacement policy evicts the least recently used page?")).toBeVisible();
+  await expect.element(question.getByText("B. LRU evicts the page unused for the longest time.")).toBeVisible();
+  await expect.element(card.getByRole("button", { name: "Generate again" })).toBeVisible();
+  expect(screen.getByRole("article", { name: "Question 2" }).getByRole("region").query()).toBeNull();
+  expect(sent).toEqual([{ url: "/api/assessments/a1/question-plan/1/question", method: "POST", body: undefined }]);
+});
+
+test("the exam waits for a question still being generated on the plan", async () => {
+  servePlan(planned);
+  const serve = vi.mocked(apiRequest).getMockImplementation()!;
+  const written = deferred<QuestionPlan>();
+  vi.mocked(apiRequest).mockImplementation((path, options) =>
+    String(path).endsWith("/question") ? written.promise : serve(path, options),
+  );
+  const screen = await render(<QuestionPlanReview assessmentId="a1" />);
+
+  await screen.getByRole("article", { name: "Question 1" }).getByRole("button", { name: "Generate this question" }).click();
+  await expect.element(screen.getByText("Generating question 1…")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Generate exam" })).toBeDisabled();
+
+  written.resolve(generated);
+  await expect.element(screen.getByRole("button", { name: "Generate exam" })).toBeEnabled();
 });
 
 test("with no plan yet, planning starts by itself and shows its progress", async () => {

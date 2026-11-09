@@ -510,3 +510,95 @@ def test_stray_spaces_in_settings_are_ignored():
     assert pasted.supabase_publishable_key == "key-value"
     assert pasted.supabase_url == "https://x.supabase.co"
     assert pasted.openai_api_key.get_secret_value() == "sk-x"
+
+
+# -- Generating one planned question on the plan page ---------------------------------
+
+
+def write_planned(api, assessment_id: str, number: int, token: str = "token-a"):
+    return api.post(f"/api/assessments/{assessment_id}/question-plan/{number}/question", headers=auth(token))
+
+
+def targeted_numbers(call: dict) -> list[int]:
+    targets = call["input"].split("WRITE THESE QUESTIONS NOW (exactly as planned)\n", 1)[1]
+    return [int(number) for number in re.findall(r"^(\d+)\. ", targets, re.M)]
+
+
+def test_a_planned_question_is_generated_on_the_plan_and_the_exam_keeps_it(api, supabase, db_a, ai):
+    assessment_id = approved_assessment(api, supabase, db_a)
+    make_plan(api, assessment_id)
+
+    written = write_planned(api, assessment_id, 2)
+    assert written.status_code == 200, written.text
+    questions = written.json()["questions"]
+    assert questions[0]["written"] is None
+    question = questions[1]["written"]
+    assert question["prompt"] and question["answer"]
+    assert (question["type"], question["points"]) == (questions[1]["type"], questions[1]["points"])
+    assert [targeted_numbers(call) for call in ai.calls_for("generate_questions")] == [[2]]
+    again = api.get(f"/api/assessments/{assessment_id}/question-plan", headers=auth("token-a")).json()
+    assert again["questions"][1]["written"]["prompt"] == question["prompt"]
+
+    started = api.post(f"/api/assessments/{assessment_id}/exam", json={"mode": "full"}, headers=auth("token-a"))
+    assert wait_for_run(api, started.json()["run"]["id"], "token-a")["status"] == "succeeded"
+
+    # The exam has the question the professor read, and only the others were written.
+    later = [number for call in ai.calls_for("generate_questions")[1:] for number in targeted_numbers(call)]
+    assert later and 2 not in later
+    exam = api.get(f"/api/assessments/{assessment_id}/exam", headers=auth("token-a")).json()
+    assert len(exam["questions"]) == len(questions)
+    assert next(item for item in exam["questions"] if item["position"] == 2)["prompt"] == question["prompt"]
+
+
+def test_changing_a_planned_question_drops_what_was_generated_from_it(api, supabase, db_a):
+    assessment_id = approved_assessment(api, supabase, db_a)
+    plan = make_plan(api, assessment_id)
+    write_planned(api, assessment_id, 1)
+    write_planned(api, assessment_id, 2)
+
+    second = plan["questions"][1]
+    same = {"topic": second["topic"], "assessmentTarget": second["assessmentTarget"], "professorQuestion": ""}
+    kept = api.patch(f"/api/assessments/{assessment_id}/question-plan/2", json=same, headers=auth("token-a")).json()
+    assert kept["questions"][1]["written"] is not None
+
+    changed = api.patch(
+        f"/api/assessments/{assessment_id}/question-plan/1",
+        json={"topic": "Virtual memory", "assessmentTarget": "", "professorQuestion": ""},
+        headers=auth("token-a"),
+    ).json()
+    assert changed["questions"][0]["written"] is None
+    assert changed["questions"][1]["written"] is not None
+    # A new plan starts with nothing generated.
+    assert all(question["written"] is None for question in make_plan(api, assessment_id)["questions"])
+
+
+def test_a_question_whose_plan_changed_while_it_was_generated_isnt_saved(api, supabase, db_a, ai):
+    from tests.model import well_behaved_batch
+
+    assessment_id = approved_assessment(api, supabase, db_a)
+    make_plan(api, assessment_id)
+
+    def plan_changes_meanwhile(call):
+        row = next(item for item in supabase.tables["exam_projects"] if item["id"] == assessment_id)
+        row["exam_spec"]["question_plan"]["questions"][0]["topic"] = "Changed meanwhile"
+        return well_behaved_batch(call)
+
+    ai.on("generate_questions", plan_changes_meanwhile)
+    refused = write_planned(api, assessment_id, 1)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "plan_changed"
+
+
+def test_generating_a_planned_question_needs_the_confirmed_prompt(api, supabase, db_a):
+    assessment_id = interpreted(api, supabase, db_a, duration_minutes=10)
+    make_plan(api, assessment_id)
+    refused = write_planned(api, assessment_id, 1)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "spec_not_approved"
+
+
+def test_another_professor_cant_generate_a_planned_question(api, supabase, db_a):
+    assessment_id = approved_assessment(api, supabase, db_a)
+    make_plan(api, assessment_id)
+    assert write_planned(api, assessment_id, 1, "token-b").status_code == 404
+    assert write_planned(api, assessment_id, 99).status_code == 404

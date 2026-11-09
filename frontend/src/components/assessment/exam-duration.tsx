@@ -21,7 +21,10 @@ export type DurationValue = {
 export const MINI_QUIZ_DURATION: DurationValue = { choice: `${MINI_QUIZ_MINUTES}`, customMinutes: "" };
 
 const OPTIONS: Option<DurationChoice>[] = DEMO_MODE
-  ? [{ value: MINI_QUIZ_DURATION.choice, label: `${MINI_QUIZ_MINUTES} min mini quiz` }]
+  ? [
+      { value: MINI_QUIZ_DURATION.choice, label: `${MINI_QUIZ_MINUTES} min mini quiz` },
+      { value: "custom", label: "Custom" },
+    ]
   : [
       { value: "none", label: "Not specified" },
       ...DURATION_PRESETS.map((minutes) => ({
@@ -41,6 +44,8 @@ export function durationInMinutes({ choice, customMinutes }: DurationValue): num
 /** The reverse, for a saved draft: a preset when one matches, otherwise Custom. */
 export function durationValue(minutes: number | null): DurationValue {
   if (minutes === null) return { choice: "none", customMinutes: "" };
+  // The demo's only preset is the mini quiz.
+  if (DEMO_MODE && minutes === MINI_QUIZ_MINUTES) return MINI_QUIZ_DURATION;
   const preset = DURATION_PRESETS.find((presetMinutes) => presetMinutes === minutes);
   return preset
     ? { choice: `${preset}`, customMinutes: "" }

@@ -110,6 +110,22 @@ class InterpretationEditIn(ApiModel):
 # -----------------------------------------------------------------------------
 
 
+class WrittenQuestionOut(ApiModel):
+    """A planned question generated on the plan page, with its answer key; the exam keeps it."""
+
+    type: str
+    points: float
+    prompt: str
+    choices: list[dict[str, Any]] | None
+    correct_choice: str | None
+    subparts: list[dict[str, Any]] | None
+    answer: str | None
+    solution: str | None
+    rubric: list[dict[str, Any]] | None
+    explanation: str | None
+    sources: list[str]
+
+
 class PlannedQuestionOut(ApiModel):
     number: int
     type: str
@@ -121,6 +137,7 @@ class PlannedQuestionOut(ApiModel):
     assessment_target: str
     source_hint: str | None
     professor_question: str
+    written: WrittenQuestionOut | None = None
 
 
 class QuestionPlanOut(ApiModel):

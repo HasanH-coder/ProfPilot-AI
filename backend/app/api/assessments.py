@@ -561,6 +561,16 @@ async def edit_planned_question(
     )
 
 
+@router.post("/assessments/{assessment_id}/question-plan/{number}/question")
+async def write_planned_question(
+    assessment_id: str, number: int, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
+) -> QuestionPlanOut:
+    """Generates one planned question now, for the professor to read on the plan; the exam keeps it."""
+    record, _ = await PromptInterpreterService(db, ai).require_approved(assessment_id)
+    await _require_read_material(db, ai, record.id)
+    return QuestionPlanOut.model_validate(await QuestionPlanService(db, ai).write(record.id, number))
+
+
 @router.post("/assessments/{assessment_id}/exam", status_code=status.HTTP_202_ACCEPTED)
 async def create_exam(
     assessment_id: str, body: CreateExamIn, db: Database = Depends(get_db), ai: OpenAIService = Depends(get_ai)
